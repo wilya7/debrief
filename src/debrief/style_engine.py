@@ -1,0 +1,232 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Carlo Fusco and Leonardo Restivo
+"""Unit 6: Style Compiler (style_engine).
+
+Read a style_config.json and emit a CSS :root block of custom properties.
+
+Entry point (CLI):
+    python style_engine.py <style_config_path> <output_css_path>
+
+Exit codes:
+    0 — success
+    1 — invalid JSON, missing required keys, or file I/O failure
+    3 — usage error (wrong number of positional arguments)
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+# ---------------------------------------------------------------------------
+# Canonical CSS custom-property name mapping.
+# 26 entries — single source of truth.  Drift vs style_guide.md is a bug.
+# ---------------------------------------------------------------------------
+
+CSS_PROPERTY_MAP: dict[str, str] = {
+    "colors.primary": "--color-primary",
+    "colors.secondary": "--color-secondary",
+    "colors.accent": "--color-accent",
+    "colors.background": "--color-background",
+    "colors.text_primary": "--color-text-primary",
+    "colors.text_secondary": "--color-text-secondary",
+    "colors.code_background": "--color-code-background",
+    "colors.border": "--color-border",
+    "typography.heading_font_family": "--font-heading-family",
+    "typography.body_font_family": "--font-body-family",
+    "typography.code_font_family": "--font-code-family",
+    "typography.heading_size_base": "--font-heading-size-base",
+    "typography.body_size_base": "--font-body-size-base",
+    "typography.heading_weight": "--font-heading-weight",
+    "typography.body_weight": "--font-body-weight",
+    "typography.line_height": "--font-line-height",
+    "spacing.margin_pct": "--spacing-margin-pct",
+    "spacing.gap": "--spacing-gap",
+    "spacing.section_gap": "--spacing-section-gap",
+    "layout.slide_width": "--layout-slide-width",
+    "layout.slide_height": "--layout-slide-height",
+    "layout.column_gap": "--layout-column-gap",
+    "data_viz.primary_colormap": "--viz-primary-colormap",
+    "data_viz.axis_color": "--viz-axis-color",
+    "data_viz.grid_color": "--viz-grid-color",
+    "data_viz.annotation_color": "--viz-annotation-color",
+}
+
+# Top-level config keys excluded from CSS output (structural metadata only).
+_EXCLUDED_KEYS: frozenset[str] = frozenset({"constraints", "provenance"})
+
+# All seven keys required at the top level of style_config.json.
+_REQUIRED_KEYS: list[str] = [
+    "colors",
+    "typography",
+    "spacing",
+    "layout",
+    "data_viz",
+    "constraints",
+    "provenance",
+]
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+def path_to_css_var(dot_path: str) -> str:
+    """Apply fallback CSS variable naming convention.
+
+    Convert a dot-path (and underscores) to ``--hyphenated-name``.
+
+    Examples::
+
+        path_to_css_var("my_section.some_value")  # "--my-section-some-value"
+        path_to_css_var("colors.primary")          # "--colors-primary"
+    """
+    # Replace both '.' and '_' with '-', then prepend '--'.
+    hyphenated = dot_path.replace(".", "-").replace("_", "-")
+    return f"--{hyphenated}"
+
+
+def flatten_config(
+    config: dict[str, Any],
+    prefix: str = "",
+) -> dict[str, Any]:
+    """Recursively flatten a nested config dict into dot-path -> value pairs.
+
+    Skips the ``constraints`` and ``provenance`` top-level keys entirely;
+    they must not appear in the flattened output.
+
+    Example::
+
+        {"colors": {"primary": "#fff"}} -> {"colors.primary": "#fff"}
+    """
+    result: dict[str, Any] = {}
+    for key, value in config.items():
+        # Determine the full dot-path for this key.
+        full_path = f"{prefix}.{key}" if prefix else key
+
+        # Skip excluded top-level keys (only apply exclusion at root level,
+        # i.e., when prefix is empty and the key itself is excluded).
+        top_key = full_path.split(".")[0]
+        if top_key in _EXCLUDED_KEYS:
+            continue
+
+        if isinstance(value, dict):
+            # Recurse into nested dicts.
+            nested = flatten_config(value, prefix=full_path)
+            result.update(nested)
+        else:
+            result[full_path] = value
+    return result
+
+
+def generate_css_root_block(config: dict[str, Any]) -> str:
+    """Generate the ``:root { ... }`` CSS block from the config dict.
+
+    For each leaf value:
+    - If its dot-path key is in ``CSS_PROPERTY_MAP``, emit the canonical
+      mapped CSS variable name.
+    - Otherwise, apply the fallback naming convention via ``path_to_css_var``.
+
+    ``constraints`` and ``provenance`` sections are excluded from output.
+    Returns the full ``:root`` block as a single string.
+    """
+    flat = flatten_config(config)
+
+    lines: list[str] = [":root {"]
+    for dot_path, value in flat.items():
+        css_var = CSS_PROPERTY_MAP.get(dot_path, path_to_css_var(dot_path))
+        lines.append(f"  {css_var}: {value};")
+    lines.append("}")
+
+    return "\n".join(lines)
+
+
+def parse_style_config(config_path: Path) -> dict[str, Any]:
+    """Read and parse ``config_path`` as JSON.
+
+    Validates that all seven required top-level keys are present.
+
+    Raises:
+        FileNotFoundError: if ``config_path`` does not exist.
+        ValueError: if the file contains invalid JSON or is missing a
+            required key.  The error message names the offending key.
+    """
+    raw = config_path.read_text(encoding="utf-8")
+    try:
+        data: Any = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON in {config_path}: {exc}") from exc
+
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"style_config must be a JSON object, got {type(data).__name__}"
+        )
+
+    for key in _REQUIRED_KEYS:
+        if key not in data:
+            raise ValueError(f"Missing required key: {key}")
+
+    return data  # type: ignore[return-value]
+
+
+def compile_style(
+    style_config_path: Path,
+    output_css_path: Path,
+) -> None:
+    """Read, validate, and compile a style config file to CSS.
+
+    Reads ``style_config_path``, validates required top-level keys, generates
+    CSS custom properties, and writes the result to ``output_css_path``.
+
+    When invoked as the CLI entry-point (``__main__``), this function is
+    called after argument validation.  Direct callers receive exceptions
+    rather than ``SystemExit`` — callers that need exit-code behaviour should
+    wrap accordingly.
+
+    Raises:
+        SystemExit(1): on JSON parse error, missing required keys, or I/O
+            failure.
+        FileNotFoundError / ValueError: propagated to non-CLI callers.
+    """
+    try:
+        config = parse_style_config(style_config_path)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    css_content = generate_css_root_block(config)
+
+    try:
+        output_css_path.parent.mkdir(parents=True, exist_ok=True)
+        output_css_path.write_text(css_content, encoding="utf-8")
+    except OSError as exc:
+        print(f"ERROR: Failed to write output file: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+
+def _main() -> None:
+    """CLI entry point: style_engine.py <config_path> <output_css_path>."""
+    # sys.argv[0] is the script name; we need exactly 2 positional arguments.
+    args = sys.argv[1:]
+    if len(args) != 2:
+        print(
+            "Usage: style_engine.py <style_config_path> <output_css_path>",
+            file=sys.stderr,
+        )
+        sys.exit(3)
+
+    style_config_path = Path(args[0])
+    output_css_path = Path(args[1])
+    compile_style(style_config_path, output_css_path)
+
+
+if __name__ == "__main__":
+    _main()
