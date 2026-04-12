@@ -1,0 +1,114 @@
+{
+  "lab_meeting": {
+    "presentation_type": "Lab Meeting",
+    "time_default": 12,
+    "content_signal_defaults": {
+      "figures": true,
+      "methods": true,
+      "results": true,
+      "background": false,
+      "conclusions": true
+    },
+    "rhetorical_emphasis": "Data-centric, iterative, invites critique and discussion from peers",
+    "expected_deliverables": ["slide deck", "script"],
+    "key_defaults_text": "12-minute lab meeting format. Focus on new results and open questions. Minimal background; colleagues know the field."
+  },
+  "conference_talk": {
+    "presentation_type": "Conference Talk",
+    "time_default": 15,
+    "content_signal_defaults": {
+      "figures": true,
+      "methods": true,
+      "results": true,
+      "background": true,
+      "conclusions": true
+    },
+    "rhetorical_emphasis": "Broad accessibility, narrative arc from problem to solution, compelling visuals",
+    "expected_deliverables": ["slide deck", "script", "handout"],
+    "key_defaults_text": "15-minute conference talk. Accessible to a broad audience. Strong narrative: problem, approach, results, impact."
+  },
+  "seminar": {
+    "presentation_type": "Seminar",
+    "time_default": 45,
+    "content_signal_defaults": {
+      "figures": true,
+      "methods": true,
+      "results": true,
+      "background": true,
+      "conclusions": true
+    },
+    "rhetorical_emphasis": "Depth and rigor, comprehensive methods, pedagogical clarity",
+    "expected_deliverables": ["slide deck", "script", "handout"],
+    "key_defaults_text": "45-minute seminar. Deep technical content acceptable. Include comprehensive background and methods sections."
+  },
+  "lecture": {
+    "presentation_type": "Lecture",
+    "time_default": 60,
+    "content_signal_defaults": {
+      "figures": true,
+      "methods": true,
+      "results": false,
+      "background": true,
+      "conclusions": true
+    },
+    "rhetorical_emphasis": "Pedagogical clarity, stepwise concept building, student engagement",
+    "expected_deliverables": ["slide deck", "handout", "script"],
+    "key_defaults_text": "60-minute lecture. Teach from first principles. Build concepts progressively. Include worked examples."
+  },
+  "journal_club": {
+    "presentation_type": "Journal Club",
+    "time_default": 20,
+    "content_signal_defaults": {
+      "figures": true,
+      "methods": true,
+      "results": true,
+      "background": true,
+      "conclusions": true
+    },
+    "rhetorical_emphasis": "Critical appraisal, figure-by-figure analysis, strengths and limitations",
+    "expected_deliverables": ["slide deck"],
+    "key_defaults_text": "20-minute journal club. Walk through a paper figure by figure. Highlight methods, statistics, and interpretation."
+  },
+  "grant_panel": {
+    "presentation_type": "Grant Panel Presentation",
+    "time_default": 12,
+    "content_signal_defaults": {
+      "figures": true,
+      "methods": true,
+      "results": true,
+      "background": true,
+      "conclusions": true
+    },
+    "rhetorical_emphasis": "Significance, innovation, feasibility; persuasive and concise",
+    "expected_deliverables": ["slide deck", "handout"],
+    "key_defaults_text": "12-minute grant panel. Lead with significance. Demonstrate feasibility with preliminary data. Emphasize innovation."
+  },
+  "job_talk": {
+    "presentation_type": "Job Talk",
+    "time_default": 45,
+    "content_signal_defaults": {
+      "figures": true,
+      "methods": true,
+      "results": true,
+      "background": true,
+      "conclusions": true
+    },
+    "rhetorical_emphasis": "Showcase scientific identity, breadth and depth, future vision",
+    "expected_deliverables": ["slide deck", "script", "handout"],
+    "key_defaults_text": "45-minute job talk. Tell a coherent scientific story. Show past work, current results, and future directions."
+  },
+  "custom": {
+    "presentation_type": "Custom",
+    "time_default": 20,
+    "content_signal_defaults": {
+      "figures": true,
+      "methods": false,
+      "results": true,
+      "background": false,
+      "conclusions": true
+    },
+    "rhetorical_emphasis": "User-defined; all defaults are overrideable",
+    "expected_deliverables": ["slide deck"],
+    "key_defaults_text": "Custom presentation format. All defaults are user-configurable. Specify duration, audience, and goals during briefing."
+  }
+}

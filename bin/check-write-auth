@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# check-write-auth — PreToolUse hook for debrief plugin
+#
+# Reads a Claude Code tool-invocation JSON from stdin.
+# Exits 0 to authorize the write; exits 2 to block it.
+# Exit code 1 is never used.
+#
+# BC-1.7: Only exit codes 0 and 2 are used.
+# BC-1.8: Parses file_path from stdin JSON via jq.
+# BC-1.9: Blocks writes outside $PWD/.
+# BC-1.10: Blocks writes to slides/ or assets/style.css unless style_locked=true.
+# BC-1.11: All other paths are unconditionally allowed.
+
+# Do NOT use set -e here — we need to capture jq exit codes manually.
+
+# Read stdin fully
+STDIN_DATA="$(cat)"
+
+# BC-1.8: Parse the file path from the tool-invocation JSON.
+# Suppress jq error output, capture its exit code manually.
+FILE_PATH="$(printf '%s' "$STDIN_DATA" | jq -r '.tool_input.file_path // empty' 2>/dev/null)"
+JQ_EXIT=$?
+
+if [ $JQ_EXIT -ne 0 ] || [ -z "$FILE_PATH" ] || [ "$FILE_PATH" = "null" ]; then
+    echo "ERROR: Unable to parse tool invocation." >&2
+    exit 2
+fi
+
+# BC-1.9: Resolve absolute path and check it starts with $PWD/
+# Use Python for portable, symlink-resolving path normalization.
+# python3 -c is available everywhere we run (debrief requires python=3.11).
+RESOLVED_PATH="$(python3 -c "import os, sys; print(os.path.realpath(sys.argv[1]))" "$FILE_PATH" 2>/dev/null)"
+if [ -z "$RESOLVED_PATH" ]; then
+    # Fallback: if python3 fails for some reason, normalize with bash parameter expansion
+    # Expand relative paths against CWD
+    case "$FILE_PATH" in
+        /*) RESOLVED_PATH="$FILE_PATH" ;;
+        *)  RESOLVED_PATH="$PWD/$FILE_PATH" ;;
+    esac
+    # Remove /../ and /./ sequences iteratively
+    while [[ "$RESOLVED_PATH" == *"/../"* || "$RESOLVED_PATH" == *"/./"* ]]; do
+        RESOLVED_PATH="${RESOLVED_PATH//\/.\//\/}"
+        RESOLVED_PATH="$(echo "$RESOLVED_PATH" | sed 's|/[^/]*/\.\./|/|g')"
+    done
+fi
+
+# Ensure PWD ends without trailing slash for prefix check
+PROJECT_ROOT="${PWD%/}"
+
+if [[ "$RESOLVED_PATH" != "$PROJECT_ROOT/"* ]]; then
+    echo "ERROR: Write outside project directory is not permitted." >&2
+    exit 2
+fi
+
+# Relative path within project
+REL_PATH="${RESOLVED_PATH#$PROJECT_ROOT/}"
+
+# BC-1.10: Check style-lock for protected paths.
+IS_PROTECTED=0
+if [[ "$REL_PATH" == slides/* ]] || [[ "$REL_PATH" == "assets/style.css" ]]; then
+    IS_PROTECTED=1
+fi
+
+if [ $IS_PROTECTED -eq 1 ]; then
+    DECK_STATE="$PROJECT_ROOT/deck_state.json"
+    STYLE_LOCKED="false"
+
+    if [ -f "$DECK_STATE" ]; then
+        STYLE_LOCKED="$(jq -r '.style_locked // false' "$DECK_STATE" 2>/dev/null || echo "false")"
+    fi
+
+    if [ "$STYLE_LOCKED" != "true" ]; then
+        echo "ERROR: Style config not yet locked. Run /debrief:style first." >&2
+        exit 2
+    fi
+fi
+
+# BC-1.11: Unconditional pass for all other paths.
+exit 0

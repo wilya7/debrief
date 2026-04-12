@@ -1,0 +1,51 @@
+debrief — AI Presentation Assistant for Scientists
+Copyright 2026 Carlo Fusco and Leonardo Restivo
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+---
+
+THIRD-PARTY ATTRIBUTIONS
+
+PaperBanana
+-----------
+Portions of this software incorporate architectural patterns and design
+concepts from PaperBanana (https://github.com/dwzhu-pku/PaperBanana),
+Copyright (c) dwzhu-pku, licensed under the Apache License, Version 2.0.
+
+Repository: https://github.com/dwzhu-pku/PaperBanana
+
+The following elements were informed by PaperBanana's design:
+- Style-guide critic loop for visual consistency enforcement
+- Tiered evaluation approach for slide quality assessment
+- Exemplar-driven slide generation patterns
+- Multi-agent orchestration architecture for presentation workflows
+
+---
+
+PATENT RISK DISCLOSURE
+
+debrief and PaperBanana (dwzhu-pku/PaperBanana) incorporate techniques
+for AI-assisted presentation generation. Some methods used in this software,
+including automated slide composition, figure-to-slide layout mapping, and
+LLM-guided visual design generation, may be subject to patent claims by
+third parties.
+
+Users and deployers of this software — particularly in commercial contexts —
+should be aware of this potential patent risk. The Apache License, Version 2.0
+grants certain patent rights from contributors, but does not guarantee freedom
+from third-party patent claims. No patent license beyond what is expressly
+granted in the Apache-2.0 license is conveyed by this NOTICE.
+
+If you are deploying debrief in a commercial product or service, you should
+consult with a qualified patent attorney to assess your exposure.
