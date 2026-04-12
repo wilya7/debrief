@@ -1,0 +1,75 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+
+# Distribution / packaging
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+.eggs/
+
+# Virtual environments / conda
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.cover
+.hypothesis/
+coverage.xml
+nosetests.xml
+test-results/
+
+# Mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Ruff
+.ruff_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Project runtime artifacts (not committed)
+deck_state.json
+debrief_state.json
+style_config.json
+style_guide.md
+deck_brief.md
+ledger*.jsonl
+output/
+slides/
+.debrief/
+assets/images/
+assets/fonts/
+assets/math/
+assets/reference/
+assets/style.css
+CLAUDE.md
+
+# Playwright
+/playwright-report/
+/test-results/

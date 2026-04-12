@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "debrief"
+version = "1.1.0"
+description = "AI-powered presentation assistant for scientists: generate structured slide decks from research content via Claude Code."
+authors = [
+    { name = "Carlo Fusco and Leonardo Restivo" },
+]
+license = { text = "Apache-2.0" }
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "playwright>=1.40",
+    "python-pptx>=0.6.21",
+    "PyMuPDF>=1.23",
+    "json-repair>=0.25",
+]
+
+[project.scripts]
+debrief = "debrief.launcher:main_new"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"debrief" = ["py.typed"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["debrief"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+exclude = ["tests/"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "--tb=short"
+
+[tool.coverage.run]
+source = ["src/debrief"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+fail_under = 80
