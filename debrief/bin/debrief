@@ -18,9 +18,22 @@ set -euo pipefail
 # development or if the user put bin/ on PATH manually).
 # ---------------------------------------------------------------------------
 if [[ -z "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  CLAUDE_PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+  # BEGIN CLAUDE_PLUGIN_ROOT resolution (symlink-safe)
+  # Walk any symlink chain on ${BASH_SOURCE[0]} so that installing
+  # bin/debrief as a symlink on PATH (e.g., ~/.local/bin/debrief) resolves
+  # to the real plugin directory rather than the symlink's parent. Pure
+  # bash, no GNU coreutils — readlink -f is not available on macOS BSD.
+  _debrief_source="${BASH_SOURCE[0]}"
+  while [[ -L "$_debrief_source" ]]; do
+    _debrief_dir="$(cd -P "$(dirname "$_debrief_source")" && pwd)"
+    _debrief_source="$(readlink "$_debrief_source")"
+    [[ "$_debrief_source" != /* ]] && _debrief_source="$_debrief_dir/$_debrief_source"
+  done
+  _debrief_dir="$(cd -P "$(dirname "$_debrief_source")" && pwd)"
+  CLAUDE_PLUGIN_ROOT="$(cd -P "$_debrief_dir/.." && pwd)"
+  unset _debrief_source _debrief_dir
   export CLAUDE_PLUGIN_ROOT
+  # END CLAUDE_PLUGIN_ROOT resolution (symlink-safe)
 fi
 
 # ---------------------------------------------------------------------------
@@ -68,10 +81,17 @@ source "$(conda info --base)/etc/profile.d/conda.sh"
 if ! conda env list | awk '{print $1}' | grep -qx debrief; then
   echo "First-run setup: creating the debrief conda environment (this takes 5-15 minutes)..."
   if ! conda env create -f "${CLAUDE_PLUGIN_ROOT}/environment.yml" -n debrief; then
-    if ! conda env remove -n debrief -y 2>/dev/null; then
-      echo "Partial debrief env exists and could not be removed automatically." >&2
-      echo "Run \`conda env remove -n debrief --force\` manually, then retry \`debrief new\`." >&2
-      exit 1
+    # Only attempt removal (and only claim a partial env exists) if a
+    # debrief env actually exists after the failed create. Without this
+    # guard, any create failure — EnvironmentFileNotFound, network error,
+    # etc. — triggers the misleading "Partial debrief env exists" message
+    # because `conda env remove` returns non-zero when the env is absent.
+    if conda env list | awk '{print $1}' | grep -qx debrief; then
+      if ! conda env remove -n debrief -y 2>/dev/null; then
+        echo "Partial debrief env exists and could not be removed automatically." >&2
+        echo "Run \`conda env remove -n debrief --force\` manually, then retry \`debrief new\`." >&2
+        exit 1
+      fi
     fi
     echo "ERROR: conda env creation failed. See output above for details." >&2
     exit 1
