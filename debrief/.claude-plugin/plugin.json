@@ -2,9 +2,10 @@
   "name": "debrief",
   "version": "1.1.0",
   "description": "AI-powered presentation assistant for scientists: generate structured slide decks from research content via Claude Code.",
-  "author": {
-    "name": "Carlo Fusco and Leonardo Restivo"
-  },
+  "author": "Carlo Fusco and Leonardo Restivo",
   "license": "Apache-2.0",
-  "keywords": ["presentation", "slides", "science", "research", "pptx", "llm"]
+  "keywords": ["presentation", "slides", "science", "research", "pptx", "llm"],
+  "skills": "./skills/",
+  "agents": "./agents/",
+  "hooks": "./hooks/hooks.json"
 }

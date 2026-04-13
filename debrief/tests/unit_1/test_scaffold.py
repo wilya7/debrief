@@ -4,8 +4,9 @@
 
 Synthetic data generation assumptions
 --------------------------------------
-- The plugin scaffold files are expected at the repository root (the parent
-  of the ``tests/`` directory, i.e., one level above this file's parent).
+- The plugin scaffold files are expected at ``src/unit_1/`` relative to the
+  project root.  The project root is resolved as the grandparent of the
+  ``tests/`` directory (i.e., two levels above this file).
 - ``check-write-auth`` is exercised as a subprocess.  Tests that need a real
   ``deck_state.json`` write a minimal file into a ``tmp_path`` directory and
   point ``$PWD`` at that directory when invoking the script.
@@ -14,13 +15,17 @@ Synthetic data generation assumptions
   ``{"tool_name": "Write", "tool_input": {"file_path": "<path>"}}``.
 - For style-lock tests the synthetic ``deck_state.json`` contains only the
   ``style_locked`` key.  No other fields are required for the script to run.
-- Environment variable ``CLAUDE_PLUGIN_ROOT`` is set to the repository root for all
+- Environment variable ``CLAUDE_PLUGIN_ROOT`` is set to ``src/unit_1`` for all
   subprocess invocations so that the script can reference plugin-relative paths.
 - ``jq`` is assumed to be on ``$PATH`` in the test environment (it is listed in
   ``environment.yml`` and must be available in the debrief conda env).
 - VERSIONS.md parsing assumes tab-separated fields with no leading/trailing
   whitespace on each field, exactly matching the format:
   ``<filename>\\tversion <ver>\\tsha256:<hash>\\t<source_url>``.
+- For BC-1.2a / BC-1.3b frontmatter tests, the exact per-skill and per-agent
+  YAML field values come verbatim from stakeholder spec §5.2 and §6.2
+  respectively.  Any deviation in the actual files (wrong description, wrong
+  model, wrong maxTurns, etc.) is treated as a test failure.
 """
 
 from __future__ import annotations
@@ -30,7 +35,7 @@ import os
 import re
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import pytest
 import yaml
@@ -158,6 +163,228 @@ class TestSkillsDiscoveryPointer:
 
 
 # ---------------------------------------------------------------------------
+# BC-1.2a  SKILL.md frontmatter structural verification (per spec §5.1/§5.2)
+# ---------------------------------------------------------------------------
+
+# Exact per-skill frontmatter from spec §5.2 — verbatim field values.
+SKILL_FRONTMATTER_SPEC: dict[str, dict[str, Any]] = {
+    "slide": {
+        "name": "slide",
+        "description": (
+            "Enter the slide authoring loop. Creates new slides or opens visual"
+            " revision for existing ones."
+        ),
+        "user-invocable": True,
+        "allowed-tools": "Read, Write, Edit, Bash",
+        "argument-hint": "[slug]",
+    },
+    "style": {
+        "name": "style",
+        "description": (
+            "Run the style dialog to co-design and lock the visual style for the deck."
+        ),
+        "user-invocable": True,
+        "allowed-tools": "Read, Write, Edit, Bash",
+        "argument-hint": "",
+    },
+    "export": {
+        "name": "export",
+        "description": (
+            "Render the complete deck to a versioned PDF using Playwright."
+        ),
+        "user-invocable": True,
+        "allowed-tools": "Read, Write, Bash",
+        "argument-hint": "",
+    },
+    "save": {
+        "name": "save",
+        "description": (
+            "Checkpoint the current deck state and ledger to a named snapshot."
+        ),
+        "user-invocable": True,
+        "allowed-tools": "Read, Write, Bash",
+        "argument-hint": "[label]",
+    },
+    "view": {
+        "name": "view",
+        "description": (
+            "Generate a query-driven HTML view of selected slides for visual"
+            " inspection."
+        ),
+        "user-invocable": True,
+        "allowed-tools": "Read, Write, Bash",
+        "argument-hint": "[query]",
+    },
+    "reset": {
+        "name": "reset",
+        "description": (
+            "Delete all project data files and return the project directory to its"
+            " initial empty state."
+        ),
+        "user-invocable": True,
+        "allowed-tools": "Read, Write, Bash",
+        "argument-hint": "",
+    },
+    "quit": {
+        "name": "quit",
+        "description": (
+            "Save state, clean up transient artifacts, and exit the session cleanly."
+        ),
+        "user-invocable": True,
+        "allowed-tools": "Read, Write, Bash",
+        "argument-hint": "",
+    },
+    "script": {
+        "name": "script",
+        "description": (
+            "Generate a versioned presenter script from the current deck brief and"
+            " slide records."
+        ),
+        "user-invocable": True,
+        "allowed-tools": "Read, Write, Bash",
+        "argument-hint": "",
+    },
+    "handout": {
+        "name": "handout",
+        "description": (
+            "Generate a versioned handout PDF with slide thumbnails and explanatory"
+            " text."
+        ),
+        "user-invocable": True,
+        "allowed-tools": "Read, Write, Bash",
+        "argument-hint": "[2up|4up]",
+    },
+}
+
+# Required frontmatter fields per spec §5.1
+SKILL_REQUIRED_FIELDS = {"name", "description", "user-invocable", "allowed-tools", "argument-hint"}
+
+
+def _parse_frontmatter(path: Path) -> dict[str, Any]:
+    """Parse the YAML frontmatter block from a file.
+
+    Raises AssertionError if the file does not start with '---\\n', does not
+    contain a closing '---' delimiter, or if the YAML between delimiters is
+    invalid.
+    """
+    content = path.read_text(encoding="utf-8")
+    assert content.startswith("---\n"), (
+        f"{path} must start with '---\\n' (got: {content[:20]!r})"
+    )
+    # Find the closing '---' delimiter
+    rest = content[4:]  # skip opening '---\n'
+    close_idx = rest.find("\n---")
+    assert close_idx != -1, (
+        f"{path} is missing a closing '---' delimiter after the frontmatter block"
+    )
+    yaml_block = rest[:close_idx]
+    parsed = yaml.safe_load(yaml_block)
+    assert isinstance(parsed, dict), (
+        f"Frontmatter in {path} did not parse as a YAML dict"
+    )
+    return parsed
+
+
+class TestSkillFrontmatterStructure:
+    """BC-1.2a / BC-1.3b — Each SKILL.md must start with '---\\n', contain a
+    closing '---', and the YAML block must contain all required fields with
+    exact values from spec §5.2."""
+
+    @pytest.mark.parametrize("skill", sorted(EXPECTED_SKILL_SUBDIRS))
+    def test_skill_md_starts_with_yaml_frontmatter_delimiter(
+        self, skill: str
+    ) -> None:
+        path = _unit("skills") / skill / "SKILL.md"
+        content = path.read_text(encoding="utf-8")
+        assert content.startswith("---\n"), (
+            f"skills/{skill}/SKILL.md must start with '---\\n' for Claude Code"
+            f" skill discovery; got: {content[:30]!r}"
+        )
+
+    @pytest.mark.parametrize("skill", sorted(EXPECTED_SKILL_SUBDIRS))
+    def test_skill_md_contains_closing_frontmatter_delimiter(
+        self, skill: str
+    ) -> None:
+        path = _unit("skills") / skill / "SKILL.md"
+        content = path.read_text(encoding="utf-8")
+        # After the opening '---\n', there must be a '\n---' closing line
+        rest = content[4:] if content.startswith("---\n") else content
+        assert "\n---" in rest, (
+            f"skills/{skill}/SKILL.md must contain a closing '---' delimiter"
+            f" to end the frontmatter block"
+        )
+
+    @pytest.mark.parametrize("skill", sorted(EXPECTED_SKILL_SUBDIRS))
+    def test_skill_md_frontmatter_parses_as_valid_yaml(self, skill: str) -> None:
+        path = _unit("skills") / skill / "SKILL.md"
+        # Will raise AssertionError on bad YAML
+        fm = _parse_frontmatter(path)
+        assert isinstance(fm, dict), (
+            f"skills/{skill}/SKILL.md frontmatter must parse as a YAML mapping"
+        )
+
+    @pytest.mark.parametrize("skill", sorted(EXPECTED_SKILL_SUBDIRS))
+    def test_skill_md_frontmatter_contains_all_required_fields(
+        self, skill: str
+    ) -> None:
+        path = _unit("skills") / skill / "SKILL.md"
+        fm = _parse_frontmatter(path)
+        missing = SKILL_REQUIRED_FIELDS - set(fm.keys())
+        assert missing == set(), (
+            f"skills/{skill}/SKILL.md frontmatter is missing required fields: {missing}"
+        )
+
+    @pytest.mark.parametrize("skill", sorted(EXPECTED_SKILL_SUBDIRS))
+    def test_skill_md_frontmatter_name_matches_spec(self, skill: str) -> None:
+        path = _unit("skills") / skill / "SKILL.md"
+        fm = _parse_frontmatter(path)
+        expected = SKILL_FRONTMATTER_SPEC[skill]["name"]
+        assert fm.get("name") == expected, (
+            f"skills/{skill}/SKILL.md frontmatter 'name' must be {expected!r},"
+            f" got {fm.get('name')!r}"
+        )
+
+    @pytest.mark.parametrize("skill", sorted(EXPECTED_SKILL_SUBDIRS))
+    def test_skill_md_frontmatter_description_matches_spec(self, skill: str) -> None:
+        path = _unit("skills") / skill / "SKILL.md"
+        fm = _parse_frontmatter(path)
+        expected = SKILL_FRONTMATTER_SPEC[skill]["description"]
+        assert fm.get("description") == expected, (
+            f"skills/{skill}/SKILL.md frontmatter 'description' must be"
+            f" {expected!r}, got {fm.get('description')!r}"
+        )
+
+    @pytest.mark.parametrize("skill", sorted(EXPECTED_SKILL_SUBDIRS))
+    def test_skill_md_frontmatter_user_invocable_is_true(self, skill: str) -> None:
+        path = _unit("skills") / skill / "SKILL.md"
+        fm = _parse_frontmatter(path)
+        assert fm.get("user-invocable") is True, (
+            f"skills/{skill}/SKILL.md frontmatter 'user-invocable' must be true,"
+            f" got {fm.get('user-invocable')!r}"
+        )
+
+    @pytest.mark.parametrize("skill", sorted(EXPECTED_SKILL_SUBDIRS))
+    def test_skill_md_frontmatter_allowed_tools_matches_spec(self, skill: str) -> None:
+        path = _unit("skills") / skill / "SKILL.md"
+        fm = _parse_frontmatter(path)
+        expected = SKILL_FRONTMATTER_SPEC[skill]["allowed-tools"]
+        assert fm.get("allowed-tools") == expected, (
+            f"skills/{skill}/SKILL.md frontmatter 'allowed-tools' must be"
+            f" {expected!r}, got {fm.get('allowed-tools')!r}"
+        )
+
+    @pytest.mark.parametrize("skill", sorted(EXPECTED_SKILL_SUBDIRS))
+    def test_skill_md_frontmatter_argument_hint_matches_spec(self, skill: str) -> None:
+        path = _unit("skills") / skill / "SKILL.md"
+        fm = _parse_frontmatter(path)
+        expected = SKILL_FRONTMATTER_SPEC[skill]["argument-hint"]
+        assert fm.get("argument-hint") == expected, (
+            f"skills/{skill}/SKILL.md frontmatter 'argument-hint' must be"
+            f" {expected!r}, got {fm.get('argument-hint')!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # BC-1.3  Agents discovery pointer
 # ---------------------------------------------------------------------------
 
@@ -195,6 +422,162 @@ class TestAgentsDiscoveryPointer:
         all_md = {p.name for p in agents_dir.glob("*.md")}
         extra = all_md - EXPECTED_AGENT_FILES
         assert extra == set(), f"Unexpected .md files in agents/: {extra}"
+
+
+# ---------------------------------------------------------------------------
+# BC-1.3a / BC-1.3b  Agent file frontmatter structural verification (spec §6.1/§6.2)
+# ---------------------------------------------------------------------------
+
+# Exact per-agent frontmatter from spec §6.2 — verbatim field values.
+AGENT_FRONTMATTER_SPEC: dict[str, dict[str, Any]] = {
+    "consultant.md": {
+        "name": "consultant",
+        "description": "Narrative architecture partner for deck content design",
+        "model": "claude-sonnet-4-6",
+        "maxTurns": 50,
+        "tools": "Read, Write, Edit",
+    },
+    "slide-maker.md": {
+        "name": "slide-maker",
+        "description": (
+            "Slide authoring agent that generates and revises styled HTML slides"
+        ),
+        "model": "claude-sonnet-4-6",
+        "maxTurns": 20,
+        "tools": "Read, Write, Edit, Bash",
+    },
+    "visual-qa.md": {
+        "name": "visual-qa",
+        "description": (
+            "Visual quality assurance agent that screenshots slides and checks"
+            " design invariants"
+        ),
+        "model": "claude-sonnet-4-6",
+        "maxTurns": 10,
+        "tools": "Read, Write, Bash",
+    },
+    "bug-diagnostic.md": {
+        "name": "bug-diagnostic",
+        "description": (
+            "Diagnostic agent that investigates rendering failures and authoring errors"
+        ),
+        "model": "claude-sonnet-4-6",
+        "maxTurns": 15,
+        "tools": "Read, Write, Edit, Bash",
+    },
+    "stylist.md": {
+        "name": "stylist",
+        "description": (
+            "Style co-design agent that produces style_config.json and style_guide.md"
+        ),
+        "model": "claude-sonnet-4-6",
+        "maxTurns": 20,
+        "tools": "Read, Write, Edit",
+    },
+}
+
+# Required frontmatter fields per spec §6.1
+AGENT_REQUIRED_FIELDS = {"name", "description", "model", "maxTurns", "tools"}
+
+
+class TestAgentFrontmatterStructure:
+    """BC-1.3a / BC-1.3b — Each agent .md file must start with '---\\n',
+    contain a closing '---', and the YAML block must contain all required
+    fields with exact values from spec §6.2."""
+
+    @pytest.mark.parametrize("agent_file", sorted(EXPECTED_AGENT_FILES))
+    def test_agent_md_starts_with_yaml_frontmatter_delimiter(
+        self, agent_file: str
+    ) -> None:
+        path = _unit("agents") / agent_file
+        content = path.read_text(encoding="utf-8")
+        assert content.startswith("---\n"), (
+            f"agents/{agent_file} must start with '---\\n' for Claude Code agent"
+            f" registration; got: {content[:30]!r}"
+        )
+
+    @pytest.mark.parametrize("agent_file", sorted(EXPECTED_AGENT_FILES))
+    def test_agent_md_contains_closing_frontmatter_delimiter(
+        self, agent_file: str
+    ) -> None:
+        path = _unit("agents") / agent_file
+        content = path.read_text(encoding="utf-8")
+        rest = content[4:] if content.startswith("---\n") else content
+        assert "\n---" in rest, (
+            f"agents/{agent_file} must contain a closing '---' delimiter to end"
+            f" the frontmatter block"
+        )
+
+    @pytest.mark.parametrize("agent_file", sorted(EXPECTED_AGENT_FILES))
+    def test_agent_md_frontmatter_parses_as_valid_yaml(self, agent_file: str) -> None:
+        path = _unit("agents") / agent_file
+        fm = _parse_frontmatter(path)
+        assert isinstance(fm, dict), (
+            f"agents/{agent_file} frontmatter must parse as a YAML mapping"
+        )
+
+    @pytest.mark.parametrize("agent_file", sorted(EXPECTED_AGENT_FILES))
+    def test_agent_md_frontmatter_contains_all_required_fields(
+        self, agent_file: str
+    ) -> None:
+        path = _unit("agents") / agent_file
+        fm = _parse_frontmatter(path)
+        missing = AGENT_REQUIRED_FIELDS - set(fm.keys())
+        assert missing == set(), (
+            f"agents/{agent_file} frontmatter is missing required fields: {missing}"
+        )
+
+    @pytest.mark.parametrize("agent_file", sorted(EXPECTED_AGENT_FILES))
+    def test_agent_md_frontmatter_name_matches_spec(self, agent_file: str) -> None:
+        path = _unit("agents") / agent_file
+        fm = _parse_frontmatter(path)
+        expected = AGENT_FRONTMATTER_SPEC[agent_file]["name"]
+        assert fm.get("name") == expected, (
+            f"agents/{agent_file} frontmatter 'name' must be {expected!r},"
+            f" got {fm.get('name')!r}"
+        )
+
+    @pytest.mark.parametrize("agent_file", sorted(EXPECTED_AGENT_FILES))
+    def test_agent_md_frontmatter_description_matches_spec(
+        self, agent_file: str
+    ) -> None:
+        path = _unit("agents") / agent_file
+        fm = _parse_frontmatter(path)
+        expected = AGENT_FRONTMATTER_SPEC[agent_file]["description"]
+        assert fm.get("description") == expected, (
+            f"agents/{agent_file} frontmatter 'description' must be {expected!r},"
+            f" got {fm.get('description')!r}"
+        )
+
+    @pytest.mark.parametrize("agent_file", sorted(EXPECTED_AGENT_FILES))
+    def test_agent_md_frontmatter_model_matches_spec(self, agent_file: str) -> None:
+        path = _unit("agents") / agent_file
+        fm = _parse_frontmatter(path)
+        expected = AGENT_FRONTMATTER_SPEC[agent_file]["model"]
+        assert fm.get("model") == expected, (
+            f"agents/{agent_file} frontmatter 'model' must be {expected!r},"
+            f" got {fm.get('model')!r}"
+        )
+
+    @pytest.mark.parametrize("agent_file", sorted(EXPECTED_AGENT_FILES))
+    def test_agent_md_frontmatter_max_turns_matches_spec(self, agent_file: str) -> None:
+        path = _unit("agents") / agent_file
+        fm = _parse_frontmatter(path)
+        expected = AGENT_FRONTMATTER_SPEC[agent_file]["maxTurns"]
+        assert fm.get("maxTurns") == expected, (
+            f"agents/{agent_file} frontmatter 'maxTurns' must be {expected!r},"
+            f" got {fm.get('maxTurns')!r}"
+        )
+
+    @pytest.mark.parametrize("agent_file", sorted(EXPECTED_AGENT_FILES))
+    def test_agent_md_frontmatter_tools_matches_spec(self, agent_file: str) -> None:
+        path = _unit("agents") / agent_file
+        fm = _parse_frontmatter(path)
+        expected = AGENT_FRONTMATTER_SPEC[agent_file]["tools"]
+        assert fm.get("tools") == expected, (
+            f"agents/{agent_file} frontmatter 'tools' must be {expected!r},"
+            f" got {fm.get('tools')!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -308,7 +691,21 @@ def _get_hooks_by_event(hooks_json: dict, event: str) -> list[dict]:
     # Direct key layout: {"PreToolUse": [...], "PostToolUse": [...]}
     if event in hooks_json and isinstance(hooks_json[event], list):
         return hooks_json[event]
-    # Nested layout: {"hooks": [{"event": "PreToolUse", ...}]}
+    # Nested layout: {"hooks": {"PreToolUse": [...]}}
+    if "hooks" in hooks_json and isinstance(hooks_json["hooks"], dict):
+        inner = hooks_json["hooks"]
+        if event in inner and isinstance(inner[event], list):
+            # Each element may itself be a wrapper with a nested "hooks" list
+            result: list[dict] = []
+            for item in inner[event]:
+                if isinstance(item, dict):
+                    nested = item.get("hooks", [])
+                    if isinstance(nested, list):
+                        result.extend(h for h in nested if isinstance(h, dict))
+                    else:
+                        result.append(item)
+            return result
+    # Flat list layout: {"hooks": [{"event": "PreToolUse", ...}]}
     for val in hooks_json.values():
         if isinstance(val, list):
             matches = [
