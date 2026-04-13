@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# debrief — launcher script for the debrief plugin
+# Initializes the debrief environment and launches Claude Code with the plugin.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+export CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT"
+
+exec claude --plugin-dir "$PLUGIN_ROOT" "$@"

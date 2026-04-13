@@ -1,0 +1,13 @@
+{
+  "name": "debrief",
+  "owner": {
+    "name": "Carlo Fusco and Leonardo Restivo"
+  },
+  "plugins": [
+    {
+      "name": "debrief",
+      "source": "./debrief",
+      "description": "AI-powered presentation assistant for scientists"
+    }
+  ]
+}
