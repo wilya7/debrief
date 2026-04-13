@@ -768,11 +768,24 @@ class TestEnvironmentYmlCompleteness:
             f"environment.yml must pin python=3.11; conda deps: {conda_deps}"
         )
 
-    def test_environment_yml_includes_libreoffice_still(self, env_yml: dict) -> None:
+    def test_environment_yml_does_not_pin_libreoffice_still(
+        self, env_yml: dict
+    ) -> None:
+        """BUG-AUDIT-4: libreoffice-still is Linux-only on conda-forge and
+        blocks macOS bootstrap. LibreOffice is a system dependency now
+        (BC-1.6 amended, BC-1.6a added). bin/debrief discovers a system
+        install and creates a ${CONDA_PREFIX}/bin/soffice shim on macOS.
+        """
         deps = env_yml.get("dependencies", [])
         conda_deps = [d for d in deps if isinstance(d, str)]
-        assert any("libreoffice-still" in d for d in conda_deps), (
-            f"environment.yml must include libreoffice-still; conda deps: {conda_deps}"
+        pip_deps = _get_pip_deps(env_yml)
+        assert not any("libreoffice-still" in d for d in conda_deps), (
+            f"BUG-AUDIT-4 regression: libreoffice-still reappeared in "
+            f"environment.yml conda deps: {conda_deps}. See BC-1.6."
+        )
+        assert not any("libreoffice-still" in d for d in pip_deps), (
+            f"BUG-AUDIT-4 regression: libreoffice-still reappeared in "
+            f"environment.yml pip deps: {pip_deps}. See BC-1.6."
         )
 
     def test_environment_yml_includes_jq(self, env_yml: dict) -> None:

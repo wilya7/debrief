@@ -119,6 +119,49 @@ if ! python -c 'import playwright, pptx, fitz, json_repair' 2>/dev/null; then
 fi
 
 # ---------------------------------------------------------------------------
+# Step 5.6: LibreOffice discovery and macOS shim (BC-1.6a, BUG-AUDIT-4).
+# LibreOffice is a system dependency, not a conda-managed package:
+# `libreoffice-still` on conda-forge ships Linux builds only. On macOS we
+# look for /Applications/LibreOffice.app and drop a wrapper script into
+# the active conda env's bin/ so that runtime `subprocess.run(["soffice",
+# ...])` calls find it via PATH without the user having to edit their
+# shell profile. The shim lives inside ${CONDA_PREFIX}/bin, so destroying
+# the env via --rebuild-env removes it automatically.
+# ---------------------------------------------------------------------------
+# BEGIN LibreOffice discovery
+if ! command -v soffice >/dev/null 2>&1; then
+  _debrief_macos_soffice="/Applications/LibreOffice.app/Contents/MacOS/soffice"
+  if [[ "$(uname -s)" == "Darwin" && -x "$_debrief_macos_soffice" ]]; then
+    cat > "${CONDA_PREFIX}/bin/soffice" <<'DEBRIEF_SOFFICE_SHIM_EOF'
+#!/usr/bin/env bash
+exec /Applications/LibreOffice.app/Contents/MacOS/soffice "$@"
+DEBRIEF_SOFFICE_SHIM_EOF
+    chmod +x "${CONDA_PREFIX}/bin/soffice"
+  else
+    echo "ERROR: LibreOffice (soffice) is required but was not found." >&2
+    case "$(uname -s)" in
+      Darwin)
+        echo "Install LibreOffice from https://www.libreoffice.org/download/download/" >&2
+        echo "(or 'brew install --cask libreoffice'), then retry: debrief new" >&2
+        ;;
+      Linux)
+        echo "Install LibreOffice via your package manager:" >&2
+        echo "  Debian/Ubuntu: sudo apt install libreoffice" >&2
+        echo "  Fedora/RHEL:   sudo dnf install libreoffice" >&2
+        echo "Then retry: debrief new" >&2
+        ;;
+      *)
+        echo "Install LibreOffice from https://www.libreoffice.org/download/download/" >&2
+        echo "Then retry: debrief new" >&2
+        ;;
+    esac
+    exit 1
+  fi
+  unset _debrief_macos_soffice
+fi
+# END LibreOffice discovery
+
+# ---------------------------------------------------------------------------
 # Step 6: package install marker check (keyed by plugin version).
 # ---------------------------------------------------------------------------
 PLUGIN_VERSION="$(python -c "import json; print(json.load(open('${CLAUDE_PLUGIN_ROOT}/.claude-plugin/plugin.json'))['version'])")"

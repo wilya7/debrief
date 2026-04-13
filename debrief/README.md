@@ -84,7 +84,6 @@ To remove debrief from a project:
 | Package | Purpose |
 |---|---|
 | `python=3.11` | Runtime |
-| `libreoffice-still` | PDF export via headless LibreOffice |
 | `jq` | JSON parsing in shell hooks |
 
 ### Python packages (pip)
@@ -95,6 +94,19 @@ To remove debrief from a project:
 | `python-pptx` | >=0.6.21 | PPTX assembly from rendered slides |
 | `PyMuPDF` | >=1.23 | PDF parsing and figure extraction |
 | `json-repair` | >=0.25 | Fault-tolerant JSON parsing for LLM-generated state |
+
+### System dependencies (user-installed)
+
+LibreOffice is required for PPTX-to-PNG conversion during reference-deck style import. It is **not** managed by conda (`libreoffice-still` on conda-forge is Linux-only, and bootstrapping it cross-platform is brittle). Install it once per machine via your OS's native channel:
+
+| Platform | Install command |
+|---|---|
+| macOS | Download from https://www.libreoffice.org/download/download/ or `brew install --cask libreoffice` |
+| Debian / Ubuntu | `sudo apt install libreoffice` |
+| Fedora / RHEL | `sudo dnf install libreoffice` |
+| Other | https://www.libreoffice.org/download/download/ |
+
+On first run, `bin/debrief` checks for `soffice` on PATH. On macOS, if LibreOffice is installed at the standard `/Applications/LibreOffice.app` location but `soffice` is not on PATH, `bin/debrief` creates a wrapper shim inside the active conda env's `bin/` directory automatically — no shell-profile edits needed. If LibreOffice is not installed at all, the bootstrap exits with install instructions.
 
 ### Vendor assets (bundled)
 

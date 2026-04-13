@@ -1,9 +1,15 @@
 name: debrief
 channels:
   - conda-forge
+# NOTE: libreoffice is NOT a conda-managed package. It is a system dependency
+# the user installs via OS-native channels (macOS: libreoffice.org or
+# `brew install --cask libreoffice`; Linux: `apt install libreoffice` or
+# `dnf install libreoffice`). Previously `libreoffice-still` was pinned
+# here, but that conda-forge package is Linux-only — it has no macOS
+# builds, so the env create failed hard on Darwin. See BUG-AUDIT-4 and
+# BC-1.6a. `bin/debrief` step 5.6 runs the discovery + macOS shim logic.
 dependencies:
   - python=3.11
-  - libreoffice-still
   - jq
   - pip
   - pip:
