@@ -600,12 +600,10 @@ class TestHooksPointerAndStructure:
         assert _unit("hooks/hooks.json").exists()
 
     def test_hooks_json_declares_pre_tool_use_hook(self, hooks_json: dict) -> None:
-        assert "PreToolUse" in hooks_json or any(
-            h.get("event") == "PreToolUse"
-            for hook_list in hooks_json.values()
-            if isinstance(hook_list, list)
-            for h in hook_list
-        ), "hooks.json must declare a PreToolUse hook"
+        # BUG-AUDIT-7: use the helper, which supports both the legacy flat
+        # layout and the required Form B layout (top-level `hooks` wrapper).
+        pre_hooks = _get_hooks_by_event(hooks_json, "PreToolUse")
+        assert len(pre_hooks) > 0, "hooks.json must declare a PreToolUse hook"
 
     def test_pre_tool_use_hook_matches_write_or_edit(self, hooks_json: dict) -> None:
         pre_hooks = _get_hooks_by_event(hooks_json, "PreToolUse")
@@ -679,21 +677,32 @@ class TestHooksPointerAndStructure:
 
 
 def _get_hooks_by_event(hooks_json: dict, event: str) -> list[dict]:
-    """Extract hooks for a given event from various hooks.json layouts."""
+    """Extract hooks for a given event from various hooks.json layouts.
+
+    BUG-AUDIT-7: when unwrapping the nested Form B layout, the outer
+    wrapper's `matcher` field is merged into each inner hook so that
+    downstream tests calling `h.get("matcher")` still find the matcher
+    on the flattened handler dict.
+    """
     # Direct key layout: {"PreToolUse": [...], "PostToolUse": [...]}
     if event in hooks_json and isinstance(hooks_json[event], list):
         return hooks_json[event]
-    # Nested layout: {"hooks": {"PreToolUse": [...]}}
+    # Form B nested layout: {"hooks": {"PreToolUse": [{"matcher": "...", "hooks": [...]}]}}
     if "hooks" in hooks_json and isinstance(hooks_json["hooks"], dict):
         inner = hooks_json["hooks"]
         if event in inner and isinstance(inner[event], list):
-            # Each element may itself be a wrapper with a nested "hooks" list
             result: list[dict] = []
             for item in inner[event]:
                 if isinstance(item, dict):
+                    outer_matcher = item.get("matcher")
                     nested = item.get("hooks", [])
                     if isinstance(nested, list):
-                        result.extend(h for h in nested if isinstance(h, dict))
+                        for h in nested:
+                            if isinstance(h, dict):
+                                merged = dict(h)  # shallow copy
+                                if outer_matcher is not None and "matcher" not in merged:
+                                    merged["matcher"] = outer_matcher
+                                result.append(merged)
                     else:
                         result.append(item)
             return result
