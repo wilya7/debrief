@@ -58,6 +58,9 @@ def _unit(rel: str) -> Path:
 # BC-1.1  plugin.json manifest completeness
 # ---------------------------------------------------------------------------
 
+# BUG-AUDIT-6: skills, agents, hooks MUST NOT be top-level keys — Claude
+# Code auto-discovers those from default subdirectories, and the Zod schema
+# validator rejects string-path forms. BC-1.1.
 REQUIRED_PLUGIN_JSON_KEYS = {
     "name",
     "version",
@@ -65,9 +68,6 @@ REQUIRED_PLUGIN_JSON_KEYS = {
     "author",
     "license",
     "keywords",
-    "skills",
-    "agents",
-    "hooks",
 }
 
 
@@ -99,8 +99,21 @@ class TestPluginJsonManifestCompleteness:
         assert plugin_json["license"] == "Apache-2.0"
 
     def test_plugin_json_no_extra_top_level_keys(self, plugin_json: dict) -> None:
+        # BUG-AUDIT-6: catches regressions where skills/agents/hooks/commands
+        # are reintroduced as string paths (which fail Zod validation).
         extra = set(plugin_json.keys()) - REQUIRED_PLUGIN_JSON_KEYS
         assert extra == set(), f"Unexpected top-level keys: {extra}"
+
+    def test_plugin_json_author_is_object_with_name(self, plugin_json: dict) -> None:
+        # BUG-AUDIT-6: author must be an object with a name field, not a
+        # plain string. Claude Code's Zod schema rejects the string form.
+        author = plugin_json["author"]
+        assert isinstance(author, dict), (
+            f"BC-1.1 / BUG-AUDIT-6: author must be an object, got {type(author).__name__}."
+        )
+        assert "name" in author and isinstance(author["name"], str) and author["name"].strip(), (
+            "BC-1.1 / BUG-AUDIT-6: author must contain a non-empty `name` field."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -128,9 +141,6 @@ class TestSkillsDiscoveryPointer:
         path = _unit(".claude-plugin/plugin.json")
         with open(path, encoding="utf-8") as fh:
             return json.load(fh)
-
-    def test_skills_field_points_to_skills_directory(self, plugin_json: dict) -> None:
-        assert plugin_json["skills"] == "./skills/"
 
     def test_skills_directory_exists(self) -> None:
         assert _unit("skills").is_dir()
@@ -398,16 +408,7 @@ EXPECTED_AGENT_FILES = {
 
 
 class TestAgentsDiscoveryPointer:
-    """BC-1.3 — agents field points to ./agents/."""
-
-    @pytest.fixture(scope="class")
-    def plugin_json(self) -> dict:
-        path = _unit(".claude-plugin/plugin.json")
-        with open(path, encoding="utf-8") as fh:
-            return json.load(fh)
-
-    def test_agents_field_points_to_agents_directory(self, plugin_json: dict) -> None:
-        assert plugin_json["agents"] == "./agents/"
+    """BC-1.3 — agents/ directory at plugin root (auto-discovered; BUG-AUDIT-6)."""
 
     def test_agents_directory_exists(self) -> None:
         assert _unit("agents").is_dir()
@@ -586,13 +587,7 @@ class TestAgentFrontmatterStructure:
 
 
 class TestHooksPointerAndStructure:
-    """BC-1.4 — hooks field and hooks.json structure."""
-
-    @pytest.fixture(scope="class")
-    def plugin_json(self) -> dict:
-        path = _unit(".claude-plugin/plugin.json")
-        with open(path, encoding="utf-8") as fh:
-            return json.load(fh)
+    """BC-1.4 — hooks/hooks.json at plugin root (auto-discovered; BUG-AUDIT-6)."""
 
     @pytest.fixture(scope="class")
     def hooks_json(self) -> dict:
@@ -600,9 +595,6 @@ class TestHooksPointerAndStructure:
         assert path.exists(), f"hooks.json not found at {path}"
         with open(path, encoding="utf-8") as fh:
             return json.load(fh)
-
-    def test_hooks_field_points_to_hooks_hooks_json(self, plugin_json: dict) -> None:
-        assert plugin_json["hooks"] == "./hooks/hooks.json"
 
     def test_hooks_json_file_exists(self) -> None:
         assert _unit("hooks/hooks.json").exists()
