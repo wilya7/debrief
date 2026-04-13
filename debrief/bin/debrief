@@ -1,11 +1,154 @@
 #!/usr/bin/env bash
-# debrief — launcher script for the debrief plugin
-# Initializes the debrief environment and launches Claude Code with the plugin.
+# debrief — bootstrap + launcher for the Debrief plugin.
+#
+# Implements spec §24.4 (canonical invocation contract). This script is the
+# single entry point for all Debrief operations per spec §9.4 line 683.
+#
+# On first run it creates the `debrief` conda env from environment.yml,
+# installs the Python package, downloads Playwright's Chromium, and verifies
+# bundled vendor hashes before launching Claude Code with the plugin enabled.
+# On subsequent runs the marker files gate the expensive steps so activation
+# overhead is ~500ms.
+
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# ---------------------------------------------------------------------------
+# Resolve CLAUDE_PLUGIN_ROOT. Claude Code normally exports this; fall back to
+# the script's parent directory when invoked directly (e.g., during local
+# development or if the user put bin/ on PATH manually).
+# ---------------------------------------------------------------------------
+if [[ -z "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  CLAUDE_PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+  export CLAUDE_PLUGIN_ROOT
+fi
 
-export CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT"
+# ---------------------------------------------------------------------------
+# --rebuild-env branch (spec §24.4 "--rebuild-env branch"). Must run BEFORE
+# step 1 so that users can recover from a partially-broken env even if conda
+# activation would otherwise refuse. Uses DEBRIEF_REBUILD_DONE to prevent
+# infinite recursion when we re-exec to fall through into normal flow.
+# ---------------------------------------------------------------------------
+if [[ "${1:-}" == "--rebuild-env" ]]; then
+  if [[ "${DEBRIEF_REBUILD_DONE:-}" != "1" ]]; then
+    if ! command -v conda >/dev/null 2>&1; then
+      echo "ERROR: Debrief requires miniconda or mambaforge." >&2
+      echo "Install from https://docs.conda.io/en/latest/miniconda.html and retry." >&2
+      exit 1
+    fi
+    rm -f "${HOME}/.cache/debrief"/pkg_version_*.marker 2>/dev/null || true
+    if ! conda env remove -n debrief -y 2>/dev/null; then
+      echo "ERROR: Failed to remove the debrief conda env." >&2
+      echo "Run \`conda env remove -n debrief --force\` manually, then retry \`debrief --rebuild-env\`." >&2
+      exit 1
+    fi
+    DEBRIEF_REBUILD_DONE=1 exec "$0"
+  fi
+  shift || true
+fi
 
-exec claude --plugin-dir "$PLUGIN_ROOT" "$@"
+# ---------------------------------------------------------------------------
+# Step 1: conda detection.
+# ---------------------------------------------------------------------------
+if ! command -v conda >/dev/null 2>&1; then
+  echo "ERROR: Debrief requires miniconda or mambaforge." >&2
+  echo "Install from https://docs.conda.io/en/latest/miniconda.html and retry." >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Step 2: source conda's shell init so `conda activate` works in this script.
+# ---------------------------------------------------------------------------
+# shellcheck disable=SC1091
+source "$(conda info --base)/etc/profile.d/conda.sh"
+
+# ---------------------------------------------------------------------------
+# Step 3: env existence check. Step 4: env creation with partial-env cleanup.
+# ---------------------------------------------------------------------------
+if ! conda env list | awk '{print $1}' | grep -qx debrief; then
+  echo "First-run setup: creating the debrief conda environment (this takes 5-15 minutes)..."
+  if ! conda env create -f "${CLAUDE_PLUGIN_ROOT}/environment.yml" -n debrief; then
+    if ! conda env remove -n debrief -y 2>/dev/null; then
+      echo "Partial debrief env exists and could not be removed automatically." >&2
+      echo "Run \`conda env remove -n debrief --force\` manually, then retry \`debrief new\`." >&2
+      exit 1
+    fi
+    echo "ERROR: conda env creation failed. See output above for details." >&2
+    exit 1
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Step 5: activate the env.
+# ---------------------------------------------------------------------------
+if ! conda activate debrief 2>/dev/null; then
+  echo "ERROR: conda activate debrief failed." >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Step 5.5: post-activation smoke test (spec §9.3.1 standardized error).
+# Catches externally-modified or corrupted envs before any project state is
+# touched.
+# ---------------------------------------------------------------------------
+if ! python -c 'import playwright, pptx, fitz, json_repair' 2>/dev/null; then
+  echo "ERROR: debrief core dependencies (playwright, python-pptx, PyMuPDF, json-repair) are not importable in the debrief conda environment." >&2
+  echo "This indicates the environment is corrupt or was externally modified." >&2
+  echo "Recovery: run \`debrief --rebuild-env\` to recreate the environment from environment.yml." >&2
+  exit 2
+fi
+
+# ---------------------------------------------------------------------------
+# Step 6: package install marker check (keyed by plugin version).
+# ---------------------------------------------------------------------------
+PLUGIN_VERSION="$(python -c "import json; print(json.load(open('${CLAUDE_PLUGIN_ROOT}/.claude-plugin/plugin.json'))['version'])")"
+PKG_MARKER="${HOME}/.cache/debrief/pkg_version_${PLUGIN_VERSION}.marker"
+if [[ ! -f "$PKG_MARKER" ]]; then
+  mkdir -p "${HOME}/.cache/debrief"
+  if ! pip install -e "${CLAUDE_PLUGIN_ROOT}"; then
+    echo "ERROR: pip install -e failed. Run 'debrief --rebuild-env' to retry." >&2
+    exit 1
+  fi
+  touch "$PKG_MARKER"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 7: chromium install marker check. Marker lives inside CONDA_PREFIX so
+# destroying the env automatically invalidates it.
+# ---------------------------------------------------------------------------
+CHROMIUM_MARKER="${CONDA_PREFIX}/.debrief_chromium_installed"
+if [[ ! -f "$CHROMIUM_MARKER" ]]; then
+  if ! python -m playwright install chromium; then
+    echo "ERROR: playwright install chromium failed. Run 'debrief --rebuild-env' to retry." >&2
+    exit 1
+  fi
+  touch "$CHROMIUM_MARKER"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 8: vendor hash verification via the Python launcher's preflight entry
+# point. On mismatch, debrief.launcher.preflight exits 1 with the Section
+# 24.27 error message.
+# ---------------------------------------------------------------------------
+python -m debrief.launcher preflight
+
+# ---------------------------------------------------------------------------
+# Step 9: subcommand dispatch. Step 10: launch Claude Code with the plugin.
+# ---------------------------------------------------------------------------
+case "${1:-}" in
+  new)
+    python -m debrief.launcher new "$(pwd)"
+    exec claude --plugin "$CLAUDE_PLUGIN_ROOT"
+    ;;
+  "")
+    if [[ ! -f "$(pwd)/deck_state.json" ]]; then
+      echo "ERROR: No project found in the current directory. Run 'debrief new' to create one." >&2
+      exit 1
+    fi
+    exec claude --plugin "$CLAUDE_PLUGIN_ROOT"
+    ;;
+  *)
+    echo "Usage: debrief [new|--rebuild-env]" >&2
+    exit 1
+    ;;
+esac

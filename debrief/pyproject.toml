@@ -19,8 +19,10 @@ dependencies = [
     "json-repair>=0.25",
 ]
 
-[project.scripts]
-debrief = "debrief.launcher:main_new"
+# NOTE: Intentionally NO [project.scripts] entry.
+# bin/debrief is the single entry point (spec §9.4 line 683, BC-1.17). A
+# console_script shim installed by pip would bypass the conda bootstrap in
+# spec §24.4 and break first-run setup. See BUG-AUDIT-1.
 
 [tool.setuptools.packages.find]
 where = ["src"]
