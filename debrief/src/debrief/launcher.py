@@ -417,15 +417,30 @@ def _compute_state_hash(state_dict: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Entry point
+# Entry point — spec §24.4 steps 8 & 9 dispatch (BC-3.12).
 # ---------------------------------------------------------------------------
 
 
 def main_new() -> None:
-    """Entry point for ``python -m debrief.launcher new``."""
-    import os
+    """Entry point for ``python -m debrief.launcher [new|preflight]``.
 
-    plugin_root = Path(os.environ.get("CLAUDE_PLUGIN_ROOT", str(Path(__file__).parent.parent.parent)))
+    BC-3.12: three-arm dispatch on ``sys.argv[1]`` — ``preflight`` invokes
+    vendor-hash verification per spec §24.4 step 8; ``new`` initializes a
+    project per spec §24.4 step 9; any other value prints the usage message
+    and exits with code 1.
+
+    BC-3.11: the ``_require_json_repair()`` call below must remain the first
+    executable statement so that a corrupt env surfaces the Section 9.3.1
+    standardized error before any subcommand dispatch.
+    """
+    _require_json_repair()
+
+    plugin_root = Path(
+        os.environ.get(
+            "CLAUDE_PLUGIN_ROOT",
+            str(Path(__file__).parent.parent.parent),
+        )
+    )
     subcommand = sys.argv[1] if len(sys.argv) > 1 else ""
     project_root = Path(sys.argv[2]) if len(sys.argv) > 2 else Path.cwd()
 
@@ -435,7 +450,10 @@ def main_new() -> None:
         new(project_root=project_root)
     else:
         print(f"Unknown subcommand: {subcommand!r}", file=sys.stderr)
-        print("Usage: python -m debrief.launcher [new|preflight] [project_root]", file=sys.stderr)
+        print(
+            "Usage: python -m debrief.launcher [new|preflight] [project_root]",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
 
