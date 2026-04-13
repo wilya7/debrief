@@ -217,9 +217,16 @@ class TestBugAudit1BinDebriefBootstrap:
             "§24.4 --rebuild-env branch must delete pkg_version_*.marker files."
         )
 
-    def test_bin_debrief_launches_claude_with_plugin(self, bin_debrief_text: str) -> None:
-        assert 'exec claude --plugin "$CLAUDE_PLUGIN_ROOT"' in bin_debrief_text, (
-            "§24.4 step 10 requires `exec claude --plugin \"$CLAUDE_PLUGIN_ROOT\"` as the final launch."
+    def test_bin_debrief_launches_claude_with_plugin_dir(
+        self, bin_debrief_text: str
+    ) -> None:
+        # §24.4 step 10 / BC-1.16 / BUG-AUDIT-5: the correct Claude Code CLI
+        # flag is `--plugin-dir`, not `--plugin`. The pre-BUG-AUDIT-5 version
+        # of this test pinned the wrong string and hid a real bug.
+        assert 'exec claude --plugin-dir "$CLAUDE_PLUGIN_ROOT"' in bin_debrief_text, (
+            "§24.4 step 10 / BC-1.16 / BUG-AUDIT-5 requires "
+            "`exec claude --plugin-dir \"$CLAUDE_PLUGIN_ROOT\"` as the final launch. "
+            "The Claude Code CLI flag is --plugin-dir; --plugin is not a valid option."
         )
 
     def test_bin_debrief_is_executable(self) -> None:

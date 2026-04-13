@@ -201,14 +201,14 @@ python -m debrief.launcher preflight
 case "${1:-}" in
   new)
     python -m debrief.launcher new "$(pwd)"
-    exec claude --plugin "$CLAUDE_PLUGIN_ROOT"
+    exec claude --plugin-dir "$CLAUDE_PLUGIN_ROOT"
     ;;
   "")
     if [[ ! -f "$(pwd)/deck_state.json" ]]; then
       echo "ERROR: No project found in the current directory. Run 'debrief new' to create one." >&2
       exit 1
     fi
-    exec claude --plugin "$CLAUDE_PLUGIN_ROOT"
+    exec claude --plugin-dir "$CLAUDE_PLUGIN_ROOT"
     ;;
   *)
     echo "Usage: debrief [new|--rebuild-env]" >&2
