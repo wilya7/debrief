@@ -57,6 +57,10 @@ Thumbs.db
 deck_state.json
 debrief_state.json
 style_config.json
+# ...but keep the bundled canonical template shipped with the plugin
+# (BUG-AUDIT-13 / BC-6.11). This file is the Stylist agent's starting
+# skeleton and must be versioned alongside the rest of the plugin.
+!debrief/templates/style_config.json
 style_guide.md
 deck_brief.md
 ledger*.jsonl
