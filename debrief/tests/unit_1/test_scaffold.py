@@ -1642,6 +1642,31 @@ class TestPluginStructuralRequirements:
             "templates/project_claude.md template must exist for REQ-INIT-3"
         )
 
+    def test_project_claude_md_has_on_session_start_section(self) -> None:
+        # BC-3.6a / BUG-AUDIT-11: the rendered CLAUDE.md must instruct the
+        # consultant to read state files and dispatch on the first user turn,
+        # because Claude Code agents don't auto-emit messages before user
+        # input. The orchestration instructions live in a `## On Session Start`
+        # section at the top of the file.
+        template = _unit("templates/project_claude.md").read_text()
+        assert "## On Session Start" in template, (
+            "BC-3.6a / BUG-AUDIT-11: project_claude.md template must contain "
+            "a `## On Session Start` section with orchestration instructions."
+        )
+        assert "debrief_state.json" in template, (
+            "BC-3.6a / BUG-AUDIT-11: On Session Start section must reference "
+            "`debrief_state.json` so the consultant knows to read it."
+        )
+        assert "sub_phase" in template, (
+            "BC-3.6a / BUG-AUDIT-11: On Session Start section must reference "
+            "the `sub_phase` field for dispatch logic."
+        )
+        assert "discovery/greeting" in template, (
+            "BC-3.6a / BUG-AUDIT-11: On Session Start section must document "
+            "the `discovery/greeting` sub_phase dispatch that emits the "
+            "REQ-CONSULT-1 archetype greeting."
+        )
+
     def test_assets_vendor_directory_exists(self) -> None:
         assert _unit("assets/vendor").is_dir()
 

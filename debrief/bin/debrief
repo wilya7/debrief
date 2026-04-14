@@ -198,6 +198,18 @@ python -m debrief.launcher preflight
 # ---------------------------------------------------------------------------
 # Step 9: subcommand dispatch. Step 10: launch Claude Code with the plugin.
 # ---------------------------------------------------------------------------
+# BUG-AUDIT-11: print a user-visible greeting prompt before exec claude.
+# Claude Code agents don't auto-emit messages before user input, so the
+# user must type something to trigger the consultant's first-turn
+# greeting. Tell them to say "hi".
+_debrief_print_greeting_prompt() {
+  echo "" >&2
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
+  echo "  Debrief ready. When Claude Code opens, say 'hi' to begin." >&2
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
+  echo "" >&2
+}
+
 case "${1:-}" in
   new)
     # `debrief.launcher new` writes deck_state.json, debrief_state.json,
@@ -206,6 +218,7 @@ case "${1:-}" in
     # local marketplace and namespace its skills as /debrief:* — so we
     # `exec claude` with no flags.
     python -m debrief.launcher new "$(pwd)"
+    _debrief_print_greeting_prompt
     exec claude
     ;;
   "")
@@ -218,6 +231,7 @@ case "${1:-}" in
     # for projects whose settings file points at a stale debrief repo
     # path after the user moved the repo on disk). Idempotent.
     python -m debrief.launcher ensure_settings "$(pwd)"
+    _debrief_print_greeting_prompt
     exec claude
     ;;
   *)
