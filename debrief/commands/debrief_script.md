@@ -1,14 +1,6 @@
----
-name: script
-description: Generate a versioned presenter script from the current deck brief and slide records.
-user-invocable: true
-allowed-tools: Read, Write, Bash
-argument-hint: ""
----
-
 # /debrief:script
 
-Generate a speaker script for the current presentation.
+Generate a versioned presenter script from the current deck brief and slide records.
 
 ## Trigger
 

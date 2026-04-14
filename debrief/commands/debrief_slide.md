@@ -1,14 +1,6 @@
----
-name: slide
-description: Enter the slide authoring loop. Creates new slides or opens visual revision for existing ones.
-user-invocable: true
-allowed-tools: Read, Write, Edit, Bash
-argument-hint: "[slug]"
----
-
 # /debrief:slide
 
-Invoke the slide-maker agent to produce or revise a single slide.
+Enter the slide authoring loop. Creates new slides or opens visual revision for existing ones.
 
 ## Trigger
 

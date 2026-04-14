@@ -1,14 +1,6 @@
----
-name: reset
-description: Delete all project data files and return the project directory to its initial empty state.
-user-invocable: true
-allowed-tools: Read, Write, Bash
-argument-hint: ""
----
-
 # /debrief:reset
 
-Reset the current session state or restore from a backup checkpoint.
+Delete all project data files and return the project directory to its initial empty state.
 
 ## Trigger
 

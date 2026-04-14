@@ -1,14 +1,6 @@
----
-name: export
-description: Render the complete deck to a versioned PDF using Playwright.
-user-invocable: true
-allowed-tools: Read, Write, Bash
-argument-hint: ""
----
-
 # /debrief:export
 
-Export the approved slide deck to PPTX and/or PDF.
+Render the complete deck to a versioned PDF using Playwright.
 
 ## Trigger
 

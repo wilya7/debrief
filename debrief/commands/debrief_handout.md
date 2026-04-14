@@ -1,14 +1,6 @@
----
-name: handout
-description: Generate a versioned handout PDF with slide thumbnails and explanatory text.
-user-invocable: true
-allowed-tools: Read, Write, Bash
-argument-hint: "[2up|4up]"
----
-
 # /debrief:handout
 
-Generate a printable handout version of the presentation.
+Generate a versioned handout PDF with slide thumbnails and explanatory text.
 
 ## Trigger
 

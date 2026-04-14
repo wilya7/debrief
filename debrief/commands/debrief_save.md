@@ -1,14 +1,6 @@
----
-name: save
-description: Checkpoint the current deck state and ledger to a named snapshot.
-user-invocable: true
-allowed-tools: Read, Write, Bash
-argument-hint: "[label]"
----
-
 # /debrief:save
 
-Checkpoint the current deck state and create a backup snapshot.
+Checkpoint the current deck state and ledger to a named snapshot.
 
 ## Trigger
 

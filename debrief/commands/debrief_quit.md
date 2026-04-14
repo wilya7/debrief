@@ -1,14 +1,6 @@
----
-name: quit
-description: Save state, clean up transient artifacts, and exit the session cleanly.
-user-invocable: true
-allowed-tools: Read, Write, Bash
-argument-hint: ""
----
-
 # /debrief:quit
 
-End the current debrief session cleanly.
+Save state, clean up transient artifacts, and exit the session cleanly.
 
 ## Trigger
 

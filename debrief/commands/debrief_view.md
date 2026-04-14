@@ -1,14 +1,6 @@
----
-name: view
-description: Generate a query-driven HTML view of selected slides for visual inspection.
-user-invocable: true
-allowed-tools: Read, Write, Bash
-argument-hint: "[query]"
----
-
 # /debrief:view
 
-Open a live preview of one or more slides in the browser.
+Generate a query-driven HTML view of selected slides for visual inspection.
 
 ## Trigger
 

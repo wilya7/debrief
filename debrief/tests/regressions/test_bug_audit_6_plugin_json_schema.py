@@ -188,11 +188,15 @@ class TestBugAudit6PluginJsonSchema:
             f"BC-1.1: `version` must be a SemVer string, got {version!r}."
         )
 
-    def test_skills_agents_hooks_directories_exist_at_default_paths(self) -> None:
+    def test_commands_agents_hooks_directories_exist_at_default_paths(self) -> None:
+        # BUG-AUDIT-9: `commands/` replaced `skills/` as the canonical
+        # location for user-invocable slash commands. Debrief no longer
+        # ships a `skills/` directory (reserved for model-auto-invoked
+        # knowledge capabilities, not currently used).
         root = _plugin_root()
-        assert (root / "skills").is_dir(), (
-            "BC-1.2 / BUG-AUDIT-6: `skills/` directory must exist at the "
-            "plugin root for auto-discovery."
+        assert (root / "commands").is_dir(), (
+            "BC-1.2 / BUG-AUDIT-9: `commands/` directory must exist at the "
+            "plugin root for auto-discovery of namespaced slash commands."
         )
         assert (root / "agents").is_dir(), (
             "BC-1.3 / BUG-AUDIT-6: `agents/` directory must exist at the "

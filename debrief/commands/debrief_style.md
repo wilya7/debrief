@@ -1,14 +1,6 @@
----
-name: style
-description: Run the style dialog to co-design and lock the visual style for the deck.
-user-invocable: true
-allowed-tools: Read, Write, Edit, Bash
-argument-hint: ""
----
-
 # /debrief:style
 
-Configure and lock the visual style for this presentation.
+Run the style dialog to co-design and lock the visual style for the deck.
 
 ## Trigger
 

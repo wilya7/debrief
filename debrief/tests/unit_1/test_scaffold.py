@@ -117,157 +117,123 @@ class TestPluginJsonManifestCompleteness:
 
 
 # ---------------------------------------------------------------------------
-# BC-1.2  Skills discovery pointer
+# BC-1.2  Commands discovery pointer (BUG-AUDIT-9 — migrated from skills/)
 # ---------------------------------------------------------------------------
 
-EXPECTED_SKILL_SUBDIRS = {
-    "slide",
-    "style",
-    "export",
-    "save",
-    "view",
-    "reset",
-    "quit",
-    "script",
-    "handout",
+# Expected command file names at ./commands/. The `debrief_` prefix is
+# load-bearing: Claude Code uses it to namespace slash commands as
+# /debrief:<name>. See BUG-AUDIT-9 in the spec Bug Catalog.
+EXPECTED_COMMAND_FILES = {
+    "debrief_slide.md",
+    "debrief_style.md",
+    "debrief_export.md",
+    "debrief_save.md",
+    "debrief_view.md",
+    "debrief_reset.md",
+    "debrief_quit.md",
+    "debrief_script.md",
+    "debrief_handout.md",
+}
+
+# Expected command names (without the debrief_ prefix and .md extension).
+EXPECTED_COMMAND_NAMES = {
+    name[len("debrief_"):-len(".md")] for name in EXPECTED_COMMAND_FILES
 }
 
 
-class TestSkillsDiscoveryPointer:
-    """BC-1.2 — skills field points to ./skills/."""
+class TestCommandsDiscoveryPointer:
+    """BC-1.2 — commands/ auto-discovered as namespaced /debrief:<name>."""
 
-    @pytest.fixture(scope="class")
-    def plugin_json(self) -> dict:
-        path = _unit(".claude-plugin/plugin.json")
-        with open(path, encoding="utf-8") as fh:
-            return json.load(fh)
+    def test_commands_directory_exists(self) -> None:
+        assert _unit("commands").is_dir(), (
+            "BC-1.2 / BUG-AUDIT-9: plugin root must contain a commands/ directory."
+        )
 
-    def test_skills_directory_exists(self) -> None:
-        assert _unit("skills").is_dir()
+    def test_commands_directory_contains_exactly_nine_files(self) -> None:
+        commands_dir = _unit("commands")
+        actual = {p.name for p in commands_dir.iterdir() if p.is_file()}
+        assert actual == EXPECTED_COMMAND_FILES, (
+            f"BC-1.2 / BUG-AUDIT-9: commands/ must contain exactly {EXPECTED_COMMAND_FILES}, "
+            f"found {actual}"
+        )
 
-    def test_all_nine_skill_subdirectories_are_present(self) -> None:
+    @pytest.mark.parametrize("command_file", sorted(EXPECTED_COMMAND_FILES))
+    def test_command_file_exists(self, command_file: str) -> None:
+        path = _unit("commands") / command_file
+        assert path.exists() and path.is_file(), (
+            f"BC-1.2 / BUG-AUDIT-9: commands/{command_file} must exist as a flat file."
+        )
+
+    def test_skills_directory_does_not_exist_or_is_empty(self) -> None:
+        # BUG-AUDIT-9 negative sentinel: the old skills/<name>/SKILL.md
+        # layout must not coexist with the new commands/ layout. If skills/
+        # exists, it must be empty (no SKILL.md anywhere under it).
         skills_dir = _unit("skills")
-        actual = {p.name for p in skills_dir.iterdir() if p.is_dir()}
-        assert actual == EXPECTED_SKILL_SUBDIRS
-
-    @pytest.mark.parametrize("skill", sorted(EXPECTED_SKILL_SUBDIRS))
-    def test_each_skill_subdirectory_contains_exactly_one_skill_md(
-        self, skill: str
-    ) -> None:
-        skill_dir = _unit("skills") / skill
-        md_files = list(skill_dir.glob("SKILL.md"))
-        assert len(md_files) == 1, (
-            f"skills/{skill}/ must contain exactly one SKILL.md, found {len(md_files)}"
-        )
-
-    @pytest.mark.parametrize("skill", sorted(EXPECTED_SKILL_SUBDIRS))
-    def test_skill_subdirectory_contains_no_extra_files_beyond_skill_md(
-        self, skill: str
-    ) -> None:
-        skill_dir = _unit("skills") / skill
-        all_files = [p for p in skill_dir.iterdir() if p.is_file()]
-        assert len(all_files) == 1 and all_files[0].name == "SKILL.md", (
-            f"skills/{skill}/ must contain exactly SKILL.md, found: "
-            f"{[f.name for f in all_files]}"
+        if not skills_dir.exists():
+            return
+        skill_md_files = list(skills_dir.rglob("SKILL.md"))
+        assert not skill_md_files, (
+            f"BUG-AUDIT-9 regression: skills/ contains SKILL.md files: {skill_md_files}. "
+            f"User-invocable workflows must live in commands/debrief_<name>.md, not "
+            f"skills/<name>/SKILL.md. See BC-1.2."
         )
 
 
 # ---------------------------------------------------------------------------
-# BC-1.2a  SKILL.md frontmatter structural verification (per spec §5.1/§5.2)
+# BC-1.2  Command file structural verification (BUG-AUDIT-9)
 # ---------------------------------------------------------------------------
 
-# Exact per-skill frontmatter from spec §5.2 — verbatim field values.
-SKILL_FRONTMATTER_SPEC: dict[str, dict[str, Any]] = {
-    "slide": {
-        "name": "slide",
-        "description": (
-            "Enter the slide authoring loop. Creates new slides or opens visual"
-            " revision for existing ones."
-        ),
-        "user-invocable": True,
-        "allowed-tools": "Read, Write, Edit, Bash",
-        "argument-hint": "[slug]",
-    },
-    "style": {
-        "name": "style",
-        "description": (
-            "Run the style dialog to co-design and lock the visual style for the deck."
-        ),
-        "user-invocable": True,
-        "allowed-tools": "Read, Write, Edit, Bash",
-        "argument-hint": "",
-    },
-    "export": {
-        "name": "export",
-        "description": (
-            "Render the complete deck to a versioned PDF using Playwright."
-        ),
-        "user-invocable": True,
-        "allowed-tools": "Read, Write, Bash",
-        "argument-hint": "",
-    },
-    "save": {
-        "name": "save",
-        "description": (
-            "Checkpoint the current deck state and ledger to a named snapshot."
-        ),
-        "user-invocable": True,
-        "allowed-tools": "Read, Write, Bash",
-        "argument-hint": "[label]",
-    },
-    "view": {
-        "name": "view",
-        "description": (
-            "Generate a query-driven HTML view of selected slides for visual"
-            " inspection."
-        ),
-        "user-invocable": True,
-        "allowed-tools": "Read, Write, Bash",
-        "argument-hint": "[query]",
-    },
-    "reset": {
-        "name": "reset",
-        "description": (
-            "Delete all project data files and return the project directory to its"
-            " initial empty state."
-        ),
-        "user-invocable": True,
-        "allowed-tools": "Read, Write, Bash",
-        "argument-hint": "",
-    },
-    "quit": {
-        "name": "quit",
-        "description": (
-            "Save state, clean up transient artifacts, and exit the session cleanly."
-        ),
-        "user-invocable": True,
-        "allowed-tools": "Read, Write, Bash",
-        "argument-hint": "",
-    },
-    "script": {
-        "name": "script",
-        "description": (
-            "Generate a versioned presenter script from the current deck brief and"
-            " slide records."
-        ),
-        "user-invocable": True,
-        "allowed-tools": "Read, Write, Bash",
-        "argument-hint": "",
-    },
-    "handout": {
-        "name": "handout",
-        "description": (
-            "Generate a versioned handout PDF with slide thumbnails and explanatory"
-            " text."
-        ),
-        "user-invocable": True,
-        "allowed-tools": "Read, Write, Bash",
-        "argument-hint": "[2up|4up]",
-    },
-}
 
-# Required frontmatter fields per spec §5.1
-SKILL_REQUIRED_FIELDS = {"name", "description", "user-invocable", "allowed-tools", "argument-hint"}
+class TestCommandFileStructure:
+    """BC-1.2 — each commands/debrief_<name>.md is plain markdown with
+    no YAML frontmatter and a `# /debrief:<name>` H1 heading on the
+    first non-blank line."""
+
+    @pytest.mark.parametrize("command_file", sorted(EXPECTED_COMMAND_FILES))
+    def test_command_file_has_no_yaml_frontmatter(
+        self, command_file: str
+    ) -> None:
+        # BUG-AUDIT-9 negative sentinel: command files MUST NOT start with
+        # YAML frontmatter. The `---` delimiter is the canonical indicator
+        # of frontmatter; its presence at the top of a command file is a
+        # regression to the old SKILL.md format.
+        path = _unit("commands") / command_file
+        content = path.read_text(encoding="utf-8")
+        assert not content.startswith("---"), (
+            f"BC-1.2 / BUG-AUDIT-9: commands/{command_file} must NOT start with "
+            f"YAML frontmatter. Command files are plain markdown starting with a "
+            f"`# /debrief:<name>` heading."
+        )
+
+    @pytest.mark.parametrize("command_file", sorted(EXPECTED_COMMAND_FILES))
+    def test_command_file_first_heading_is_namespaced(
+        self, command_file: str
+    ) -> None:
+        path = _unit("commands") / command_file
+        content = path.read_text(encoding="utf-8")
+        first_nonblank = next(
+            (line for line in content.splitlines() if line.strip()),
+            "",
+        )
+        expected_name = command_file[len("debrief_"):-len(".md")]
+        expected_heading = f"# /debrief:{expected_name}"
+        assert first_nonblank.strip() == expected_heading, (
+            f"BC-1.2 / BUG-AUDIT-9: first non-blank line of commands/{command_file} "
+            f"must be `{expected_heading}`, got `{first_nonblank.strip()}`."
+        )
+
+    @pytest.mark.parametrize("command_file", sorted(EXPECTED_COMMAND_FILES))
+    def test_command_file_is_non_empty(self, command_file: str) -> None:
+        path = _unit("commands") / command_file
+        content = path.read_text(encoding="utf-8").strip()
+        assert len(content) > 0, (
+            f"BC-1.2 / BUG-AUDIT-9: commands/{command_file} must not be empty."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Shared helper (used by agent frontmatter tests below)
+# ---------------------------------------------------------------------------
 
 
 def _parse_frontmatter(path: Path) -> dict[str, Any]:
@@ -293,105 +259,6 @@ def _parse_frontmatter(path: Path) -> dict[str, Any]:
         f"Frontmatter in {path} did not parse as a YAML dict"
     )
     return parsed
-
-
-class TestSkillFrontmatterStructure:
-    """BC-1.2a / BC-1.3b — Each SKILL.md must start with '---\\n', contain a
-    closing '---', and the YAML block must contain all required fields with
-    exact values from spec §5.2."""
-
-    @pytest.mark.parametrize("skill", sorted(EXPECTED_SKILL_SUBDIRS))
-    def test_skill_md_starts_with_yaml_frontmatter_delimiter(
-        self, skill: str
-    ) -> None:
-        path = _unit("skills") / skill / "SKILL.md"
-        content = path.read_text(encoding="utf-8")
-        assert content.startswith("---\n"), (
-            f"skills/{skill}/SKILL.md must start with '---\\n' for Claude Code"
-            f" skill discovery; got: {content[:30]!r}"
-        )
-
-    @pytest.mark.parametrize("skill", sorted(EXPECTED_SKILL_SUBDIRS))
-    def test_skill_md_contains_closing_frontmatter_delimiter(
-        self, skill: str
-    ) -> None:
-        path = _unit("skills") / skill / "SKILL.md"
-        content = path.read_text(encoding="utf-8")
-        # After the opening '---\n', there must be a '\n---' closing line
-        rest = content[4:] if content.startswith("---\n") else content
-        assert "\n---" in rest, (
-            f"skills/{skill}/SKILL.md must contain a closing '---' delimiter"
-            f" to end the frontmatter block"
-        )
-
-    @pytest.mark.parametrize("skill", sorted(EXPECTED_SKILL_SUBDIRS))
-    def test_skill_md_frontmatter_parses_as_valid_yaml(self, skill: str) -> None:
-        path = _unit("skills") / skill / "SKILL.md"
-        # Will raise AssertionError on bad YAML
-        fm = _parse_frontmatter(path)
-        assert isinstance(fm, dict), (
-            f"skills/{skill}/SKILL.md frontmatter must parse as a YAML mapping"
-        )
-
-    @pytest.mark.parametrize("skill", sorted(EXPECTED_SKILL_SUBDIRS))
-    def test_skill_md_frontmatter_contains_all_required_fields(
-        self, skill: str
-    ) -> None:
-        path = _unit("skills") / skill / "SKILL.md"
-        fm = _parse_frontmatter(path)
-        missing = SKILL_REQUIRED_FIELDS - set(fm.keys())
-        assert missing == set(), (
-            f"skills/{skill}/SKILL.md frontmatter is missing required fields: {missing}"
-        )
-
-    @pytest.mark.parametrize("skill", sorted(EXPECTED_SKILL_SUBDIRS))
-    def test_skill_md_frontmatter_name_matches_spec(self, skill: str) -> None:
-        path = _unit("skills") / skill / "SKILL.md"
-        fm = _parse_frontmatter(path)
-        expected = SKILL_FRONTMATTER_SPEC[skill]["name"]
-        assert fm.get("name") == expected, (
-            f"skills/{skill}/SKILL.md frontmatter 'name' must be {expected!r},"
-            f" got {fm.get('name')!r}"
-        )
-
-    @pytest.mark.parametrize("skill", sorted(EXPECTED_SKILL_SUBDIRS))
-    def test_skill_md_frontmatter_description_matches_spec(self, skill: str) -> None:
-        path = _unit("skills") / skill / "SKILL.md"
-        fm = _parse_frontmatter(path)
-        expected = SKILL_FRONTMATTER_SPEC[skill]["description"]
-        assert fm.get("description") == expected, (
-            f"skills/{skill}/SKILL.md frontmatter 'description' must be"
-            f" {expected!r}, got {fm.get('description')!r}"
-        )
-
-    @pytest.mark.parametrize("skill", sorted(EXPECTED_SKILL_SUBDIRS))
-    def test_skill_md_frontmatter_user_invocable_is_true(self, skill: str) -> None:
-        path = _unit("skills") / skill / "SKILL.md"
-        fm = _parse_frontmatter(path)
-        assert fm.get("user-invocable") is True, (
-            f"skills/{skill}/SKILL.md frontmatter 'user-invocable' must be true,"
-            f" got {fm.get('user-invocable')!r}"
-        )
-
-    @pytest.mark.parametrize("skill", sorted(EXPECTED_SKILL_SUBDIRS))
-    def test_skill_md_frontmatter_allowed_tools_matches_spec(self, skill: str) -> None:
-        path = _unit("skills") / skill / "SKILL.md"
-        fm = _parse_frontmatter(path)
-        expected = SKILL_FRONTMATTER_SPEC[skill]["allowed-tools"]
-        assert fm.get("allowed-tools") == expected, (
-            f"skills/{skill}/SKILL.md frontmatter 'allowed-tools' must be"
-            f" {expected!r}, got {fm.get('allowed-tools')!r}"
-        )
-
-    @pytest.mark.parametrize("skill", sorted(EXPECTED_SKILL_SUBDIRS))
-    def test_skill_md_frontmatter_argument_hint_matches_spec(self, skill: str) -> None:
-        path = _unit("skills") / skill / "SKILL.md"
-        fm = _parse_frontmatter(path)
-        expected = SKILL_FRONTMATTER_SPEC[skill]["argument-hint"]
-        assert fm.get("argument-hint") == expected, (
-            f"skills/{skill}/SKILL.md frontmatter 'argument-hint' must be"
-            f" {expected!r}, got {fm.get('argument-hint')!r}"
-        )
 
 
 # ---------------------------------------------------------------------------
