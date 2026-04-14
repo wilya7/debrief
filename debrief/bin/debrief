@@ -200,15 +200,25 @@ python -m debrief.launcher preflight
 # ---------------------------------------------------------------------------
 case "${1:-}" in
   new)
+    # `debrief.launcher new` writes deck_state.json, debrief_state.json,
+    # the project CLAUDE.md, AND .claude/settings.json (BC-3.13). The
+    # settings file makes Claude Code load the debrief plugin via the
+    # local marketplace and namespace its skills as /debrief:* — so we
+    # `exec claude` with no flags.
     python -m debrief.launcher new "$(pwd)"
-    exec claude --plugin-dir "$CLAUDE_PLUGIN_ROOT"
+    exec claude
     ;;
   "")
     if [[ ! -f "$(pwd)/deck_state.json" ]]; then
       echo "ERROR: No project found in the current directory. Run 'debrief new' to create one." >&2
       exit 1
     fi
-    exec claude --plugin-dir "$CLAUDE_PLUGIN_ROOT"
+    # BC-3.13 / BUG-AUDIT-8: self-heal `.claude/settings.json` for
+    # projects created before the project-scoped settings mechanism (or
+    # for projects whose settings file points at a stale debrief repo
+    # path after the user moved the repo on disk). Idempotent.
+    python -m debrief.launcher ensure_settings "$(pwd)"
+    exec claude
     ;;
   *)
     echo "Usage: debrief [new|--rebuild-env]" >&2

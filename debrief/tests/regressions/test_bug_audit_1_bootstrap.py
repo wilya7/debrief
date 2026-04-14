@@ -217,16 +217,23 @@ class TestBugAudit1BinDebriefBootstrap:
             "§24.4 --rebuild-env branch must delete pkg_version_*.marker files."
         )
 
-    def test_bin_debrief_launches_claude_with_plugin_dir(
+    def test_bin_debrief_launches_claude_no_flags(
         self, bin_debrief_text: str
     ) -> None:
-        # §24.4 step 10 / BC-1.16 / BUG-AUDIT-5: the correct Claude Code CLI
-        # flag is `--plugin-dir`, not `--plugin`. The pre-BUG-AUDIT-5 version
-        # of this test pinned the wrong string and hid a real bug.
-        assert 'exec claude --plugin-dir "$CLAUDE_PLUGIN_ROOT"' in bin_debrief_text, (
-            "§24.4 step 10 / BC-1.16 / BUG-AUDIT-5 requires "
-            "`exec claude --plugin-dir \"$CLAUDE_PLUGIN_ROOT\"` as the final launch. "
-            "The Claude Code CLI flag is --plugin-dir; --plugin is not a valid option."
+        # §24.4 step 10 / BC-1.16 / BUG-AUDIT-8: the launch invocation is
+        # plain `exec claude` with NO flags. Claude Code auto-discovers the
+        # project-scoped `.claude/settings.json` (written by
+        # `ensure_project_settings`) and loads the debrief plugin via the
+        # marketplace mechanism, namespacing skills as `/debrief:*`.
+        # Historical note: BUG-AUDIT-5 pinned `--plugin-dir` here; that
+        # load path was retired by BUG-AUDIT-8 because it skipped
+        # marketplace registration and produced bare-named skills that
+        # collided with built-in `/export`, `/save`, `/quit`.
+        import re
+        assert re.search(r"\bexec claude\s*(?:\n|$)", bin_debrief_text, re.MULTILINE), (
+            "§24.4 step 10 / BC-1.16 / BUG-AUDIT-8 requires `exec claude` "
+            "(no flags) as the final launch. Claude Code auto-discovers "
+            "the project-scoped `.claude/settings.json`."
         )
 
     def test_bin_debrief_is_executable(self) -> None:

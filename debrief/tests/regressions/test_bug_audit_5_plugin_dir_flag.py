@@ -55,48 +55,66 @@ def bin_debrief_text() -> str:
 
 
 class TestBugAudit5PluginDirFlag:
-    """BC-1.16 step 10: `claude --plugin-dir` is the correct launch invocation."""
+    """BC-1.16 step 10: `claude` (no flags) is the launch invocation.
 
-    def test_bin_debrief_uses_plugin_dir_flag(self, bin_debrief_text: str) -> None:
-        # Positive: the full, exact invocation must appear at least once.
-        assert 'exec claude --plugin-dir "$CLAUDE_PLUGIN_ROOT"' in bin_debrief_text, (
-            "BC-1.16 step 10 / BUG-AUDIT-5 requires "
-            "`exec claude --plugin-dir \"$CLAUDE_PLUGIN_ROOT\"` as the launch "
-            "invocation in both the `new)` and bare `\"\"` arms of the step 9 "
-            "subcommand dispatch."
+    Inverted from the original BUG-AUDIT-5 form: BUG-AUDIT-8 retired the
+    `--plugin-dir` load path because it skipped marketplace registration
+    and produced bare-named skills that collided with built-in slash
+    commands. The launch is now plain `exec claude`; project-scoped
+    `.claude/settings.json` does the discovery.
+    """
+
+    def test_bin_debrief_uses_no_plugin_flag(self, bin_debrief_text: str) -> None:
+        # Positive: bare `exec claude` (no flags) must appear at least once
+        # in the dispatch. Match the form on its own line.
+        assert re.search(r"\bexec claude\s*(?:\n|$)", bin_debrief_text, re.MULTILINE), (
+            "BC-1.16 step 10 / BUG-AUDIT-8 requires plain `exec claude` "
+            "(no flags) as the launch invocation."
         )
 
     def test_bin_debrief_does_not_use_deprecated_plugin_flag(
         self, bin_debrief_text: str
     ) -> None:
-        # Negative sentinel: the bare `--plugin` flag (literal `--plugin`
-        # followed by a space, NOT `--plugin-dir`) must not appear anywhere.
-        # Use regex so `--plugin-dir` does not false-match. We look for
-        # `--plugin` followed by a whitespace character or end-of-string,
-        # which specifically excludes `--plugin-dir`, `--plugin-foo`, etc.
-        #
-        # This is the key regression guard: any edit that reverts to
-        # `exec claude --plugin ...` will fail here immediately.
+        # Negative sentinel preserved from the original BUG-AUDIT-5 fix:
+        # the bare `--plugin` flag (literal `--plugin` followed by a
+        # non-word character or EOL, NOT `--plugin-dir`) must not appear
+        # anywhere. Catches any edit that reverts to `exec claude --plugin ...`.
         deprecated_flag_pattern = re.compile(r"--plugin(?![-\w])")
         matches = deprecated_flag_pattern.findall(bin_debrief_text)
         assert not matches, (
             "BUG-AUDIT-5 regression: bin/debrief uses the deprecated bare "
-            "`--plugin` flag. The correct Claude Code CLI flag is "
-            "`--plugin-dir`. `--plugin` does not exist and produces "
-            "`error: unknown option '--plugin'` at launch. See BC-1.16 step 10."
+            "`--plugin` flag. `--plugin` does not exist as a Claude Code CLI "
+            "option and produces `error: unknown option '--plugin'` at launch."
         )
 
-    def test_plugin_dir_flag_appears_in_both_dispatch_arms(
+    def test_bin_debrief_does_not_use_plugin_dir_flag(
         self, bin_debrief_text: str
     ) -> None:
-        # The full launch invocation must appear exactly twice: once in the
-        # `new)` arm of the step 9 dispatch, and once in the bare `"")` arm.
-        # This locks the structural invariant so a future edit that only
-        # fixes one arm (or adds a third) fails the test.
-        count = bin_debrief_text.count('exec claude --plugin-dir "$CLAUDE_PLUGIN_ROOT"')
-        assert count == 2, (
-            f"BC-1.16 step 10: `exec claude --plugin-dir \"$CLAUDE_PLUGIN_ROOT\"` "
-            f"must appear exactly twice in bin/debrief (once in the `new)` arm "
-            f"and once in the bare `\"\"` arm of the step 9 subcommand dispatch). "
-            f"Found {count} occurrences."
+        # BUG-AUDIT-8 negative sentinel: the `--plugin-dir` flag was used
+        # by BUG-AUDIT-5 but retired by BUG-AUDIT-8 because it skipped
+        # marketplace registration and produced bare-named skills. The
+        # current architecture uses project-scoped `.claude/settings.json`
+        # for discovery, so `--plugin-dir` MUST NOT appear. Any edit that
+        # reverts to `exec claude --plugin-dir ...` fails here.
+        assert "--plugin-dir" not in bin_debrief_text, (
+            "BUG-AUDIT-8 regression: bin/debrief uses `--plugin-dir`. That "
+            "load path was retired because it skips marketplace registration "
+            "and produces bare-named skills that collide with built-in slash "
+            "commands. The current architecture uses project-scoped "
+            "`.claude/settings.json` (BC-3.13). See BUG-AUDIT-8."
+        )
+
+    def test_exec_claude_appears_in_both_dispatch_arms(
+        self, bin_debrief_text: str
+    ) -> None:
+        # The plain `exec claude` invocation must appear exactly twice: once
+        # in the `new)` arm and once in the bare `""` arm of step 9.
+        # Use regex on its own line to avoid matching `exec claude` inside
+        # comments or strings.
+        matches = re.findall(r"^\s*exec claude\s*$", bin_debrief_text, re.MULTILINE)
+        assert len(matches) == 2, (
+            f"BC-1.16 step 10: bare `exec claude` must appear exactly twice "
+            f"in bin/debrief (once in the `new)` arm and once in the bare "
+            f"`\"\"` arm of the step 9 subcommand dispatch). Found {len(matches)} "
+            f"occurrences."
         )

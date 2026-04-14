@@ -378,6 +378,70 @@ def new(project_root: Path, archetype: Optional[str] = None) -> None:
     if template_path.exists():
         render_project_claude_md(template_path, project_root, project_name)
 
+    # BC-3.13 / BUG-AUDIT-8: write project-scoped Claude Code settings so
+    # `claude` (without --plugin-dir) loads debrief from the local
+    # marketplace and namespaces its skills as /debrief:*.
+    ensure_project_settings(project_root, plugin_root)
+
+
+# ---------------------------------------------------------------------------
+# ensure_project_settings (BC-3.13, BUG-AUDIT-8)
+# ---------------------------------------------------------------------------
+
+
+def ensure_project_settings(project_root: Path, plugin_root: Path) -> None:
+    """Create or update `.claude/settings.json` for project-scoped plugin loading.
+
+    BC-3.13: idempotent helper that ensures Claude Code, when launched from
+    `project_root`, discovers the debrief plugin via the local marketplace
+    at `plugin_root.parent` and enables it. Writes only the
+    `extraKnownMarketplaces.debrief` and `enabledPlugins["debrief@debrief"]`
+    keys; preserves any unrelated keys already present in the file.
+
+    The `path` field on the marketplace entry is the absolute, symlink-
+    resolved path of `plugin_root.parent` — the directory containing
+    `.claude-plugin/marketplace.json`. Re-running with a different
+    `plugin_root` updates the path automatically (self-heal when the user
+    moves the debrief repo on disk).
+
+    On corrupt JSON or non-dict contents, silently starts over with an
+    empty dict to avoid blocking bin/debrief over a developer mistake.
+    """
+    settings_dir = project_root / ".claude"
+    settings_dir.mkdir(parents=True, exist_ok=True)
+    settings_path = settings_dir / "settings.json"
+
+    if settings_path.exists():
+        try:
+            data = json.loads(settings_path.read_text())
+            if not isinstance(data, dict):
+                data = {}
+        except json.JSONDecodeError:
+            data = {}
+    else:
+        data = {}
+
+    marketplace_root = str(plugin_root.parent.resolve())
+
+    extra = data.get("extraKnownMarketplaces")
+    if not isinstance(extra, dict):
+        extra = {}
+        data["extraKnownMarketplaces"] = extra
+    extra["debrief"] = {
+        "source": {
+            "source": "directory",
+            "path": marketplace_root,
+        }
+    }
+
+    enabled = data.get("enabledPlugins")
+    if not isinstance(enabled, dict):
+        enabled = {}
+        data["enabledPlugins"] = enabled
+    enabled["debrief@debrief"] = True
+
+    _atomic_write_json(settings_path, data)
+
 
 # ---------------------------------------------------------------------------
 # preflight (BC-3.8, BC-3.11)
@@ -448,10 +512,14 @@ def main_new() -> None:
         preflight(plugin_root)
     elif subcommand == "new":
         new(project_root=project_root)
+    elif subcommand == "ensure_settings":
+        # BC-3.13 / BUG-AUDIT-8: self-heal `.claude/settings.json` for an
+        # existing project (called from bin/debrief's bare-invocation arm).
+        ensure_project_settings(project_root, plugin_root)
     else:
         print(f"Unknown subcommand: {subcommand!r}", file=sys.stderr)
         print(
-            "Usage: python -m debrief.launcher [new|preflight] [project_root]",
+            "Usage: python -m debrief.launcher [new|preflight|ensure_settings] [project_root]",
             file=sys.stderr,
         )
         sys.exit(1)

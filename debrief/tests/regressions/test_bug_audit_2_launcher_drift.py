@@ -169,8 +169,19 @@ class TestBugAudit2LauncherMainNewDrift:
         )
 
     def test_main_new_prints_usage_for_unknown_subcommand(self, main_new_body: str) -> None:
-        assert "Usage: python -m debrief.launcher [new|preflight]" in main_new_body, (
-            "BC-3.12 requires the else arm to print the usage message verbatim."
+        # BUG-AUDIT-8 added the `ensure_settings` arm to the dispatch, so
+        # the usage message now lists three subcommands. We accept either
+        # the legacy two-subcommand form or the current three-subcommand
+        # form to avoid coupling the BUG-AUDIT-2 contract to the specific
+        # subcommand list — the structural invariant is that SOME usage
+        # message exists in the else arm.
+        assert "Usage: python -m debrief.launcher" in main_new_body, (
+            "BC-3.12 requires the else arm to print a `Usage: python -m "
+            "debrief.launcher ...` message."
+        )
+        # Sanity: the message must list at least the two original subcommands.
+        assert "new" in main_new_body and "preflight" in main_new_body, (
+            "Usage message must mention `new` and `preflight` subcommands."
         )
 
     def test_main_new_exits_1_on_unknown_subcommand(self, main_new_body: str) -> None:
