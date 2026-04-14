@@ -120,24 +120,26 @@ class TestPluginJsonManifestCompleteness:
 # BC-1.2  Commands discovery pointer (BUG-AUDIT-9 — migrated from skills/)
 # ---------------------------------------------------------------------------
 
-# Expected command file names at ./commands/. The `debrief_` prefix is
-# load-bearing: Claude Code uses it to namespace slash commands as
-# /debrief:<name>. See BUG-AUDIT-9 in the spec Bug Catalog.
+# Expected command file names at ./commands/. Filenames have NO plugin
+# prefix — the namespace `/debrief:` is added automatically by Claude
+# Code from the plugin manifest's `name` field. Adding a `debrief_`
+# prefix to the filename produces a double-prefixed invocation like
+# `/debrief:debrief_slide` (see BUG-AUDIT-10).
 EXPECTED_COMMAND_FILES = {
-    "debrief_slide.md",
-    "debrief_style.md",
-    "debrief_export.md",
-    "debrief_save.md",
-    "debrief_view.md",
-    "debrief_reset.md",
-    "debrief_quit.md",
-    "debrief_script.md",
-    "debrief_handout.md",
+    "slide.md",
+    "style.md",
+    "export.md",
+    "save.md",
+    "view.md",
+    "reset.md",
+    "quit.md",
+    "script.md",
+    "handout.md",
 }
 
-# Expected command names (without the debrief_ prefix and .md extension).
+# Expected command names (filenames without the .md extension).
 EXPECTED_COMMAND_NAMES = {
-    name[len("debrief_"):-len(".md")] for name in EXPECTED_COMMAND_FILES
+    name[:-len(".md")] for name in EXPECTED_COMMAND_FILES
 }
 
 
@@ -215,10 +217,10 @@ class TestCommandFileStructure:
             (line for line in content.splitlines() if line.strip()),
             "",
         )
-        expected_name = command_file[len("debrief_"):-len(".md")]
+        expected_name = command_file[:-len(".md")]
         expected_heading = f"# /debrief:{expected_name}"
         assert first_nonblank.strip() == expected_heading, (
-            f"BC-1.2 / BUG-AUDIT-9: first non-blank line of commands/{command_file} "
+            f"BC-1.2 / BUG-AUDIT-10: first non-blank line of commands/{command_file} "
             f"must be `{expected_heading}`, got `{first_nonblank.strip()}`."
         )
 

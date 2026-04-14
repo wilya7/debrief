@@ -56,19 +56,22 @@ def _plugin_root() -> Path:
 
 
 _EXPECTED_COMMAND_FILES = {
-    "debrief_slide.md",
-    "debrief_style.md",
-    "debrief_export.md",
-    "debrief_save.md",
-    "debrief_view.md",
-    "debrief_reset.md",
-    "debrief_quit.md",
-    "debrief_script.md",
-    "debrief_handout.md",
+    "slide.md",
+    "style.md",
+    "export.md",
+    "save.md",
+    "view.md",
+    "reset.md",
+    "quit.md",
+    "script.md",
+    "handout.md",
 }
 
 
-_COMMAND_FILE_NAME_PATTERN = re.compile(r"^debrief_[a-z]+\.md$")
+# BUG-AUDIT-10: filenames are bare <name>.md with NO plugin prefix.
+# Adding a `debrief_` prefix produces double-prefixed invocations like
+# `/debrief:debrief_slide`.
+_COMMAND_FILE_NAME_PATTERN = re.compile(r"^[a-z]+\.md$")
 
 
 # ---------------------------------------------------------------------------
@@ -95,16 +98,35 @@ class TestBugAudit9CommandsNamespacing:
             f"{sorted(_EXPECTED_COMMAND_FILES)}, found {sorted(actual)}."
         )
 
-    def test_command_files_use_plugin_prefix_naming(self) -> None:
+    def test_command_files_use_bare_filename(self) -> None:
+        # BUG-AUDIT-10: filenames must be <name>.md with no plugin prefix.
         commands_dir = _plugin_root() / "commands"
         for command_file in commands_dir.iterdir():
             if not command_file.is_file():
                 continue
             assert _COMMAND_FILE_NAME_PATTERN.match(command_file.name), (
-                f"BC-1.2 / BUG-AUDIT-9: command file {command_file.name} must "
-                f"match the `debrief_<name>.md` naming convention. The `debrief_` "
-                f"prefix is load-bearing for Claude Code's namespacing logic."
+                f"BC-1.2 / BUG-AUDIT-10: command file {command_file.name} must "
+                f"match the bare `<name>.md` naming convention. Filenames MUST "
+                f"NOT include a plugin prefix like `debrief_`; Claude Code "
+                f"prepends the namespace automatically from plugin.json."
             )
+
+    def test_no_command_files_have_plugin_name_prefix(self) -> None:
+        # BUG-AUDIT-10 negative sentinel: loading regression guard. Any
+        # file in commands/ whose name starts with `debrief_` produces a
+        # double-prefixed invocation like `/debrief:debrief_slide`.
+        commands_dir = _plugin_root() / "commands"
+        prefixed = [
+            p.name for p in commands_dir.iterdir()
+            if p.is_file() and p.name.startswith("debrief_")
+        ]
+        assert not prefixed, (
+            f"BUG-AUDIT-10 regression: command files with `debrief_` prefix "
+            f"found: {prefixed}. Claude Code prepends the `/debrief:` "
+            f"namespace automatically; adding a plugin prefix to the "
+            f"filename produces `/debrief:debrief_<name>` (double-prefixed). "
+            f"Rename to bare `<name>.md`."
+        )
 
     @pytest.mark.parametrize("command_file", sorted(_EXPECTED_COMMAND_FILES))
     def test_command_files_have_namespaced_heading(self, command_file: str) -> None:
@@ -114,10 +136,10 @@ class TestBugAudit9CommandsNamespacing:
             (line for line in content.splitlines() if line.strip()),
             "",
         )
-        expected_name = command_file[len("debrief_"):-len(".md")]
+        expected_name = command_file[:-len(".md")]
         expected_heading = f"# /debrief:{expected_name}"
         assert first_nonblank.strip() == expected_heading, (
-            f"BC-1.2 / BUG-AUDIT-9: commands/{command_file} must start with "
+            f"BC-1.2 / BUG-AUDIT-10: commands/{command_file} must start with "
             f"`{expected_heading}` as its first non-blank line. Got: "
             f"`{first_nonblank.strip()}`."
         )
