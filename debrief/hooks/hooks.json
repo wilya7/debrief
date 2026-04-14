@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/check-write-auth",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/check-write-auth\"",
             "timeout": 10
           }
         ]
