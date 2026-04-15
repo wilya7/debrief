@@ -42,7 +42,17 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
-# Path helpers — dual workspace/delivered layout, matching BUG-AUDIT-13/-14/-15.
+# Path helpers — resolve BOTH workspace AND delivered from either layout.
+#
+# Per CLAUDE.md "0 skipped, 0 failed" rule: no test may skip. When these
+# tests run from either layout, they reach across the sibling repo boundary
+# to resolve both paths. The expected sibling layout is:
+#
+#   <parent>/debrief1.0/               <- workspace
+#   <parent>/debrief1.0-repo/debrief/  <- delivered plugin
+#
+# If either sibling is absent, the resolver functions raise — that is a
+# hard failure (not a skip), flagging a broken development environment.
 # ---------------------------------------------------------------------------
 
 _REGRESSIONS_DIR = Path(__file__).resolve().parent
@@ -50,24 +60,67 @@ _TESTS_DIR = _REGRESSIONS_DIR.parent
 _PROJECT_ROOT = _TESTS_DIR.parent
 
 
+def _is_workspace_layout() -> bool:
+    """True when the current test run is anchored in the workspace repo."""
+    return (_PROJECT_ROOT / "src" / "unit_1").is_dir()
+
+
+def _workspace_root() -> Path:
+    """Return the workspace repo root regardless of which layout is current.
+
+    Raises ``FileNotFoundError`` if the workspace cannot be found on the
+    expected sibling path. Never skips — a missing workspace is a hard
+    environment error.
+    """
+    if _is_workspace_layout():
+        return _PROJECT_ROOT
+    # Running from delivered: workspace is a sibling of the delivered repo.
+    # _PROJECT_ROOT = debrief1.0-repo/debrief, so parent.parent.parent = <parent>.
+    candidate = _PROJECT_ROOT.parent.parent / "debrief1.0"
+    if (candidate / "src" / "unit_1").is_dir():
+        return candidate
+    raise FileNotFoundError(
+        f"Could not locate workspace root from {_PROJECT_ROOT}. "
+        f"Expected workspace at {candidate} (sibling of the delivered repo)."
+    )
+
+
+def _delivered_plugin_root() -> Path:
+    """Return the delivered plugin root regardless of current layout.
+
+    Raises ``FileNotFoundError`` if the delivered repo cannot be found.
+    Never skips.
+    """
+    if not _is_workspace_layout():
+        return _PROJECT_ROOT
+    # Running from workspace: delivered is a sibling debrief1.0-repo/debrief.
+    candidate = _PROJECT_ROOT.parent / "debrief1.0-repo" / "debrief"
+    if candidate.is_dir():
+        return candidate
+    raise FileNotFoundError(
+        f"Could not locate delivered plugin root from {_PROJECT_ROOT}. "
+        f"Expected delivered at {candidate} (sibling of the workspace)."
+    )
+
+
 def _workspace_vendor_dir() -> Path:
-    return _PROJECT_ROOT / "src" / "unit_1" / "assets" / "vendor"
+    return _workspace_root() / "src" / "unit_1" / "assets" / "vendor"
 
 
 def _delivered_vendor_dir() -> Path:
-    return _PROJECT_ROOT / "assets" / "vendor"
+    return _delivered_plugin_root() / "assets" / "vendor"
 
 
 def _vendor_dir_for_current_layout() -> Path:
-    """Pick whichever vendor dir is present under the current test layout."""
-    workspace = _workspace_vendor_dir()
-    delivered = _delivered_vendor_dir()
-    for candidate in (workspace, delivered):
-        if candidate.is_dir():
-            return candidate
-    raise FileNotFoundError(
-        f"Could not find vendor directory at {workspace} or {delivered}"
-    )
+    """Return the vendor dir that lives inside the current-layout repo.
+
+    When running from workspace, returns the workspace's vendor dir.
+    When running from delivered, returns the delivered's vendor dir.
+    Used by tests that validate the CURRENT repo's shipped artifacts.
+    """
+    if _is_workspace_layout():
+        return _workspace_vendor_dir()
+    return _delivered_vendor_dir()
 
 
 def _parse_versions(text: str) -> list[dict[str, str]]:
@@ -229,32 +282,18 @@ class TestBugAudit16VendorRealFiles:
 
 class TestBugAudit16VendorWorkspaceDeliveredParity:
     """BC-1.12a / BUG-AUDIT-16 — the vendor directory must be byte-identical
-    between workspace and delivered. This test only runs when BOTH layouts
-    are present on the same filesystem (i.e., when pytest is invoked from
-    the top-level workspace directory, not from the delivered repo alone).
+    between workspace and delivered. Per CLAUDE.md's 0-skipped rule, this
+    test always runs from both layouts by resolving both repo paths via
+    sibling discovery; a missing sibling is a hard environment error, not
+    a skip.
     """
 
-    @pytest.fixture(scope="class")
-    def both_vendor_dirs(self) -> tuple[Path, Path] | None:
+    def test_workspace_and_delivered_vendor_byte_equal(self) -> None:
         workspace = _workspace_vendor_dir()
-        # The delivered dir is at a sibling path, not under _PROJECT_ROOT.
-        delivered_repo = _PROJECT_ROOT.parent / "debrief1.0-repo" / "debrief"
-        delivered_vendor = delivered_repo / "assets" / "vendor"
-        if not workspace.is_dir() or not delivered_vendor.is_dir():
-            return None
-        return (workspace, delivered_vendor)
-
-    def test_workspace_and_delivered_vendor_byte_equal(
-        self, both_vendor_dirs: tuple[Path, Path] | None
-    ) -> None:
-        if both_vendor_dirs is None:
-            pytest.skip(
-                "BC-1.12a parity test requires both workspace and delivered "
-                "vendor directories to be present on the filesystem. Running "
-                "from only one of the two layouts; parity is still enforced "
-                "by the other direction's test suite."
-            )
-        workspace, delivered = both_vendor_dirs
+        delivered = _delivered_vendor_dir()
+        # Both helpers raise FileNotFoundError if their sibling is missing;
+        # that propagates as a test error (not a skip), flagging a broken
+        # development environment loudly per CLAUDE.md.
 
         # Collect relative paths under each vendor dir.
         ws_files = {p.relative_to(workspace) for p in workspace.rglob("*") if p.is_file()}
@@ -287,31 +326,18 @@ class TestBugAudit16VendorWorkspaceDeliveredParity:
 
 
 class TestBugAudit16FetchVendorScript:
-    """BC-3.15 / BUG-AUDIT-16 — the vendor acquisition script exists at the
-    workspace root and is a maintainer-only build step.
+    """BC-3.15 / BUG-AUDIT-16 — the vendor acquisition script exists at
+    the workspace root and is a maintainer-only build step (NOT shipped
+    inside the delivered plugin directory). Per CLAUDE.md's 0-skipped
+    rule, these tests resolve both the workspace and delivered locations
+    via sibling discovery and run unconditionally — no skips.
     """
 
-    def _is_workspace_layout(self) -> bool:
-        """True when the test is running from the workspace (has src/unit_*/
-        directories), False when running from the delivered repo (has
-        src/debrief/ instead). BC-3.15 intentionally keeps fetch_vendor.py
-        out of the delivered plugin, so this detection drives the skip.
-        """
-        return (_PROJECT_ROOT / "src" / "unit_1").is_dir()
-
     def test_fetch_vendor_script_exists_at_workspace_root(self) -> None:
-        # BC-3.15 pins fetch_vendor.py to the workspace root ONLY.
-        # Running from the delivered repo, the script is intentionally
-        # absent (it's a maintainer tool, not a runtime artifact), so
-        # this test skips. The negative assertion is handled separately
-        # by test_fetch_vendor_script_is_not_in_delivered_plugin.
-        if not self._is_workspace_layout():
-            pytest.skip(
-                "BC-3.15: running from delivered repo where "
-                "scripts/fetch_vendor.py is intentionally absent. "
-                "Existence is enforced when running from workspace."
-            )
-        script = _PROJECT_ROOT / "scripts" / "fetch_vendor.py"
+        # BC-3.15 pins fetch_vendor.py to the workspace root. The resolver
+        # _workspace_root() finds the workspace whether we are running
+        # from workspace or from the delivered repo's sibling position.
+        script = _workspace_root() / "scripts" / "fetch_vendor.py"
         assert script.is_file(), (
             f"BC-3.15 / BUG-AUDIT-16: scripts/fetch_vendor.py must exist "
             f"at the workspace root. Expected at: {script}."
@@ -320,12 +346,11 @@ class TestBugAudit16FetchVendorScript:
     def test_fetch_vendor_script_is_python_importable(self) -> None:
         # Confirm the file parses as a Python module — catches syntax
         # regressions that would silently break the acquisition step.
-        if not self._is_workspace_layout():
-            pytest.skip(
-                "BC-3.15: fetch_vendor.py is workspace-only; importability "
-                "is enforced when running from workspace."
-            )
-        script = _PROJECT_ROOT / "scripts" / "fetch_vendor.py"
+        script = _workspace_root() / "scripts" / "fetch_vendor.py"
+        assert script.is_file(), (
+            f"BC-3.15: fetch_vendor.py must exist before import check: "
+            f"{script}"
+        )
 
         spec = importlib.util.spec_from_file_location(
             "fetch_vendor_under_test", script
@@ -344,17 +369,11 @@ class TestBugAudit16FetchVendorScript:
             )
 
     def test_fetch_vendor_script_is_not_in_delivered_plugin(self) -> None:
-        # BC-3.15: the script is a maintainer build step and MUST NOT ship
-        # inside the plugin directory that gets installed to
-        # ~/.claude/plugins/cache/. It lives at the workspace scripts/ dir
-        # only.
-        delivered_repo = _PROJECT_ROOT.parent / "debrief1.0-repo" / "debrief"
-        delivered_script = delivered_repo / "scripts" / "fetch_vendor.py"
-        if not delivered_repo.is_dir():
-            pytest.skip(
-                "Delivered repo not present in this layout; the negative "
-                "assertion is trivially satisfied."
-            )
+        # BC-3.15 negative sentinel: the script is a maintainer build
+        # step and MUST NOT ship inside the delivered plugin directory
+        # (which gets installed to ~/.claude/plugins/cache/). The
+        # resolver finds the delivered plugin root from either layout.
+        delivered_script = _delivered_plugin_root() / "scripts" / "fetch_vendor.py"
         assert not delivered_script.exists(), (
             f"BC-3.15 / BUG-AUDIT-16: scripts/fetch_vendor.py must NOT be "
             f"shipped inside the delivered plugin directory at "
