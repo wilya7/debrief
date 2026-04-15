@@ -1,0 +1,111 @@
+/* Debrief handout stylesheet.
+ *
+ * Ink-efficient, grayscale, print-optimized. Independent of the main
+ * deck style (style_config.json / assets/style.css). Shipped as a
+ * first-class document under src/unit_11/handout.css and mirrored to
+ * the delivered plugin. Loaded by generate_layout_html via a sibling
+ * path read. See BC-11.9 and REQ-HAND-5.
+ *
+ * Design goals:
+ *   - Maximize content per page; minimize wasted ink.
+ *   - Grayscale: black text on white, light-gray neutral backgrounds.
+ *   - Classes only — no per-element inline styles in the rendered HTML
+ *     except where the Python layout logic injects slide-specific
+ *     sizing or image sources.
+ *   - Safe under Playwright's Chromium headless print pipeline.
+ */
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: #ffffff;
+  color: #111111;
+  font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+.page {
+  padding: 12mm 10mm;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6mm;
+  page-break-after: always;
+  align-content: flex-start;
+}
+
+.page:last-child {
+  page-break-after: auto;
+}
+
+.cell {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 2mm;
+}
+
+.cell.cell-2up {
+  width: 48%;
+}
+
+.cell.cell-4up {
+  width: 47%;
+}
+
+.cell img {
+  width: 100%;
+  max-width: 100%;
+  border: 0.3mm solid #808080;
+  display: block;
+}
+
+.cell .no-shot {
+  width: 100%;
+  height: 40mm;
+  background: #e8e8e8;
+  border: 0.3mm solid #808080;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #606060;
+  font-size: 9pt;
+}
+
+.slug {
+  font-family: "SF Mono", Consolas, "Liberation Mono", monospace;
+  font-size: 7pt;
+  color: #606060;
+  letter-spacing: -0.02em;
+}
+
+.title {
+  font-weight: 700;
+  font-size: 10pt;
+  line-height: 1.2;
+  color: #111111;
+}
+
+.notes {
+  color: #333333;
+  line-height: 1.25;
+}
+
+.notes-2up {
+  font-size: 8.5pt;
+}
+
+.notes-4up {
+  font-size: 7pt;
+}
+
+@media print {
+  html,
+  body {
+    background: #ffffff;
+  }
+  .page {
+    padding: 8mm 8mm;
+  }
+}

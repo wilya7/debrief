@@ -21,7 +21,6 @@ from typing import Any, Optional
 # Imports from Unit 2 (added to sys.path by conftest.py)
 # ---------------------------------------------------------------------------
 from debrief_state import (  # type: ignore[import]
-    increment_handout_count,
     increment_script_count,
     read_deck_state,
     read_debrief_state,
@@ -373,6 +372,33 @@ def main_script_generator(project_root: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+# BC-11.15 / REQ-HAND-5 / BUG-AUDIT-21: the handout uses its own
+# first-class stylesheet, not a derivative of style_config.json /
+# assets/style.css. The CSS file lives beside this module and is
+# loaded at render time via a sibling-path read.
+_HANDOUT_CSS_PATH = Path(__file__).resolve().parent / "handout.css"
+
+
+def _load_handout_css() -> str:
+    """Read src/unit_11/handout.css (or the delivered mirror).
+
+    BC-11.15: the stylesheet is a first-class document — edits happen
+    in the .css file, never in this Python module. A missing file is
+    a packaging defect, not a runtime fallback path, so we raise
+    FileNotFoundError with a clear message instead of silently using
+    an inline default.
+    """
+    if not _HANDOUT_CSS_PATH.is_file():
+        raise FileNotFoundError(
+            f"Missing handout.css at {_HANDOUT_CSS_PATH}. "
+            "The handout stylesheet is packaged next to utility_skills.py "
+            "in both the workspace (src/unit_11/) and the delivered "
+            "plugin (src/debrief/). Reinstall the plugin if this file "
+            "is missing."
+        )
+    return _HANDOUT_CSS_PATH.read_text(encoding="utf-8")
+
+
 def generate_layout_html(
     mode: str,
     slides: list[Any],
@@ -381,14 +407,20 @@ def generate_layout_html(
     """Generate the layout HTML combining slide screenshots and explanatory text.
 
     Mode '2up': two slides per page, detailed notes.
-    Mode '4up': four slides per page (2x2 grid), condensed notes.
-    Notes from content_summary fields, falling back to script if available.
+    Mode '4up': four slides per page, condensed notes.
+    Notes are read from each slide's content_summary field.
+
+    BC-11.15 / BUG-AUDIT-21: all visual styling lives in handout.css
+    and is referenced via CSS classes; this function emits class-based
+    markup only. No inline style attributes beyond dynamic image
+    sources.
     """
     import base64
 
     is_2up = mode == "2up"
-
     per_page = 2 if is_2up else 4
+    cell_class = "cell cell-2up" if is_2up else "cell cell-4up"
+    notes_class = "notes notes-2up" if is_2up else "notes notes-4up"
 
     def _img_b64(slug: str) -> Optional[str]:
         for ext in ("png", "jpg", "jpeg", "webp"):
@@ -399,56 +431,37 @@ def generate_layout_html(
                 return f"data:{mime};base64,{data}"
         return None
 
-    # Build pages
     pages: list[list[Any]] = []
     for i in range(0, max(len(slides), 1), per_page):
         pages.append(slides[i : i + per_page])
 
-    if is_2up:
-        slide_width = "45%"
-        notes_style = "font-size:0.85em;margin-top:4px;"
-    else:
-        slide_width = "22%"
-        notes_style = "font-size:0.7em;margin-top:2px;"
-
     body_parts: list[str] = []
-    for page_idx, page_slides in enumerate(pages):
-        page_style = (
-            "page-break-after:always;padding:16px;display:flex;flex-wrap:wrap;gap:16px;"
-        )
+    for page_slides in pages:
         cells = []
         for slide in page_slides:
             img_src = _img_b64(slide.slug)
             if img_src:
-                img_tag = (
-                    f'<img src="{img_src}" alt="{slide.slug}" '
-                    f'style="width:100%;max-width:100%;">'
-                )
+                img_tag = f'<img src="{img_src}" alt="{slide.slug}">'
             else:
-                img_tag = (
-                    '<div style="width:100%;height:120px;background:#eee;'
-                    "display:flex;align-items:center;"
-                    'justify-content:center;">[no screenshot]</div>'
-                )
+                img_tag = '<div class="no-shot">[no screenshot]</div>'
 
             notes = slide.content_summary or ""
             cell = (
-                f'<div style="width:{slide_width};box-sizing:border-box;">'
+                f'<div class="{cell_class}">'
                 f"{img_tag}"
-                f'<div style="font-family:monospace;font-size:0.75em;">'
-                f"{slide.slug}</div>"
-                f'<div style="font-weight:bold;font-size:0.85em;">'
-                f"{slide.title}</div>"
-                f'<div style="{notes_style}">{notes}</div>'
+                f'<div class="slug">{slide.slug}</div>'
+                f'<div class="title">{slide.title}</div>'
+                f'<div class="{notes_class}">{notes}</div>'
                 f"</div>"
             )
             cells.append(cell)
 
-        page_html = f'<div style="{page_style}">' + "".join(cells) + "</div>"
+        page_html = '<div class="page">' + "".join(cells) + "</div>"
         body_parts.append(page_html)
 
     body = "\n".join(body_parts)
     mode_label = "2-Up" if is_2up else "4-Up"
+    css = _load_handout_css()
 
     html = (
         "<!DOCTYPE html>\n"
@@ -457,8 +470,7 @@ def generate_layout_html(
         '<meta charset="utf-8">\n'
         f"<title>Debrief Handout ({mode_label})</title>\n"
         "<style>\n"
-        "body{font-family:sans-serif;margin:0;}\n"
-        "@media print{.page-break{page-break-after:always;}}\n"
+        f"{css}\n"
         "</style>\n"
         "</head>\n"
         "<body>\n"
@@ -475,38 +487,84 @@ def generate_layout_html(
 
 
 def main_handout(mode: str, project_root: Path) -> None:
-    """Entry point for: python -m debrief.handout --mode <2up|4up> ...
+    """Entry point for: python -m debrief.handout --mode <2up|4up>.
 
-    Use Playwright to render layout HTML to multi-page PDF.
-    Write output/<folder>/handout_v{NNN}.pdf. Increment handout_count.
-    Open one sync_playwright() session per invocation.
+    BUG-AUDIT-21: handout is an independent output channel.
+
+      - BC-11.16 precondition order: (1) deck_state.json must exist,
+        (2) at least one non-backup slide must be status="approved",
+        (3) playwright must be importable. Each check prints a
+        descriptive message to stderr and exits code 2 on failure.
+        The Playwright import is deliberately attempted LAST so a
+        missing-slides run does not report a misleading
+        environment-corruption error.
+      - BC-11.17 output path: output/handouts/handout_v{NNN}.pdf,
+        where NNN is filesystem-derived — we scan the directory for
+        existing ``handout_v*.pdf`` files and pick (max + 1). The
+        handout output is NOT routed through
+        deck_state.presentations and does NOT require a prior
+        /debrief:export. The output/handouts/ directory is created
+        on first invocation.
+      - BC-11.8 gate invariant: this function does NOT consume or
+        clear any pending gate in debrief_state.json.
+
+    Per BC-11.15 the rendered HTML uses handout.css (shipped beside
+    this module), which is optimized for print density and ink
+    efficiency. It does NOT read assets/style.css and does NOT
+    require style_locked.
     """
-    # BC-11.7: check playwright at entry
+    # BC-11.16 step (1): project must exist.
+    state_path = project_root / "deck_state.json"
+    if not state_path.is_file():
+        print(
+            "Cannot generate handout: no project found at "
+            f"{project_root} (deck_state.json missing). "
+            "Run 'debrief new' to create a project first.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    # BC-11.16 step (2): at least one approved non-backup slide.
+    deck_state = read_deck_state(project_root)
+    approved = [
+        s for s in deck_state.slides
+        if s.status == "approved" and not s.backup
+    ]
+    if not approved:
+        print(
+            "Cannot generate handout: no approved non-backup slides in "
+            f"{project_root}. Author slides with '/debrief:slide' and "
+            "approve at least one before retrying '/debrief:handout'.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    # BC-11.16 step (3) / BC-11.7: environment check.
     if importlib.util.find_spec("playwright") is None:
         print(_ENV_CORRUPTION_MSG, file=sys.stderr)
         sys.exit(2)
 
-    deck_state = read_deck_state(project_root)
-    pres = deck_state.presentations[-1]
-    folder = pres.folder
-    version = pres.handout_count + 1
-    handout_filename = f"handout_v{version:03d}.pdf"
+    # BC-11.17: filesystem-derived version in output/handouts/.
+    out_dir = project_root / "output" / "handouts"
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Get approved slides (non-backup for main deck)
-    approved = [s for s in deck_state.slides if s.status == "approved"]
+    existing_versions: list[int] = []
+    for existing in out_dir.glob("handout_v*.pdf"):
+        stem = existing.stem  # "handout_vNNN"
+        if stem.startswith("handout_v"):
+            suffix = stem[len("handout_v"):]
+            try:
+                existing_versions.append(int(suffix))
+            except ValueError:
+                continue
+    next_version = (max(existing_versions) + 1) if existing_versions else 1
+    handout_filename = f"handout_v{next_version:03d}.pdf"
+    out_path = out_dir / handout_filename
 
     html_content = generate_layout_html(mode, approved, project_root)
 
-    out_dir = project_root / "output" / folder
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / handout_filename
-
-    # Write a temporary HTML file for Playwright to render
-    tmp_html = out_dir / f"handout_{version:03d}_tmp.html"
+    tmp_html = out_dir / f"handout_{next_version:03d}_tmp.html"
     tmp_html.write_text(html_content, encoding="utf-8")
-
-    # Touch the output file so it exists even if playwright is mocked
-    out_path.touch()
 
     try:
         import playwright.sync_api as _pw_api  # type: ignore
@@ -523,11 +581,9 @@ def main_handout(mode: str, project_root: Path) -> None:
         if tmp_html.exists():
             tmp_html.unlink()
 
-    # BC-11.8: do NOT consume any pending gate
-
-    # Increment handout_count and write state
-    increment_handout_count(deck_state, folder)
-    write_deck_state(project_root, deck_state)
+    # BC-11.8: do NOT consume any pending gate. BC-11.17: no state
+    # writes — versioning is filesystem-derived, so deck_state.json
+    # is not mutated by a handout run.
 
     print(str(out_path), file=sys.stderr)
 

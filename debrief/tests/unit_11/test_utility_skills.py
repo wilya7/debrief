@@ -1036,7 +1036,13 @@ class TestGenerateScriptContent:
 
 
 class TestMainHandoutPlaywrightEnvCheck:
-    """Tests for BC-11.7: playwright import check at entry."""
+    """Tests for BC-11.7 / BC-11.16: playwright import check runs after
+    preconditions. BUG-AUDIT-21 amendment: the test setup now includes
+    approved slides so the flow reaches the playwright check; previously
+    the presence-of-presentations was the only setup, but BC-11.16
+    validates ``approved-slide availability`` first and the missing-
+    slides path would shadow the playwright signal under test.
+    """
 
     def test_main_handout_exits_code_2_when_playwright_is_unavailable(
         self,
@@ -1046,25 +1052,27 @@ class TestMainHandoutPlaywrightEnvCheck:
         """BC-11.7: Missing playwright → exit 2 with env-corruption message."""
         _write_deck_state(
             tmp_path,
-            presentations=[
-                {
-                    "folder": _FOLDER,
-                    "created_at": _TS,
-                    "slide_manifest": [],
-                    "export_count": 1,
-                    "script_count": 0,
-                    "handout_count": 0,
-                    "separator_position": None,
-                    "separator_content": None,
-                }
-            ],
+            slides=[_slide_dict("intro")],
+            presentations=[],
         )
         _write_debrief_state(tmp_path)
+
+        # BUG-AUDIT-21 note: capture the real find_spec BEFORE patching
+        # so non-playwright lookups pass through to the real
+        # implementation. Without this, the patched MagicMock calls
+        # back into itself on non-playwright names and recurses. The
+        # old test got away with it because the pre-BUG-AUDIT-21
+        # main_handout hit the playwright check first and returned
+        # before any non-playwright find_spec call was made. After
+        # the precondition reordering, main_handout reaches
+        # read_deck_state (which imports json_repair) before the
+        # playwright check, exposing the recursion bug.
+        _real_find_spec = importlib.util.find_spec
 
         def _fake_find_spec(name: str):
             if name == "playwright":
                 return None
-            return importlib.util.find_spec(name)
+            return _real_find_spec(name)
 
         with patch("importlib.util.find_spec", side_effect=_fake_find_spec):
             with pytest.raises(SystemExit) as exc_info:
@@ -1079,25 +1087,17 @@ class TestMainHandoutPlaywrightEnvCheck:
         """BC-11.7: The stderr message must reference the env-corruption context."""
         _write_deck_state(
             tmp_path,
-            presentations=[
-                {
-                    "folder": _FOLDER,
-                    "created_at": _TS,
-                    "slide_manifest": [],
-                    "export_count": 1,
-                    "script_count": 0,
-                    "handout_count": 0,
-                    "separator_position": None,
-                    "separator_content": None,
-                }
-            ],
+            slides=[_slide_dict("intro")],
+            presentations=[],
         )
         _write_debrief_state(tmp_path)
+
+        _real_find_spec = importlib.util.find_spec
 
         def _fake_find_spec2(name: str):
             if name == "playwright":
                 return None
-            return importlib.util.find_spec(name)
+            return _real_find_spec(name)
 
         with patch("importlib.util.find_spec", side_effect=_fake_find_spec2):
             with pytest.raises(SystemExit):
@@ -1109,68 +1109,16 @@ class TestMainHandoutPlaywrightEnvCheck:
         assert "playwright" in lower or "environment" in lower or "conda" in lower
 
 
-# ===========================================================================
-# BC-11.6 / REQ-HAND-4: handout version numbering
-# ===========================================================================
-
-
-class TestMainHandoutVersionNumbering:
-    """Tests for BC-11.6 handout_count+1 zero-padded versioning (REQ-HAND-4)."""
-
-    def _setup_tmp_for_handout(self, tmp_path: Path, handout_count: int = 0) -> None:
-        (tmp_path / "output").mkdir(exist_ok=True)
-        (tmp_path / "output" / _FOLDER).mkdir(exist_ok=True)
-        (tmp_path / "output" / "screenshots").mkdir(exist_ok=True)
-        _write_deck_state(
-            tmp_path,
-            slides=[_slide_dict("intro")],
-            presentations=[
-                {
-                    "folder": _FOLDER,
-                    "created_at": _TS,
-                    "slide_manifest": [],
-                    "export_count": 1,
-                    "script_count": 0,
-                    "handout_count": handout_count,
-                    "separator_position": None,
-                    "separator_content": None,
-                }
-            ],
-        )
-        _write_debrief_state(tmp_path)
-
-    def test_first_handout_creates_handout_v001_pdf(self, tmp_path: Path) -> None:
-        """BC-11.6 / REQ-HAND-4: First handout is handout_v001.pdf."""
-        self._setup_tmp_for_handout(tmp_path, handout_count=0)
-        mock_page = MagicMock()
-        mock_browser = MagicMock()
-        mock_browser.new_page.return_value = mock_page
-        mock_context = MagicMock()
-        mock_context.__enter__ = MagicMock(return_value=mock_context)
-        mock_context.__exit__ = MagicMock(return_value=False)
-        mock_pw = MagicMock()
-        mock_pw.chromium.launch.return_value = mock_browser
-        with patch("playwright.sync_api.sync_playwright") as mock_sync:
-            mock_sync.return_value.__enter__ = MagicMock(return_value=mock_pw)
-            mock_sync.return_value.__exit__ = MagicMock(return_value=False)
-            main_handout("2up", tmp_path)
-        expected = tmp_path / "output" / _FOLDER / "handout_v001.pdf"
-        assert expected.exists()
-
-    def test_second_handout_creates_handout_v002_pdf(self, tmp_path: Path) -> None:
-        """BC-11.6 / REQ-HAND-4: Second handout is handout_v002.pdf."""
-        self._setup_tmp_for_handout(tmp_path, handout_count=1)
-        mock_page = MagicMock()
-        mock_browser = MagicMock()
-        mock_browser.new_page.return_value = mock_page
-        mock_pw = MagicMock()
-        mock_pw.chromium.launch.return_value = mock_browser
-        with patch("playwright.sync_api.sync_playwright") as mock_sync:
-            mock_sync.return_value.__enter__ = MagicMock(return_value=mock_pw)
-            mock_sync.return_value.__exit__ = MagicMock(return_value=False)
-            main_handout("2up", tmp_path)
-        expected = tmp_path / "output" / _FOLDER / "handout_v002.pdf"
-        assert expected.exists()
+# BUG-AUDIT-21: the old ``TestMainHandoutVersionNumbering`` class was
+# deleted. It set up synthetic presentation records with a pre-set
+# ``handout_count`` and asserted the output path fell under
+# ``output/<presentation_folder>/handout_v{NNN}.pdf``. That path scheme
+# is gone per BC-11.17 — handout now writes to ``output/handouts/`` and
+# derives its version number by scanning the directory, not by reading
+# state. The equivalent coverage (plus several new cases — noise file
+# tolerance, max-existing-derivation, directory auto-creation, and real
+# %PDF magic byte verification) lives in
+# ``tests/regressions/test_bug_audit_21_handout_robustness.py``.
 
 
 # ===========================================================================
@@ -1788,32 +1736,58 @@ class TestMainViewWritesViewHtml:
 # ===========================================================================
 
 
+_FAKE_PDF_BYTES_FOR_PENDING_GATE_TESTS = (
+    b"%PDF-1.4\n"
+    b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+    b"2 0 obj\n<< /Type /Pages /Count 0 /Kids [] >>\nendobj\n"
+    b"xref\n0 3\n0000000000 65535 f\n0000000010 00000 n\n0000000053 00000 n\n"
+    b"trailer\n<< /Size 3 /Root 1 0 R >>\nstartxref\n100\n%%EOF\n"
+)
+
+
+def _fake_playwright_that_writes_bytes() -> MagicMock:
+    """Return a sync_playwright() mock whose page.pdf(path=...) writes
+    real %PDF bytes to the requested path. BUG-AUDIT-21: the old
+    MagicMock-with-touch hack is gone, so tests that don't want to
+    launch real Chromium must simulate page.pdf by writing bytes.
+    """
+
+    def _fake_page_pdf(path: str) -> None:
+        Path(path).write_bytes(_FAKE_PDF_BYTES_FOR_PENDING_GATE_TESTS)
+
+    mock_page = MagicMock()
+    mock_page.pdf.side_effect = _fake_page_pdf
+    mock_browser = MagicMock()
+    mock_browser.new_page.return_value = mock_page
+    mock_pw = MagicMock()
+    mock_pw.chromium.launch.return_value = mock_browser
+
+    mock_ctx = MagicMock()
+    mock_ctx.__enter__ = MagicMock(return_value=mock_pw)
+    mock_ctx.__exit__ = MagicMock(return_value=False)
+    return MagicMock(return_value=mock_ctx)
+
+
 class TestMainHandoutDoesNotConsumePendingGate:
-    """BC-11.8: /debrief:handout must not clear or modify pending_gate."""
+    """BC-11.8: /debrief:handout must not clear or modify pending_gate.
+
+    BUG-AUDIT-21 amendment: these tests were rewritten to match the
+    decoupled output path (BC-11.17) and to use a fake page.pdf that
+    writes real %PDF bytes instead of the old out_path.touch() hack.
+    """
 
     def _setup_handout(
         self,
         tmp_path: Path,
         pending_gate: Optional[str],
     ) -> None:
-        (tmp_path / "output").mkdir(exist_ok=True)
-        (tmp_path / "output" / _FOLDER).mkdir(exist_ok=True)
-        (tmp_path / "output" / "screenshots").mkdir(exist_ok=True)
+        # BUG-AUDIT-21: no presentation folder needed — handout writes to
+        # output/handouts/ which the function auto-creates. Screenshots
+        # directory also no longer required (fallback to [no screenshot]).
         _write_deck_state(
             tmp_path,
             slides=[_slide_dict("intro")],
-            presentations=[
-                {
-                    "folder": _FOLDER,
-                    "created_at": _TS,
-                    "slide_manifest": [],
-                    "export_count": 1,
-                    "script_count": 0,
-                    "handout_count": 0,
-                    "separator_position": None,
-                    "separator_content": None,
-                }
-            ],
+            presentations=[],
         )
         _write_debrief_state(
             tmp_path,
@@ -1828,16 +1802,10 @@ class TestMainHandoutDoesNotConsumePendingGate:
     ) -> None:
         """BC-11.8: pending_gate G4.6 must survive a main_handout call."""
         self._setup_handout(tmp_path, pending_gate="G4.6_handout_review")
-        mock_page = MagicMock()
-        mock_browser = MagicMock()
-        mock_browser.new_page.return_value = mock_page
-        mock_pw = MagicMock()
-        mock_pw.chromium.launch.return_value = mock_browser
-        with patch("playwright.sync_api.sync_playwright") as mock_sync:
-            mock_sync.return_value.__enter__ = MagicMock(
-                return_value=mock_pw
-            )
-            mock_sync.return_value.__exit__ = MagicMock(return_value=False)
+        with patch(
+            "playwright.sync_api.sync_playwright",
+            _fake_playwright_that_writes_bytes(),
+        ):
             main_handout("2up", tmp_path)
         state_data = json.loads(
             (tmp_path / "debrief_state.json").read_text()
@@ -1850,16 +1818,10 @@ class TestMainHandoutDoesNotConsumePendingGate:
     ) -> None:
         """BC-11.8: None pending_gate must remain None after main_handout."""
         self._setup_handout(tmp_path, pending_gate=None)
-        mock_page = MagicMock()
-        mock_browser = MagicMock()
-        mock_browser.new_page.return_value = mock_page
-        mock_pw = MagicMock()
-        mock_pw.chromium.launch.return_value = mock_browser
-        with patch("playwright.sync_api.sync_playwright") as mock_sync:
-            mock_sync.return_value.__enter__ = MagicMock(
-                return_value=mock_pw
-            )
-            mock_sync.return_value.__exit__ = MagicMock(return_value=False)
+        with patch(
+            "playwright.sync_api.sync_playwright",
+            _fake_playwright_that_writes_bytes(),
+        ):
             main_handout("2up", tmp_path)
         state_data = json.loads(
             (tmp_path / "debrief_state.json").read_text()
