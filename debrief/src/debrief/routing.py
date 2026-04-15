@@ -558,6 +558,28 @@ def main_update_state(
             # writer below.
         # Intentional fall-through to the generic state writer.
 
+    # BC-4.2 / BUG-AUDIT-20: G3.3 APPROVE triggers merge_approval_payload
+    # per spec §24.24. Prior to BUG-AUDIT-20 this branch was missing and
+    # the function fell through to the generic last_gate_response writer,
+    # leaving the slide record unchanged in deck_state.json and the
+    # approval payload file orphaned on disk after every slide approval.
+    # The structural defense is the same as BUG-AUDIT-19: explicit
+    # dispatch for any gate whose response triggers a side effect beyond
+    # last_gate_response persistence.
+    if gate_id == "G3.3_slide_review" and response == "APPROVE":
+        from debrief_state import _dict_to_debrief_state  # type: ignore
+        state = _dict_to_debrief_state(state_dict)
+        slug = state.current_slide_slug
+        if slug is None:
+            print(
+                "BC-4.2: G3.3 APPROVE without current_slide_slug — "
+                "state corruption.",
+                file=sys.stderr,
+            )
+            sys.exit(4)
+        merge_approval_payload(slug, project_root)
+        # Intentional fall-through to the generic state writer.
+
     # Generic state write for other gates: persist last_gate_response
     state_dict["last_gate_response"] = response
     state_dict["state_hash"] = compute_state_hash(state_dict)
