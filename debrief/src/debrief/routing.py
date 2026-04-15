@@ -738,8 +738,86 @@ def consume_gate_data(
 
 
 # ---------------------------------------------------------------------------
-# main_prepare helpers (BC-4.7, BC-4.8)
+# main_prepare helpers (BC-4.7, BC-4.7b, BC-4.8)
 # ---------------------------------------------------------------------------
+
+# Actions whose ACTION handler invokes the stylist agent. Derived from the
+# sub-phase routing table above — keep in sync if new stylist sub_phases are
+# added. BC-4.7b triggers prepare-time template injection for these actions.
+_STYLIST_ACTIONS: frozenset[str] = frozenset(
+    {"style/style_dialog", "style/style_lock"}
+)
+
+
+def _resolve_template_path(plugin_root: Path) -> Path:
+    """Locate the canonical style_config.json template for prepare injection.
+
+    BC-4.7b / BUG-AUDIT-14: tries ``plugin_root/templates/style_config.json``
+    first (the runtime path when ``CLAUDE_PLUGIN_ROOT`` is set by Claude
+    Code's agent invocation environment), then a path derived from
+    ``__file__`` (the fallback for test and offline contexts where
+    ``CLAUDE_PLUGIN_ROOT`` is not set). If neither candidate exists,
+    ``main_prepare`` treats that as a hard error rather than silently
+    omitting the Schema Starting Point section — the whole point of BC-4.7b
+    is that the schema is unconditionally present, so no silent fallback
+    is acceptable.
+    """
+    runtime = plugin_root / "templates" / "style_config.json"
+    if runtime.exists():
+        return runtime
+
+    # Fallback: when routing.py is imported from the workspace layout
+    # (src/unit_4/routing.py), the template lives at
+    # src/unit_1/templates/style_config.json. When imported from the
+    # delivered layout (src/debrief/routing.py), the template lives at
+    # templates/style_config.json relative to the plugin root, which may
+    # or may not match plugin_root above — try a couple of known shapes.
+    here = Path(__file__).resolve()
+    candidates = [
+        here.parent.parent / "unit_1" / "templates" / "style_config.json",
+        here.parent.parent.parent / "templates" / "style_config.json",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    return runtime  # the non-existent runtime path is returned so the
+    # caller's existence check can report the canonical expected location
+
+
+def _stylist_schema_section(plugin_root: Path) -> str:
+    """Return the ``## Schema Starting Point`` markdown section.
+
+    BC-4.7b / BUG-AUDIT-14: this section is prepended to the stylist's task
+    prompt so the schema is physically in front of the agent on turn zero,
+    without relying on the system-prompt instruction (BUG-AUDIT-13) that
+    tells the agent to ``Read()`` the template file. Belt-and-suspenders
+    over ``agents/stylist.md``. Hard-errors on missing template.
+    """
+    template_path = _resolve_template_path(plugin_root)
+    if not template_path.exists():
+        print(
+            f"ERROR: canonical style_config.json template not found at "
+            f"{template_path} (BC-4.7b / BUG-AUDIT-14). The stylist task "
+            f"prompt cannot be assembled without the Schema Starting Point "
+            f"section.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    template_text = template_path.read_text(encoding="utf-8").rstrip() + "\n"
+
+    header = "## Schema Starting Point"
+    explainer = (
+        "The canonical `style_config.json` starting skeleton is inlined "
+        "below. It contains all seven required top-level keys and all "
+        "twenty-six canonical CSS dot-paths per spec §24.16.1 and BC-6.11. "
+        "Fill in values through the style dialog — do NOT invent alternative "
+        "top-level keys such as `palette`, `geometry`, or `components`. See "
+        "BUG-AUDIT-13 for the failure mode this block is designed to prevent."
+    )
+    fenced = "```json\n" + template_text + "```"
+    return f"{header}\n\n{explainer}\n\n{fenced}\n"
 
 
 def main_prepare(action: str, project_root: Path) -> None:
@@ -749,9 +827,22 @@ def main_prepare(action: str, project_root: Path) -> None:
     action. Handles gate_data.json injection per Section 24.20 cross-cycle
     rule. Substitutes all {placeholder} values in gate prompt templates.
     Exits code 4 if gate_data.json gate_id mismatches expected gate_id.
+
+    For stylist-bound actions (``style/style_dialog``, ``style/style_lock``),
+    prepends the ``## Schema Starting Point`` section containing the
+    canonical ``templates/style_config.json`` as a JSON fenced code block,
+    per BC-4.7b / BUG-AUDIT-14.
     """
     plugin_root = Path(os.environ.get("CLAUDE_PLUGIN_ROOT", str(project_root)))
     content = assemble_task_prompt(action, [], project_root, plugin_root)
+
+    # BC-4.7b / BUG-AUDIT-14: prepend the stylist schema section for any
+    # action that routes to the stylist agent. Prepending (not appending)
+    # guarantees the schema appears before any other context so the agent's
+    # first user-message turn begins with a compiler-valid schema instance.
+    if action in _STYLIST_ACTIONS:
+        content = _stylist_schema_section(plugin_root) + "\n" + content
+
     prompt_path = project_root / ".debrief" / "task_prompt.md"
 
     tmp = prompt_path.parent / (prompt_path.name + ".tmp")
@@ -815,17 +906,3 @@ def substitute_gate_placeholders(
         )
         sys.exit(4)
     return result
-
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
-
-if __name__ == "__main__":
-    import argparse
-
-    _parser = argparse.ArgumentParser(description="Debrief routing engine")
-    _parser.add_argument("--project-root", required=True, help="Project root path")
-    _args = _parser.parse_args()
-    main_routing(project_root=Path(_args.project_root))
