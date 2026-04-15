@@ -1050,7 +1050,7 @@ class TestOneBrowserContextPerExport:
         """Drive main_export with a fully mocked Playwright session.
 
         Patches: importlib.util.find_spec (playwright present),
-        subprocess.run (compiler succeeds), debrief.state module,
+        subprocess.run (compiler succeeds), debrief_state module,
         playwright.sync_api.sync_playwright, and fitz (PyMuPDF).
         """
         from export import main_export
@@ -1110,7 +1110,7 @@ class TestOneBrowserContextPerExport:
                 "sys.modules",
                 {
                     "debrief": MagicMock(),
-                    "debrief.state": mock_state_module,
+                    "debrief_state": mock_state_module,
                     "playwright": MagicMock(),
                     "playwright.sync_api": MagicMock(
                         sync_playwright=MagicMock(
@@ -1247,7 +1247,7 @@ class TestPdfFileNamingFromPresentationRecord:
                 "sys.modules",
                 {
                     "debrief": MagicMock(),
-                    "debrief.state": mock_state_module,
+                    "debrief_state": mock_state_module,
                     "playwright": MagicMock(),
                     "playwright.sync_api": MagicMock(
                         sync_playwright=MagicMock(return_value=ctx_mgr)
@@ -1347,7 +1347,7 @@ class TestExportLogWrittenAfterPdf:
                 "sys.modules",
                 {
                     "debrief": MagicMock(),
-                    "debrief.state": mock_state_module,
+                    "debrief_state": mock_state_module,
                     "playwright": MagicMock(),
                     "playwright.sync_api": MagicMock(
                         sync_playwright=MagicMock(return_value=ctx_mgr)
@@ -1443,7 +1443,7 @@ class TestExportLogWrittenAfterPdf:
                 "sys.modules",
                 {
                     "debrief": MagicMock(),
-                    "debrief.state": mock_state_module,
+                    "debrief_state": mock_state_module,
                     "playwright": MagicMock(),
                     "playwright.sync_api": MagicMock(
                         sync_playwright=MagicMock(return_value=ctx_mgr)

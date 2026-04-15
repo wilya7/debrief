@@ -73,7 +73,12 @@ def main_export(project_root: Path) -> None:
 
     # Load state
     try:
-        from debrief.state import read_deck_state  # type: ignore[import]
+        # BC-10.X / BUG-AUDIT-18: the canonical module name is
+        # `debrief_state` (underscore), matching the actual filename
+        # src/debrief/debrief_state.py. Prior revisions of this file
+        # imported from the non-existent `debrief.state` path, which
+        # was masked by test_export.py mocking the same phantom key.
+        from debrief_state import read_deck_state  # type: ignore[import]
 
         state = read_deck_state(project_root)
     except Exception as exc:
@@ -180,7 +185,9 @@ def main_export(project_root: Path) -> None:
 
     # BC-10.5: Increment export_count and append log AFTER PDF is written
     try:
-        from debrief.state import (  # type: ignore[import]
+        # BC-10.X / BUG-AUDIT-18: see the note at the `read_deck_state`
+        # import above for the module-name fix history.
+        from debrief_state import (  # type: ignore[import]
             increment_export_count,
             write_deck_state,
         )
@@ -483,17 +490,3 @@ def append_export_log(
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
-
-if __name__ == "__main__":
-    import argparse
-
-    _parser = argparse.ArgumentParser(description="Debrief export module")
-    _parser.add_argument("--project-root", required=True, help="Project root path")
-    _args = _parser.parse_args()
-    main_export(project_root=Path(_args.project_root))
