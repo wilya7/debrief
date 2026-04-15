@@ -314,7 +314,12 @@ AGENT_FRONTMATTER_SPEC: dict[str, dict[str, Any]] = {
         ),
         "model": "claude-sonnet-4-6",
         "maxTurns": 20,
-        "tools": "Read, Write, Edit, Bash",
+        # BC-8.4 / BUG-AUDIT-17: `Task` was added to the slide-maker's
+        # tools list so it can spawn the visual-qa subagent as its final
+        # action before returning (replacing the broken type="agent"
+        # PostToolUse hook per BUG-AUDIT-12b). Do not remove `Task`
+        # without updating BC-8.4 and the BUG-AUDIT-17 regression tests.
+        "tools": "Read, Write, Edit, Bash, Task",
     },
     "visual-qa.md": {
         "name": "visual-qa",
@@ -524,24 +529,41 @@ class TestHooksPointerAndStructure:
             f"PostToolUse hook must match Write|Edit; found: {matchers}"
         )
 
-    def test_post_tool_use_hook_type_is_agent(self, hooks_json: dict) -> None:
+    def test_post_tool_use_hook_type_is_command_per_bug_audit_17(
+        self, hooks_json: dict
+    ) -> None:
+        # BC-1.4 / BUG-AUDIT-17 (supersedes BUG-AUDIT-7): the PostToolUse
+        # handler is type="command" invoking bin/qa-run-on-write. The
+        # prior type="agent" form was broken by Claude Code v2.1.107
+        # upstream (BUG-AUDIT-12b) and removed in BUG-AUDIT-17.
         post_hooks = _get_hooks_by_event(hooks_json, "PostToolUse")
         types = [h.get("type", h.get("hook_type", "")) for h in post_hooks]
-        assert any(t == "agent" for t in types), (
-            f"PostToolUse hook must have type 'agent'; found: {types}"
+        assert any(t == "command" for t in types), (
+            f"BC-1.4 / BUG-AUDIT-17: PostToolUse hook must have type "
+            f"'command'; found: {types}"
         )
 
-    def test_post_tool_use_hook_timeout_is_60(self, hooks_json: dict) -> None:
+    def test_post_tool_use_hook_timeout_per_bug_audit_17(
+        self, hooks_json: dict
+    ) -> None:
+        # BC-1.4 / BUG-AUDIT-17: timeout must be >= 60 (BUG-AUDIT-17
+        # bumped it to 120 for Playwright rendering inside qa_checker.py).
         post_hooks = _get_hooks_by_event(hooks_json, "PostToolUse")
         timeouts = [h.get("timeout") for h in post_hooks]
-        assert any(t == 60 for t in timeouts), (
-            f"PostToolUse hook timeout must be 60; found: {timeouts}"
+        assert any(t is not None and t >= 60 for t in timeouts), (
+            f"BC-1.4 / BUG-AUDIT-17: PostToolUse hook timeout must be "
+            f">= 60s; found: {timeouts}"
         )
 
-    def test_post_tool_use_hook_has_inline_prompt(self, hooks_json: dict) -> None:
+    def test_post_tool_use_hook_has_command_per_bug_audit_17(
+        self, hooks_json: dict
+    ) -> None:
+        # BC-1.4 / BUG-AUDIT-17: the command hook has a `command` field
+        # replacing the old agent hook's `prompt` field.
         post_hooks = _get_hooks_by_event(hooks_json, "PostToolUse")
-        assert any("prompt" in h or "inline_prompt" in h for h in post_hooks), (
-            "PostToolUse hook must have an inline prompt"
+        assert any("command" in h for h in post_hooks), (
+            "BC-1.4 / BUG-AUDIT-17: PostToolUse command hook must have "
+            "a `command` field."
         )
 
 

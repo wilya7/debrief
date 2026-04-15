@@ -175,9 +175,16 @@ class TestBugAudit7HooksJsonSchema:
             f"BC-1.4: PreToolUse timeout must be 10; got {handler.get('timeout')!r}."
         )
 
-    def test_post_tool_use_inner_hook_is_agent_type_with_inline_prompt(
+    def test_post_tool_use_inner_hook_is_command_type_per_bug_audit_17(
         self, hooks_data: dict
     ) -> None:
+        # BC-1.4 extended (BUG-AUDIT-17): the PostToolUse handler was
+        # originally type="agent" with an inline `prompt`. Claude Code
+        # v2.1.107 broke that form upstream with the "Messages are
+        # required for agent hooks" assertion (BUG-AUDIT-12b), and
+        # BUG-AUDIT-17 replaced it with a type="command" handler that
+        # invokes bin/qa-run-on-write. See spec §24.18 and Bug Catalog
+        # entry BUG-AUDIT-17 for the full architectural write-up.
         wrappers = hooks_data["hooks"]["PostToolUse"]
         write_edit_wrapper = next(
             (w for w in wrappers if w["matcher"] == "Write|Edit"), None
@@ -186,15 +193,23 @@ class TestBugAudit7HooksJsonSchema:
         inner_hooks = write_edit_wrapper["hooks"]
         assert len(inner_hooks) > 0, "PostToolUse Write|Edit wrapper has no inner hooks."
         handler = inner_hooks[0]
-        assert handler.get("type") == "agent", (
-            f"BC-1.4: PostToolUse inner hook must be type=agent; got {handler.get('type')!r}."
+        assert handler.get("type") == "command", (
+            f"BC-1.4 / BUG-AUDIT-17: PostToolUse inner hook must be "
+            f"type=command; got {handler.get('type')!r}. The prior "
+            f"type=agent form was broken by Claude Code v2.1.107 upstream."
         )
-        prompt = handler.get("prompt", "")
-        assert isinstance(prompt, str) and prompt.strip(), (
-            "BC-1.4: PostToolUse agent handler must have a non-empty inline `prompt`."
+        command = handler.get("command", "")
+        assert isinstance(command, str) and command.strip(), (
+            "BC-1.4 / BUG-AUDIT-17: PostToolUse command handler must have "
+            "a non-empty `command` field."
         )
-        assert handler.get("timeout") == 60, (
-            f"BC-1.4: PostToolUse timeout must be 60; got {handler.get('timeout')!r}."
+        assert "qa-run-on-write" in command, (
+            f"BC-1.4 / BUG-AUDIT-17: PostToolUse command must invoke "
+            f"bin/qa-run-on-write; got {command!r}."
+        )
+        assert handler.get("timeout", 0) >= 60, (
+            f"BC-1.4 / BUG-AUDIT-17: PostToolUse timeout must be >= 60s "
+            f"for Playwright rendering; got {handler.get('timeout')!r}."
         )
 
     def test_hooks_json_loads_without_claude_code_zod_error(

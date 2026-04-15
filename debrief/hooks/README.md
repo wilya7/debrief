@@ -46,3 +46,13 @@ The PreToolUse command references `${CLAUDE_PLUGIN_ROOT}/bin/check-write-auth` w
 The `\"` characters are load-bearing: when `${CLAUDE_PLUGIN_ROOT}` expands to a path containing whitespace (e.g., `/Users/cfusco/Nextcloud/coding projects/debrief1.0/debrief1.0-repo/debrief`), the quoted form ensures the shell treats the full path as a single token. Without the quotes, `sh` splits on whitespace and reports `/bin/sh: /Users/cfusco/Nextcloud/coding: No such file or directory`. See BC-1.4 and BUG-AUDIT-12a in the spec Bug Catalog.
 
 **Do not remove the escaped quotes** in a future refactor without updating the regression test at `tests/regressions/test_bug_audit_12_hook_path_quoting.py` and documenting the decision. The negative sentinel test will fail loudly if anyone drops the quotes.
+
+## BUG-AUDIT-12b closed as of BUG-AUDIT-17 (Debrief v1.2)
+
+The `type: "agent"` PostToolUse handler documented earlier in this file as "broken upstream in Claude Code v2.1.107+" was **removed entirely** in BUG-AUDIT-17. It has been replaced with a `type: "command"` PostToolUse handler that invokes `bin/qa-run-on-write`, a Python wrapper that shells out to `python -m debrief.qa_checker` for Tier 1 programmatic QA (INV-04, INV-06, INV-07, INV-08, INV-10, plus the other deterministic invariants from spec §24.22). The command hook is synchronous and deterministic — no LLM involvement, no v2.1.107 "Messages are required" cosmetic errors.
+
+Tier 2 VLM review (VETO-01..07 and the visual-quality invariants that require vision) is now dispatched by the slide-maker agent via a `Task` tool call as its absolute final action before returning from its turn (BC-8.4). The slide-maker's agent prompt (`agents/slide-maker.md`) contains a load-bearing "you MUST invoke visual-qa" instruction that replaces the defunct hook-based dispatch.
+
+**Consequence for the v2.1.107 upstream regression.** Debrief no longer uses any `type: "agent"` hooks anywhere in `hooks.json`. The Claude Code hook-runner regression for agent hooks is therefore no longer relevant to debrief; users running v2.1.107+ will no longer see the cosmetic *"Messages are required for agent hooks. This is a bug."* error during `/debrief:slide` sessions. If Claude Code upstream fixes the regression in a future release, debrief will NOT reintroduce agent hooks — the command-hook + slide-maker Task architecture is strictly superior (deterministic Tier 1, prompt-level Tier 2, no upstream version dependency).
+
+See `spec/stakeholder_spec.md` §24.18 and Bug Catalog entry BUG-AUDIT-17 for the full architectural write-up.

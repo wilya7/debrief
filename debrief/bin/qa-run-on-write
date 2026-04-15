@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Carlo Fusco and Leonardo Restivo
+"""PostToolUse command hook: run Tier 1 QA on slide writes.
+
+BC-1.4 / BUG-AUDIT-17. Reads a Claude Code tool-invocation JSON from
+stdin, extracts ``tool_input.file_path``, and — if and only if the
+written path matches ``slides/*.html`` — invokes
+``python -m debrief.qa_checker`` as a subprocess to run Tier 1
+programmatic checks and append a qa_log.jsonl entry. Non-slide writes
+are ignored silently.
+
+This wrapper is the `type: "command"` PostToolUse dispatch that
+replaced the broken `type: "agent"` hook in BUG-AUDIT-17 (see
+BUG-AUDIT-12b for the v2.1.107 upstream regression that motivated
+the switch). The Tier 1 coverage it provides is fully deterministic:
+Claude Code's hook runtime fires this script synchronously on every
+matching Write/Edit, and the script invokes qa_checker.py with no
+LLM discretion. Tier 2 VLM coverage is handled separately by the
+slide-maker agent's Task dispatch to visual-qa per BC-8.4.
+
+Exit codes:
+    0 — success, or non-slide write (no-op), or qa_checker failure.
+        PostToolUse hooks MUST NOT block Write/Edit operations per
+        spec section 7.3, so this script always exits 0 even when
+        qa_checker fails — failures are reported to stderr and to
+        qa_log.jsonl, but the parent Write/Edit succeeds regardless.
+"""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+from typing import Optional
+
+
+def _extract_slide_path(hook_input: dict) -> Optional[Path]:
+    """Return the written file path if it is a ``slides/*.html`` file.
+
+    Accepts both relative paths (``slides/intro.html``) and absolute
+    paths that contain a ``slides/`` segment and end in ``.html``.
+    Returns ``None`` for any non-slide write (empty path, wrong
+    extension, non-slides directory).
+    """
+    tool_input = hook_input.get("tool_input", {})
+    raw = tool_input.get("file_path", "")
+    if not raw or not isinstance(raw, str):
+        return None
+    p = Path(raw)
+    if p.suffix != ".html":
+        return None
+    if "slides" not in p.parts:
+        return None
+    return p
+
+
+def main() -> int:
+    try:
+        raw_input = sys.stdin.read()
+        hook_input = json.loads(raw_input) if raw_input else {}
+    except json.JSONDecodeError:
+        # Malformed input is not our concern; do not block the Write.
+        return 0
+
+    slide_path = _extract_slide_path(hook_input)
+    if slide_path is None:
+        return 0  # non-slide write; no-op
+
+    # Resolve project root. Prefer CLAUDE_PROJECT_ROOT env var if set;
+    # otherwise fall back to the current working directory (Claude
+    # Code hooks run with CWD set to the project directory).
+    project_root = Path(os.environ.get("CLAUDE_PROJECT_ROOT", os.getcwd()))
+
+    slug = slide_path.stem
+    screenshot_path = project_root / "output" / "screenshots" / f"{slug}.png"
+
+    # Normalize slide_path to absolute under project_root if it was relative.
+    if not slide_path.is_absolute():
+        slide_path = project_root / slide_path
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "debrief.qa_checker",
+        "--slide-path",
+        str(slide_path),
+        "--screenshot-path",
+        str(screenshot_path),
+        "--project-root",
+        str(project_root),
+    ]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        print(
+            "qa-run-on-write: qa_checker timed out after 120s",
+            file=sys.stderr,
+        )
+        return 0
+    except Exception as exc:
+        print(
+            f"qa-run-on-write: qa_checker spawn failed: {exc}",
+            file=sys.stderr,
+        )
+        return 0
+
+    if result.returncode != 0:
+        print(
+            f"qa-run-on-write: qa_checker exited {result.returncode}: "
+            f"{result.stderr.strip()}",
+            file=sys.stderr,
+        )
+
+    # Always return 0 — PostToolUse hooks must not block Write/Edit
+    # operations per spec section 7.3. QA failures are reported via
+    # qa_log.jsonl which downstream code reads at red-green decision time.
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

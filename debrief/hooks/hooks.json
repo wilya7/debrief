@@ -17,9 +17,9 @@
         "matcher": "Write|Edit",
         "hooks": [
           {
-            "type": "agent",
-            "prompt": "A file was just written or edited. Review the change and verify it is consistent with the current slide deck state, design conventions, and any active style constraints. If anything looks inconsistent, report it briefly.",
-            "timeout": 60
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/qa-run-on-write\"",
+            "timeout": 120
           }
         ]
       }

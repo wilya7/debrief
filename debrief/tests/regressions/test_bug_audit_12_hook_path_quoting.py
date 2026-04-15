@@ -126,34 +126,41 @@ class TestBugAudit12HookPathQuoting:
             "path token after variable expansion. See BC-1.4 and BUG-AUDIT-12a."
         )
 
-    def test_post_tool_use_agent_hook_still_uses_prompt_field(
+    def test_post_tool_use_uses_command_type_not_agent_per_bug_audit_17(
         self, hooks_data: dict
     ) -> None:
-        # BC-1.4 / BUG-AUDIT-12b: the PostToolUse agent hook must retain
-        # the documented `prompt` field. Claude Code v2.1.107 has a regression
-        # in its hook runner that raises "Messages are required for agent
-        # hooks. This is a bug." even though the documented schema at
-        # code.claude.com/docs/en/hooks.md requires only `prompt`. Do NOT
-        # "fix" the error by replacing `prompt` with an undocumented
-        # `messages` field — that would be a guess at a schema that is not
-        # published, and risks future breakage if Claude Code tightens
-        # validation.
+        # BC-1.4 / BUG-AUDIT-17 (supersedes BUG-AUDIT-12b): the PostToolUse
+        # handler was originally type="agent" with a `prompt` field. Claude
+        # Code v2.1.107 broke that hook upstream with the "Messages are
+        # required for agent hooks" assertion error (BUG-AUDIT-12b). The
+        # broken hook was left in place through Debrief v1.1 with a README
+        # note. In BUG-AUDIT-17 the agent-type handler was removed entirely
+        # and replaced with a type="command" handler that invokes
+        # bin/qa-run-on-write, a Python wrapper that shells out to
+        # qa_checker.py for Tier 1 programmatic QA. Tier 2 VLM review is
+        # dispatched by the slide-maker agent's Task call per BC-8.4.
+        # See spec §24.18 and Bug Catalog entry BUG-AUDIT-17 for the full
+        # architectural write-up.
         post_wrappers = hooks_data["hooks"]["PostToolUse"]
         assert len(post_wrappers) >= 1, (
             "BC-1.4: PostToolUse matcher wrapper is missing."
         )
         handler = post_wrappers[0]["hooks"][0]
-        assert handler["type"] == "agent", (
-            "BC-1.4: PostToolUse inner hook must be type=agent per spec §7.3."
+        assert handler["type"] == "command", (
+            "BC-1.4 / BUG-AUDIT-17: PostToolUse inner hook must be "
+            "type=command. The prior type=agent form was broken by Claude "
+            "Code v2.1.107 upstream (BUG-AUDIT-12b) and was replaced in "
+            "BUG-AUDIT-17 with a command-type handler that invokes "
+            "bin/qa-run-on-write. See spec §24.18 and BUG-AUDIT-17."
         )
-        assert "prompt" in handler and isinstance(handler["prompt"], str), (
-            "BC-1.4 / BUG-AUDIT-12b: PostToolUse agent hook must use the "
-            "documented `prompt` field. The v2.1.107 'Messages are required' "
-            "error is a Claude Code upstream regression, not a plugin bug. "
-            "See hooks/README.md and spec BUG-AUDIT-12b."
+        assert "prompt" not in handler, (
+            "BC-1.4 / BUG-AUDIT-17: PostToolUse handler must NOT have a "
+            "`prompt` field — that is an agent-type handler property. The "
+            "command-type handler uses `command` instead."
         )
-        assert handler["prompt"].strip(), (
-            "BC-1.4: PostToolUse prompt must be non-empty."
+        assert "command" in handler and isinstance(handler["command"], str), (
+            "BC-1.4 / BUG-AUDIT-17: PostToolUse command-type handler must "
+            "have a non-empty `command` string field."
         )
 
 
