@@ -13,7 +13,8 @@ import os
 import shutil
 import subprocess
 import sys
-from datetime import datetime, timezone
+import re
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -738,7 +739,7 @@ def consume_gate_data(
 
 
 # ---------------------------------------------------------------------------
-# main_prepare helpers (BC-4.7, BC-4.7b, BC-4.8)
+# main_prepare helpers (BC-4.7, BC-4.7b, BC-4.7c, BC-4.8)
 # ---------------------------------------------------------------------------
 
 # Actions whose ACTION handler invokes the stylist agent. Derived from the
@@ -747,6 +748,118 @@ def consume_gate_data(
 _STYLIST_ACTIONS: frozenset[str] = frozenset(
     {"style/style_dialog", "style/style_lock"}
 )
+
+# Actions whose ACTION handler conducts the export ordering dialog. The
+# proposed `<presentation_folder>` name (BC-4.7c, BUG-AUDIT-15) is injected
+# into the task prompt for these actions so the user sees a deterministic,
+# code-computed default rather than an LLM-invented name. The user can still
+# override the proposal during the dialog; only the *default* is locked.
+_EXPORT_DIALOG_ACTIONS: frozenset[str] = frozenset(
+    {"finalization/export_options", "finalization/export_confirm"}
+)
+
+
+def propose_presentation_folder_name(
+    deck_state: Any,  # DeckState dataclass from debrief_state
+    today: Optional[date] = None,
+) -> str:
+    """Compute the spec-canonical ``<presentation_folder>`` proposal.
+
+    BC-4.7c / BUG-AUDIT-15 / spec §24.10: the deliverable folder name
+    follows the ``<YYYY_MM_DD>_<shortened_title>`` convention. This helper
+    is the single source of truth for that computation. Called by
+    :func:`_proposed_folder_section` at prepare time for export-dialog
+    actions; the result is presented to the user as the *default* in the
+    export ordering dialog. The user can override.
+
+    The ``<shortened_title>`` portion is derived from
+    ``deck_state.project_name`` via the canonical Debrief Identifier
+    Sanitization Algorithm (spec §24.10.1, implemented as
+    ``debrief_state.sanitize_identifier`` with ``max_length=40``). The
+    sanitizer's empty-input fallback returns ``"untitled"``, so the
+    proposed name always has a non-empty title portion.
+
+    ``today`` defaults to :func:`date.today` for production use; tests pass
+    a fixed date to pin the format.
+    """
+    if today is None:
+        today = date.today()
+    date_part = today.strftime("%Y_%m_%d")
+    # Reuse the canonical sanitizer from unit 2 so the proposal is
+    # algorithmically identical to every other identifier sanitization in
+    # the codebase (paper slugs, snapshot labels, etc.) per spec §24.10.1.
+    from debrief_state import sanitize_identifier  # type: ignore
+    name_part = sanitize_identifier(
+        getattr(deck_state, "project_name", "") or "",
+        max_length=40,
+    )
+    return f"{date_part}_{name_part}"
+
+
+def _load_deck_state_for_proposal(project_root: Path) -> Any:
+    """Load and parse ``deck_state.json`` for use by the proposal helper.
+
+    BC-4.7c: returns the parsed DeckState dataclass instance, or hard-exits
+    with code 1 and a diagnostic message if the file is missing or malformed.
+    Hard-error rather than silent omission is correct here because the
+    export-dialog actions only fire after Phase 3 completes — by that time
+    a deck must exist. Missing deck_state.json at this point indicates
+    pipeline state corruption, not a normal recoverable condition.
+    """
+    state_path = project_root / "deck_state.json"
+    if not state_path.exists():
+        print(
+            f"ERROR: deck_state.json not found at {state_path} during "
+            f"export-dialog prepare (BC-4.7c / BUG-AUDIT-15). Cannot compute "
+            f"proposed presentation folder name without a deck.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    try:
+        from debrief_state import _dict_to_deck_state  # type: ignore
+    except ImportError as exc:
+        print(
+            f"ERROR: cannot import debrief_state to load deck_state.json "
+            f"({exc}); BC-4.7c proposed-folder injection unavailable.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    try:
+        data = json.loads(state_path.read_text(encoding="utf-8"))
+        return _dict_to_deck_state(data)
+    except (json.JSONDecodeError, KeyError, ValueError) as exc:
+        print(
+            f"ERROR: deck_state.json is malformed at {state_path} "
+            f"({exc}); BC-4.7c cannot proceed.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+def _proposed_folder_section(project_root: Path) -> str:
+    """Return the ``## Proposed Presentation Folder`` markdown section.
+
+    BC-4.7c / BUG-AUDIT-15: prepended to the export-dialog task prompt so
+    the deliverable-folder name proposal the user sees at G4.4 is computed
+    by code, not invented by an LLM. Mirrors the shape of
+    :func:`_stylist_schema_section` (BC-4.7b) for architectural symmetry.
+    """
+    deck_state = _load_deck_state_for_proposal(project_root)
+    proposed = propose_presentation_folder_name(deck_state)
+
+    header = "## Proposed Presentation Folder"
+    explainer = (
+        "The canonical `<presentation_folder>` name has been computed by "
+        "`routing.propose_presentation_folder_name` per BC-4.7c and the "
+        "format defined in spec §24.10 / REQ-EXPORT-3 / REQ-LIFE-3 "
+        "(`<YYYY_MM_DD>_<shortened_title>`). Present this name to the user "
+        "as the **default** in the export ordering dialog. The user MAY "
+        "confirm or override it. Do NOT invent an alternative format — the "
+        "deterministic computation is the single source of truth for the "
+        "default value. See BUG-AUDIT-15 for the rationale."
+    )
+    fenced = "```\n" + proposed + "\n```"
+    return f"{header}\n\n{explainer}\n\n{fenced}\n"
 
 
 def _resolve_template_path(plugin_root: Path) -> Path:
@@ -832,6 +945,12 @@ def main_prepare(action: str, project_root: Path) -> None:
     prepends the ``## Schema Starting Point`` section containing the
     canonical ``templates/style_config.json`` as a JSON fenced code block,
     per BC-4.7b / BUG-AUDIT-14.
+
+    For export-dialog actions (``finalization/export_options``,
+    ``finalization/export_confirm``), prepends the ``## Proposed Presentation
+    Folder`` section containing the deterministic
+    ``<YYYY_MM_DD>_<shortened_title>`` folder name computed by
+    :func:`propose_presentation_folder_name`, per BC-4.7c / BUG-AUDIT-15.
     """
     plugin_root = Path(os.environ.get("CLAUDE_PLUGIN_ROOT", str(project_root)))
     content = assemble_task_prompt(action, [], project_root, plugin_root)
@@ -842,6 +961,13 @@ def main_prepare(action: str, project_root: Path) -> None:
     # first user-message turn begins with a compiler-valid schema instance.
     if action in _STYLIST_ACTIONS:
         content = _stylist_schema_section(plugin_root) + "\n" + content
+
+    # BC-4.7c / BUG-AUDIT-15: prepend the proposed-folder section for any
+    # export-dialog action so the user sees a code-computed default at G4.1
+    # / G4.4, not an LLM-invented name. The user can still override during
+    # the dialog; only the default is locked.
+    if action in _EXPORT_DIALOG_ACTIONS:
+        content = _proposed_folder_section(project_root) + "\n" + content
 
     prompt_path = project_root / ".debrief" / "task_prompt.md"
 

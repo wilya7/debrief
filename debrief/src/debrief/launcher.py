@@ -56,19 +56,31 @@ _ARCHETYPE_ORDER = [
 ]
 
 # ---------------------------------------------------------------------------
-# Required project subdirectories (Section 3 / BC-3.9)
+# Required project subdirectories (Section 3 / BC-3.9 / BUG-AUDIT-15)
 # ---------------------------------------------------------------------------
 
+# The full canonical project directory tree per spec §3. Created at every
+# `debrief new` AND re-scaffolded on every bare `debrief` re-entry via the
+# `ensure_project` orchestrator (BC-3.14). All entries use forward slashes;
+# `mkdir(parents=True, exist_ok=True)` makes nested paths and idempotency
+# both free. Empty directories are valid project state — the canonical tree
+# is "always present" regardless of whether agents have produced content
+# inside it (see BUG-AUDIT-15 and the directory policy paragraph in spec §3).
 _REQUIRED_DIRS = [
+    ".debrief",
+    ".debrief/briefs",
+    ".debrief/draft",
+    ".debrief/draft/preview_slides",
+    ".debrief/draft/preview_images",
+    ".debrief/snapshots",
     "assets/images",
     "assets/fonts",
     "assets/vendor",
+    "assets/math",
     "assets/reference/slides",
     "assets/reference/papers",
-    "assets/math",
-    ".debrief/briefs",
-    ".debrief/snapshots",
     "slides",
+    "output",
     "output/screenshots",
 ]
 
@@ -481,6 +493,37 @@ def _compute_state_hash(state_dict: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# ensure_project orchestrator (BC-3.14, BUG-AUDIT-15)
+# ---------------------------------------------------------------------------
+
+
+def ensure_project(project_root: Path, plugin_root: Path) -> None:
+    """Re-scaffold an existing debrief project on every bare ``debrief`` entry.
+
+    BC-3.14 / BUG-AUDIT-15: this orchestrator is the canonical entry hook
+    for the ``debrief`` (no-args) bare-invocation arm in ``bin/debrief``. It
+    composes two existing helpers in a fixed order:
+
+    1. :func:`create_project_structure` — re-scaffolds the canonical project
+       directory tree from spec §3 / :data:`_REQUIRED_DIRS`. Idempotent
+       (``mkdir(parents=True, exist_ok=True)``); restores any directory that
+       a cleanup operation removed since the previous session (BC-4.6
+       style-lock cleanup, ``skill_reset``, ``skill_quit``).
+    2. :func:`ensure_project_settings` — self-heals ``.claude/settings.json``
+       per BC-3.13 / BUG-AUDIT-8.
+
+    The ordering matters: directories first, then settings. The settings
+    helper writes into ``project_root / .claude/`` which it creates itself,
+    so it does not depend on the canonical tree. But the broader contract
+    — *the canonical tree exists at every routing-cycle boundary* — means
+    we run the directory pass first so any agent or routing code invoked
+    after this returns can rely on the tree.
+    """
+    create_project_structure(project_root)
+    ensure_project_settings(project_root, plugin_root)
+
+
+# ---------------------------------------------------------------------------
 # Entry point — spec §24.4 steps 8 & 9 dispatch (BC-3.12).
 # ---------------------------------------------------------------------------
 
@@ -512,14 +555,23 @@ def main_new() -> None:
         preflight(plugin_root)
     elif subcommand == "new":
         new(project_root=project_root)
+    elif subcommand == "ensure_project":
+        # BC-3.14 / BUG-AUDIT-15: re-scaffold canonical directory tree AND
+        # self-heal settings on every bare `debrief` entry. This is the
+        # canonical re-entry hook called from bin/debrief's bare-invocation
+        # arm — replaces the older ensure_settings entry which only handled
+        # settings and left the directory tree to drift.
+        ensure_project(project_root, plugin_root)
     elif subcommand == "ensure_settings":
-        # BC-3.13 / BUG-AUDIT-8: self-heal `.claude/settings.json` for an
-        # existing project (called from bin/debrief's bare-invocation arm).
+        # BC-3.13 / BUG-AUDIT-8: self-heal `.claude/settings.json` only.
+        # Retained as an additive subcommand for backward compatibility with
+        # any caller that invoked it directly. New code should call
+        # `ensure_project` instead, which is a strict superset.
         ensure_project_settings(project_root, plugin_root)
     else:
         print(f"Unknown subcommand: {subcommand!r}", file=sys.stderr)
         print(
-            "Usage: python -m debrief.launcher [new|preflight|ensure_settings] [project_root]",
+            "Usage: python -m debrief.launcher [new|preflight|ensure_project|ensure_settings] [project_root]",
             file=sys.stderr,
         )
         sys.exit(1)

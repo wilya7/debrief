@@ -142,18 +142,30 @@ class TestBugAudit8ProjectSettings:
             "registration and produces bare-named skills."
         )
 
-    def test_bin_debrief_calls_ensure_settings_in_bare_arm(
+    def test_bin_debrief_self_heals_settings_in_bare_arm(
         self, bin_debrief_text: str
     ) -> None:
-        # BC-1.16 step 9 (bare arm) / BC-3.13: the bare `""` arm of the
-        # subcommand dispatch must call `python -m debrief.launcher
-        # ensure_settings` to self-heal `.claude/settings.json` for
-        # existing projects (BUG-AUDIT-1..7 era projects don't have it).
-        assert "python -m debrief.launcher ensure_settings" in bin_debrief_text, (
+        # BC-1.16 step 9 (bare arm) / BC-3.13 / BC-3.14: the bare `""` arm
+        # of the subcommand dispatch must invoke a launcher subcommand that
+        # self-heals `.claude/settings.json`. Originally (BUG-AUDIT-8) this
+        # was `ensure_settings`. After BUG-AUDIT-15, the bare arm calls
+        # `ensure_project` which is a strict superset (it also re-scaffolds
+        # the canonical directory tree). Either subcommand satisfies the
+        # BUG-AUDIT-8 self-heal contract because both call
+        # `ensure_project_settings`. The stricter BUG-AUDIT-15 requirement
+        # (re-scaffold the directory tree) is enforced by a separate test
+        # in `test_bug_audit_15_canonical_tree_deterministic.py`; this test
+        # stays at the BUG-AUDIT-8 level so it does not over-constrain.
+        bare_arm_self_heals = (
+            "python -m debrief.launcher ensure_project" in bin_debrief_text
+            or "python -m debrief.launcher ensure_settings" in bin_debrief_text
+        )
+        assert bare_arm_self_heals, (
             "BC-3.13 / BUG-AUDIT-8: bin/debrief's bare-invocation arm must "
-            "call `python -m debrief.launcher ensure_settings \"$(pwd)\"` "
-            "before exec'ing claude, so existing projects self-heal their "
-            "`.claude/settings.json`."
+            "call a launcher subcommand that self-heals `.claude/settings.json`. "
+            "Acceptable: `python -m debrief.launcher ensure_project` "
+            "(post-BUG-AUDIT-15 canonical) or `python -m debrief.launcher "
+            "ensure_settings` (legacy)."
         )
 
     # --- ensure_project_settings: existence and signature -----------------

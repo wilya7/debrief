@@ -141,16 +141,25 @@ def _make_archetypes_json(path: Path) -> None:
 class TestCreateProjectStructure:
     """Tests for create_project_structure (BC-3.9)."""
 
+    # Extended to 15 entries per BUG-AUDIT-15: the canonical project tree
+    # must include `.debrief/`, `.debrief/draft/`, both preview subdirectories,
+    # and `output/` explicitly so the Stylist's preview writes and any other
+    # code that depends on the canonical tree never lands in a hole.
     _EXPECTED_DIRS = [
+        ".debrief",
+        ".debrief/briefs",
+        ".debrief/draft",
+        ".debrief/draft/preview_slides",
+        ".debrief/draft/preview_images",
+        ".debrief/snapshots",
         "assets/images",
         "assets/fonts",
         "assets/vendor",
+        "assets/math",
         "assets/reference/slides",
         "assets/reference/papers",
-        "assets/math",
-        ".debrief/briefs",
-        ".debrief/snapshots",
         "slides",
+        "output",
         "output/screenshots",
     ]
 

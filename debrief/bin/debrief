@@ -226,11 +226,16 @@ case "${1:-}" in
       echo "ERROR: No project found in the current directory. Run 'debrief new' to create one." >&2
       exit 1
     fi
-    # BC-3.13 / BUG-AUDIT-8: self-heal `.claude/settings.json` for
-    # projects created before the project-scoped settings mechanism (or
-    # for projects whose settings file points at a stale debrief repo
-    # path after the user moved the repo on disk). Idempotent.
-    python -m debrief.launcher ensure_settings "$(pwd)"
+    # BC-3.14 / BUG-AUDIT-15: re-scaffold the canonical project directory
+    # tree AND self-heal `.claude/settings.json` on every bare entry. The
+    # `ensure_project` orchestrator runs `create_project_structure` then
+    # `ensure_project_settings`, so any directory removed by a cleanup
+    # operation since the previous session (style-lock cleanup, skill_reset,
+    # skill_quit) is restored, and projects created before the project-
+    # scoped settings mechanism (or whose settings file points at a stale
+    # debrief repo path after the user moved the repo on disk) are
+    # self-healed at the same time. Idempotent.
+    python -m debrief.launcher ensure_project "$(pwd)"
     _debrief_print_greeting_prompt
     exec claude
     ;;
