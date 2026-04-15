@@ -536,10 +536,73 @@ def main_update_state(
         handle_red_green_transition(gate_id, response, state, project_root)
         return
 
+    # BC-4.6 / BUG-AUDIT-19: G2.1 STYLE APPROVED triggers the 7-step
+    # compile-and-lock sequence per spec §24.8. Prior to BUG-AUDIT-19 this
+    # branch was missing and the function fell through to the generic
+    # last_gate_response writer below, leaving the draft files unpromoted
+    # and style_locked=false — an observed production failure where a
+    # user could not exit the style dialog because the gate response was
+    # logged but the promotion + compilation never ran.
+    if gate_id == "G2.1_style_config_review":
+        if response == "STYLE APPROVED":
+            promote_style_draft(project_root)
+            # promote_style_draft writes `style_locked: true` and the
+            # state_hash to deck_state.json. We still fall through to the
+            # generic writer below to persist last_gate_response in
+            # debrief_state.json (a separate state file).
+        elif response.startswith("STYLE REVISE"):
+            _handle_g21_style_revise(response, project_root)
+            # Same rationale: _handle_g21_style_revise writes
+            # .debrief/gate_data.json and discards the draft, but
+            # last_gate_response persistence happens in the generic
+            # writer below.
+        # Intentional fall-through to the generic state writer.
+
     # Generic state write for other gates: persist last_gate_response
     state_dict["last_gate_response"] = response
     state_dict["state_hash"] = compute_state_hash(state_dict)
     atomic_write_json(state_path, state_dict)
+
+
+def _handle_g21_style_revise(response: str, project_root: Path) -> None:
+    """BC-4.6 / BUG-AUDIT-19: STYLE REVISE <feedback> payload handler.
+
+    Per spec §24.21 for the G2.1 STYLE REVISE branch:
+      1. Parse the feedback text from ``response``. Format per the
+         ``_GATE_VALID_RESPONSES`` grammar: ``STYLE REVISE <feedback>``
+         with a space separator. The gate validator in
+         ``main_update_state`` has already rejected any malformed shape
+         (empty feedback, missing space, etc.) with ``sys.exit(4)`` by
+         the time this helper is reached.
+      2. Write ``.debrief/gate_data.json`` atomically with
+         ``{"gate_id": "G2.1_style_config_review",
+           "data": {"style_revise_feedback": "<feedback>"}}``.
+      3. Recursively remove ``.debrief/draft/`` — the draft is discarded
+         per spec §24.21 (a fresh dialog starts from scratch with the
+         feedback carried into the Stylist's prepare context on the
+         next cycle).
+    """
+    # Extract the payload after "STYLE REVISE " (the validator has
+    # already ensured the prefix matches with a trailing space).
+    prefix = "STYLE REVISE "
+    feedback = response[len(prefix):].strip()
+
+    # Write .debrief/gate_data.json atomically.
+    from debrief_state import atomic_write_json  # type: ignore
+    debrief_dir = project_root / ".debrief"
+    debrief_dir.mkdir(parents=True, exist_ok=True)
+    gate_data_path = debrief_dir / "gate_data.json"
+    payload = {
+        "gate_id": "G2.1_style_config_review",
+        "data": {"style_revise_feedback": feedback},
+    }
+    atomic_write_json(gate_data_path, payload)
+
+    # Discard the draft directory. Per spec §24.21, the draft is thrown
+    # away on REVISE — the Stylist starts fresh with the feedback.
+    draft_dir = debrief_dir / "draft"
+    if draft_dir.exists():
+        shutil.rmtree(str(draft_dir))
 
 
 def _handle_figure_selection(response: str, project_root: Path) -> None:

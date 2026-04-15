@@ -823,6 +823,135 @@ class TestPromoteStyleDraft:
 
 
 # ---------------------------------------------------------------------------
+# BC-4.6 / BUG-AUDIT-19: main_update_state MUST call promote_style_draft
+# on G2.1 STYLE APPROVED. Integration sentinel — without this test, the
+# unit tests of promote_style_draft above pass in isolation while the
+# production call site is orphaned (as it was pre-BUG-AUDIT-19).
+# ---------------------------------------------------------------------------
+
+
+class TestG21StylePromotionDispatch:
+    """BC-4.6 / BUG-AUDIT-19 integration sentinel.
+
+    This test lives alongside the TestPromoteStyleDraft unit tests
+    specifically so that a future maintainer editing main_update_state
+    sees the integration assertion right next to the helper's unit
+    tests. The bug that motivated BUG-AUDIT-19 was precisely that
+    promote_style_draft was unit-tested in isolation while its
+    production call site (main_update_state) never invoked it —
+    invisible to the old test suite by construction.
+    """
+
+    def test_main_update_state_g21_approved_calls_promote_style_draft(
+        self, tmp_path: Path
+    ) -> None:
+        from routing import main_update_state
+        import routing as routing_module
+
+        project_root = _make_project_root(tmp_path)
+        (project_root / "assets" / "style.css").parent.mkdir(
+            parents=True, exist_ok=True
+        )
+        # Build a minimal-valid draft (all 7 required top-level keys).
+        draft = project_root / ".debrief" / "draft"
+        draft.mkdir(parents=True, exist_ok=True)
+        (draft / "style_config.json").write_text(
+            json.dumps(
+                {
+                    "colors": {},
+                    "typography": {},
+                    "spacing": {},
+                    "layout": {},
+                    "data_viz": {},
+                    "constraints": {},
+                    "provenance": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+        (draft / "style_guide.md").write_text(
+            "# Style Guide\n", encoding="utf-8"
+        )
+        (project_root / "deck_state.json").write_text(
+            json.dumps(
+                {
+                    "project_name": "ba19_integration_sentinel",
+                    "created_at": "2026-04-15T10:00:00Z",
+                    "archetype": "lab_meeting",
+                    "style_locked": False,
+                    "closing_slide": None,
+                    "slides": [],
+                    "presentations": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (project_root / "debrief_state.json").write_text(
+            json.dumps(
+                {
+                    "phase": "style",
+                    "sub_phase": "style/style_review",
+                    "active_agent": "consultant",
+                    "archetype": "lab_meeting",
+                    "current_group_id": None,
+                    "current_slide_slug": None,
+                    "pending_gate": "G2.1_style_config_review",
+                    "last_gate_response": None,
+                    "red_green_iteration": 0,
+                    "red_green_started_at": None,
+                    "group_slide_index": 0,
+                    "group_slide_count": 0,
+                    "backup_mode": False,
+                    "completed_groups": [],
+                    "pre_view_state": None,
+                    "view_deferred": False,
+                    "reference_provided": False,
+                    "papers_provided": False,
+                    "closing_slide_pending": False,
+                    "state_hash": "x" * 64,
+                    "session_started_at": "2026-04-15T10:00:00Z",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        # Record direct invocations of promote_style_draft while still
+        # letting the real implementation run (with a mocked subprocess
+        # to avoid launching style_compiler).
+        call_count = 0
+        original = routing_module.promote_style_draft
+
+        def _recording(prj: Path) -> None:
+            nonlocal call_count
+            call_count += 1
+            original(prj)
+
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.MagicMock(returncode=0, stderr="")
+            with mock.patch.object(
+                routing_module, "promote_style_draft", _recording
+            ):
+                main_update_state(
+                    gate_id="G2.1_style_config_review",
+                    response="STYLE APPROVED",
+                    project_root=project_root,
+                )
+
+        assert call_count == 1, (
+            f"BC-4.6 / BUG-AUDIT-19: main_update_state MUST call "
+            f"promote_style_draft exactly once on G2.1 STYLE APPROVED. "
+            f"Got {call_count} calls."
+        )
+        # Post-condition: the promotion actually happened.
+        assert (project_root / "style_config.json").exists()
+        assert not (project_root / ".debrief" / "draft").exists()
+        deck = json.loads(
+            (project_root / "deck_state.json").read_text()
+        )
+        assert deck["style_locked"] is True
+
+
+# ---------------------------------------------------------------------------
 # BC-4.7: consume_gate_data cross-cycle rule
 # ---------------------------------------------------------------------------
 
