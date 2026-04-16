@@ -21,7 +21,6 @@ from typing import Any, Optional
 # Imports from Unit 2 (added to sys.path by conftest.py)
 # ---------------------------------------------------------------------------
 from debrief_state import (  # type: ignore[import]
-    increment_script_count,
     read_deck_state,
     read_debrief_state,
     sanitize_identifier,
@@ -324,12 +323,15 @@ def main_script_generator(project_root: Path) -> None:
     """Entry point for: python -m debrief.script_generator --project-root <path>
 
     Read deck_brief.md and deck_state.json. Write
-    output/<folder>/script_v{NNN}.md. Increment script_count.
-    Print path to stderr.
+    output/<folder>/script_v{NNN}.md. Print path to stderr.
+
+    BUG-AUDIT-25: filesystem-derived versioning (scan dir, max + 1)
+    replaces the old script_count + 1 state-field pattern. No state
+    mutation. Precondition check for approved non-backup slides added.
     """
     deck_state = read_deck_state(project_root)
 
-    # BC-11.5: precondition check
+    # BC-11.5: precondition — presentations must exist
     if not deck_state.presentations:
         print(
             "No export has been done yet. Run /debrief:export first.",
@@ -337,10 +339,38 @@ def main_script_generator(project_root: Path) -> None:
         )
         sys.exit(1)
 
+    # BUG-AUDIT-25: precondition — approved non-backup slides
+    approved = [
+        s for s in deck_state.slides
+        if s.status == "approved" and not s.backup
+    ]
+    if not approved:
+        print(
+            "Cannot generate script: no approved non-backup slides. "
+            "Author slides with '/debrief:slide' and approve at least "
+            "one before retrying '/debrief:script'.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
     # BC-11.6: use most recent (last) presentation folder
     pres = deck_state.presentations[-1]
     folder = pres.folder
-    version = pres.script_count + 1
+
+    # BUG-AUDIT-25: filesystem-derived versioning
+    out_dir = project_root / "output" / folder
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    existing_versions: list[int] = []
+    for existing in out_dir.glob("script_v*.md"):
+        stem = existing.stem
+        if stem.startswith("script_v"):
+            suffix = stem[len("script_v"):]
+            try:
+                existing_versions.append(int(suffix))
+            except ValueError:
+                continue
+    version = (max(existing_versions) + 1) if existing_versions else 1
     script_filename = f"script_v{version:03d}.md"
 
     # Read deck brief
@@ -350,19 +380,12 @@ def main_script_generator(project_root: Path) -> None:
     else:
         deck_brief_content = ""
 
-    # Get approved slides
-    approved = [s for s in deck_state.slides if s.status == "approved"]
-
     content = generate_script_content(deck_brief_content, approved, folder)
 
-    out_dir = project_root / "output" / folder
-    out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / script_filename
     out_path.write_text(content, encoding="utf-8")
 
-    # Increment script_count and write state
-    increment_script_count(deck_state, folder)
-    write_deck_state(project_root, deck_state)
+    # BUG-AUDIT-25: no state mutation — versioning is filesystem-derived
 
     print(str(out_path), file=sys.stderr)
 

@@ -893,10 +893,14 @@ class TestMainScriptGeneratorFolderSelection:
         self,
         tmp_path: Path,
     ) -> None:
-        """BC-11.6: Second generation increments to script_v002.md."""
+        """BUG-AUDIT-25: filesystem-derived versioning — pre-existing
+        script_v001.md in the output dir means the next run produces
+        script_v002.md.
+        """
         folder = "2026_04_12_deck"
-        (tmp_path / "output").mkdir()
-        (tmp_path / "output" / folder).mkdir()
+        out_dir = tmp_path / "output" / folder
+        out_dir.mkdir(parents=True)
+        (out_dir / "script_v001.md").write_text("old script")
         (tmp_path / "deck_brief.md").write_text("# Brief\n\nContent.")
         presentations = [
             {
@@ -904,7 +908,7 @@ class TestMainScriptGeneratorFolderSelection:
                 "created_at": _TS,
                 "slide_manifest": [],
                 "export_count": 1,
-                "script_count": 1,
+                "script_count": 0,
                 "handout_count": 0,
                 "separator_position": None,
                 "separator_content": None,
