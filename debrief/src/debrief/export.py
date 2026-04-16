@@ -176,9 +176,11 @@ def main_export(project_root: Path) -> None:
     pdf_path_str = ""
 
     try:
+        from debrief_state import parse_css_int  # type: ignore[import]
+
         layout = style_config.get("layout", {})
-        width = int(layout.get("slide_width", 1920))
-        height = int(layout.get("slide_height", 1080))
+        width = parse_css_int(layout.get("slide_width", 1920), default=1920)
+        height = parse_css_int(layout.get("slide_height", 1080), default=1080)
 
         with sync_playwright() as pw:
             browser = pw.chromium.launch()

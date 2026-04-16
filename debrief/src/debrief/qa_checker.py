@@ -288,9 +288,11 @@ def check_aspect_ratio(
 
     Tolerance: ±1 pixel. Returns QAFailure if mismatch, else None.
     """
+    from debrief_state import parse_css_int  # type: ignore[import]
+
     layout = style_config.get("layout", {})
-    expected_w = layout.get("slide_width", 1920)
-    expected_h = layout.get("slide_height", 1080)
+    expected_w = parse_css_int(layout.get("slide_width", 1920), default=1920)
+    expected_h = parse_css_int(layout.get("slide_height", 1080), default=1080)
 
     result = page.evaluate(
         "() => ({ width: document.body.scrollWidth, "

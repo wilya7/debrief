@@ -245,6 +245,37 @@ def atomic_write_json(path: Path, data: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 
+def parse_css_int(value: Any, default: int = 0) -> int:
+    """Parse a CSS dimension value to an integer.
+
+    BUG-AUDIT-43: The canonical style_config.json stores layout
+    dimensions as CSS strings ("1920px", "1080px"). Code that needs
+    integer pixel values must strip the unit suffix. This utility
+    handles: int passthrough, string with "px"/"em"/"%", and bare
+    numeric strings.
+
+    Examples::
+
+        parse_css_int(1920)       # 1920
+        parse_css_int("1920px")   # 1920
+        parse_css_int("1080")     # 1080
+        parse_css_int("auto")     # default (0)
+    """
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        cleaned = value.strip().lower()
+        for suffix in ("px", "em", "rem", "%", "pt", "vw", "vh"):
+            if cleaned.endswith(suffix):
+                cleaned = cleaned[: -len(suffix)].strip()
+                break
+        try:
+            return int(float(cleaned))
+        except (ValueError, TypeError):
+            return default
+    return default
+
+
 def sanitize_identifier(text: str, max_length: int = 40) -> str:
     """Apply the Debrief Identifier Sanitization Algorithm (Section 24.10.1).
 

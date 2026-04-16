@@ -173,16 +173,21 @@ def adapt_pptx(reference: Path, project_root: Path) -> None:
     }
 
     # Theme colors / fonts (best-effort)
+    # BUG-AUDIT-43 / BUG-ST-1: try run.font.name first, then
+    # para.font.name (paragraph-level default), then slide layout
+    # default. python-pptx returns None when the font is inherited
+    # from the slide master rather than set on the run.
     try:
-
         font_names: list[str] = []
         font_sizes: list[float] = []
         for slide in prs.slides:
             for shape in slide.shapes:
                 if shape.has_text_frame:
                     for para in shape.text_frame.paragraphs:
+                        # Try paragraph-level font as fallback
+                        para_font = getattr(para.font, "name", None)
                         for run in para.runs:
-                            fn = run.font.name
+                            fn = run.font.name or para_font
                             if fn:
                                 font_names.append(fn)
                             fs = run.font.size
