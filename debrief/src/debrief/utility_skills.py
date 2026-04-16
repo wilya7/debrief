@@ -194,7 +194,20 @@ def main_view(query: str, project_root: Path) -> None:
     Read deck_state.json and debrief_state.json. Parse query. Collect matching
     slide screenshots. Generate output/view.html. Open in default browser.
     Exit 0 on success. Exit 1 if no slides match the query.
+
+    BUG-AUDIT-32: precondition check for project existence + descriptive
+    "no slides match" message on empty query result.
     """
+    # BUG-AUDIT-32: project precondition
+    if not (project_root / "deck_state.json").is_file():
+        print(
+            "Cannot view slides: no project found at "
+            f"{project_root} (deck_state.json missing). "
+            "Run 'debrief new' to create a project first.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
     deck_state = read_deck_state(project_root)
     debrief_state = read_debrief_state(project_root)
 
@@ -233,6 +246,11 @@ def main_view(query: str, project_root: Path) -> None:
         # Still generate and display the view in production phase
         slides = parse_view_query(query, deck_state)
         if not slides:
+            print(
+                f"No slides match query: {query!r}. Try 'all', a "
+                f"specific slug, or 'group:<id>'.",
+                file=sys.stderr,
+            )
             sys.exit(1)
 
         html = generate_view_html(slides, project_root)
@@ -245,6 +263,11 @@ def main_view(query: str, project_root: Path) -> None:
     # Phase 4 / complete — Run-and-return mode (no routing side effects)
     slides = parse_view_query(query, deck_state)
     if not slides:
+        print(
+            f"No slides match query: {query!r}. Try 'all', a "
+            f"specific slug, or 'group:<id>'.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     html = generate_view_html(slides, project_root)
@@ -646,6 +669,18 @@ def skill_save(label: str, project_root: Path) -> None:
     ledger_src = project_root / "ledger.jsonl"
     if ledger_src.exists():
         shutil.copy2(ledger_src, target_dir / "ledger.jsonl")
+
+    # BUG-AUDIT-32 / REQ-SAVE-3: confirmation output
+    copied = []
+    if (target_dir / "deck_state.json").is_file():
+        copied.append("deck_state.json")
+    if (target_dir / "ledger.jsonl").is_file():
+        copied.append("ledger.jsonl")
+    contents = ", ".join(copied) if copied else "(empty — no state files found)"
+    print(
+        f"Snapshot saved: {target_dir.name} ({contents})",
+        file=sys.stderr,
+    )
 
 
 # ---------------------------------------------------------------------------
