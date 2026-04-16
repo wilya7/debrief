@@ -2,6 +2,8 @@
 
 **debrief** is a Claude Code plugin that turns research content into polished, structured slide decks. It orchestrates a multi-agent workflow: briefing, style design, slide production, visual QA, and export — all within your Claude Code session.
 
+> **Rebuild procedure.** When adding a complex feature that requires spec restructuring (e.g., NanoBanana raster generation), see `REBUILD_PROCEDURE.md` in the workspace root for how to extract behavioral acceptance tests from the prototype before starting a fresh SVP pipeline. The acceptance tests carry forward the behavioral knowledge from 38 BUG-AUDIT fixes without coupling the rebuild to the prototype's internal design.
+
 ---
 
 ## Installation
