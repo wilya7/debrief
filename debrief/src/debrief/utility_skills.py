@@ -784,16 +784,44 @@ _DRAFT_RETAIN_GATE = "G2.1_style_config_review"
 
 
 def skill_quit(project_root: Path) -> None:
-    """Flush state files and clean transient artifacts.
+    """Flush state files, clean transient artifacts, print summary.
 
     BC-11.13: Flush debrief_state.json and deck_state.json (with correct
               state_hash) before cleaning transient artifacts.
     BC-11.14: Retain .debrief/draft/ only when pending_gate is
               G2.1_style_config_review OR sub_phase is in
               {style/style_dialog, style/style_review}.
+
+    BUG-AUDIT-24 additions:
+      - Defensive cycle-state check (belt-and-suspenders warning if
+        quit is invoked during what appears to be an active red-green
+        cycle — should never trigger in Claude Code's sequential model
+        but documents the invariant in code).
+      - Summary output to stderr per REQ-QUIT-1 step 5.
+      - Transient artifact cleanup: .debrief/task_prompt.md and
+        .debrief/gate_data.json (dead routing-loop artifact).
     """
     deck_state = read_deck_state(project_root)
     debrief_state = read_debrief_state(project_root)
+
+    # BUG-AUDIT-24: defensive cycle-state check. Claude Code's
+    # sequential message processing means skill_quit can only run
+    # when no Task is in-flight, so this warning should never fire.
+    # If it does, it means the concurrency model changed or state
+    # is corrupted — either way, the user should know.
+    if (
+        getattr(debrief_state, "red_green_iteration", 0) > 0
+        and "red_green" in (debrief_state.sub_phase or "")
+    ):
+        print(
+            "WARNING: quit invoked during what appears to be an "
+            "active red-green cycle (red_green_iteration="
+            f"{debrief_state.red_green_iteration}, sub_phase="
+            f"{debrief_state.sub_phase}). State will be flushed "
+            "as-is. If a slide agent was mid-turn, its partial "
+            "work may be lost.",
+            file=sys.stderr,
+        )
 
     # BC-11.13: flush state files first
     write_deck_state(project_root, deck_state)
@@ -802,7 +830,6 @@ def skill_quit(project_root: Path) -> None:
     # Flush ledger (no-op if empty, just touch)
     ledger_path = project_root / "ledger.jsonl"
     if ledger_path.exists():
-        # Ledger is append-only; flushing means ensuring it's on disk
         with open(ledger_path, "a", encoding="utf-8") as _fh:
             _fh.flush()
             os.fsync(_fh.fileno())
@@ -819,3 +846,28 @@ def skill_quit(project_root: Path) -> None:
         draft_dir = project_root / ".debrief" / "draft"
         if draft_dir.exists():
             shutil.rmtree(draft_dir)
+
+    # BUG-AUDIT-24: clean transient artifacts beyond draft/
+    for transient in ("task_prompt.md", "gate_data.json"):
+        p = project_root / ".debrief" / transient
+        if p.is_file():
+            p.unlink()
+
+    # BUG-AUDIT-24 / REQ-QUIT-1 step 5: summary output.
+    approved_count = sum(
+        1 for s in deck_state.slides
+        if s.status == "approved" and not s.backup
+    )
+    last_export = ""
+    if deck_state.presentations:
+        last_export = f", last export folder: {deck_state.presentations[-1].folder}"
+
+    print(
+        f"Session complete. Phase: {debrief_state.phase}, "
+        f"archetype: {deck_state.archetype}, "
+        f"style_locked: {deck_state.style_locked}, "
+        f"approved slides: {approved_count}"
+        f"{last_export}. "
+        f"Run 'debrief' to resume.",
+        file=sys.stderr,
+    )
