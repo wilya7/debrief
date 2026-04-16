@@ -13,6 +13,7 @@ import json
 import re
 import sys
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -418,6 +419,509 @@ def check_slug_not_in_content(
 
 
 # ---------------------------------------------------------------------------
+# INV-12: check_valid_html5
+# ---------------------------------------------------------------------------
+
+# Void elements that do not require closing tags in HTML5.
+_VOID_ELEMENTS = frozenset(
+    {"area", "base", "br", "col", "embed", "hr", "img", "input",
+     "link", "meta", "param", "source", "track", "wbr"}
+)
+
+
+def check_valid_html5(slide_path: Path) -> Optional[QAFailure]:
+    """INV-12: Verify slide HTML has balanced open/close tags.
+
+    Uses html.parser.HTMLParser to track opened vs closed tags.
+    Void elements (img, br, hr, meta, link, input, etc.) are ignored.
+    Returns QAFailure if any tag opens but never closes, else None.
+    """
+
+    class _TagTracker(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__()
+            self.stack: list[str] = []
+            self.unclosed: list[str] = []
+
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            if tag.lower() not in _VOID_ELEMENTS:
+                self.stack.append(tag.lower())
+
+        def handle_endtag(self, tag: str) -> None:
+            tag_l = tag.lower()
+            if tag_l in _VOID_ELEMENTS:
+                return
+            # Walk the stack backward to find the matching open tag
+            for i in range(len(self.stack) - 1, -1, -1):
+                if self.stack[i] == tag_l:
+                    self.stack.pop(i)
+                    return
+
+    html = slide_path.read_text(encoding="utf-8")
+    tracker = _TagTracker()
+    tracker.feed(html)
+    if tracker.stack:
+        unclosed = list(dict.fromkeys(tracker.stack))  # unique, order-preserving
+        return {
+            "invariant": "INV-12",
+            "description": (
+                f"Slide HTML has unclosed tags: {', '.join(unclosed)}."
+            ),
+            "revision_instruction": (
+                "Close all opened HTML tags properly. Unclosed tags: "
+                f"{', '.join(unclosed)}."
+            ),
+        }
+    return None
+
+
+# ---------------------------------------------------------------------------
+# INV-16: check_fonts_loadable
+# ---------------------------------------------------------------------------
+
+_FONT_FACE_RE = re.compile(r"@font-face\s*\{[^}]*\}", re.DOTALL | re.IGNORECASE)
+_FONT_SRC_URL_RE = re.compile(r"url\(\s*['\"]?([^'\")\s]+)['\"]?\s*\)", re.IGNORECASE)
+
+
+def check_fonts_loadable(slide_path: Path, project_root: Path) -> Optional[QAFailure]:
+    """INV-16: Verify all @font-face src: url() references resolve to files.
+
+    Parses <style> sections in the slide HTML for @font-face blocks, then
+    resolves each url() path relative to the slide's directory (slides/).
+    Returns QAFailure listing missing font files, else None.
+    """
+    html = slide_path.read_text(encoding="utf-8")
+    slides_dir = slide_path.parent
+
+    missing: list[str] = []
+    for ff_match in _FONT_FACE_RE.finditer(html):
+        block = ff_match.group(0)
+        for url_match in _FONT_SRC_URL_RE.finditer(block):
+            url = url_match.group(1)
+            # Skip data URIs and remote URLs
+            if url.startswith("data:") or url.startswith("http://") or url.startswith("https://"):
+                continue
+            resolved = (slides_dir / url).resolve()
+            if not resolved.is_file():
+                missing.append(url)
+
+    if missing:
+        return {
+            "invariant": "INV-16",
+            "description": (
+                f"Font files referenced in @font-face are missing: "
+                f"{', '.join(missing)}."
+            ),
+            "revision_instruction": (
+                "Ensure all font files referenced in @font-face src: url() "
+                "exist at the specified paths relative to the slides/ "
+                f"directory. Missing: {', '.join(missing)}."
+            ),
+        }
+    return None
+
+
+# ---------------------------------------------------------------------------
+# INV-17: check_css_vars_defined
+# ---------------------------------------------------------------------------
+
+_CSS_VAR_DEF_RE = re.compile(r"(--[a-zA-Z0-9_-]+)\s*:")
+_CSS_VAR_USAGE_RE = re.compile(r"var\(\s*(--[a-zA-Z0-9_-]+)\s*[,)]")
+_ROOT_BLOCK_RE = re.compile(r":root\s*\{([^}]*)\}", re.DOTALL)
+
+
+def check_css_vars_defined(slide_path: Path, project_root: Path) -> Optional[QAFailure]:
+    """INV-17: Verify all var(--name) usages in slide HTML are defined.
+
+    Reads assets/style.css and collects --var-name definitions from
+    :root { ... } blocks. Then scans slide HTML for var(--name) usages.
+    Returns QAFailure listing any undefined vars, else None.
+    """
+    style_css_path = project_root / "assets" / "style.css"
+    defined_vars: set[str] = set()
+    if style_css_path.is_file():
+        css_text = style_css_path.read_text(encoding="utf-8")
+        for root_match in _ROOT_BLOCK_RE.finditer(css_text):
+            root_block = root_match.group(1)
+            for var_match in _CSS_VAR_DEF_RE.finditer(root_block):
+                defined_vars.add(var_match.group(1))
+
+    html = slide_path.read_text(encoding="utf-8")
+    used_vars: set[str] = set()
+    for usage_match in _CSS_VAR_USAGE_RE.finditer(html):
+        used_vars.add(usage_match.group(1))
+
+    undefined = sorted(used_vars - defined_vars)
+    if undefined:
+        return {
+            "invariant": "INV-17",
+            "description": (
+                f"CSS variables used in slide HTML but not defined in "
+                f"assets/style.css :root: {', '.join(undefined)}."
+            ),
+            "revision_instruction": (
+                "Define the following CSS custom properties in the :root "
+                f"block of assets/style.css: {', '.join(undefined)}."
+            ),
+        }
+    return None
+
+
+# ---------------------------------------------------------------------------
+# INV-19: check_image_paths_exist
+# ---------------------------------------------------------------------------
+
+_IMG_SRC_RE = re.compile(r"<img\b[^>]*\bsrc\s*=\s*[\"']([^\"']+)[\"']", re.IGNORECASE)
+
+
+def check_image_paths_exist(slide_path: Path, project_root: Path) -> Optional[QAFailure]:
+    """INV-19: Verify all <img src="..."> paths resolve to existing files.
+
+    Resolves paths relative to the slide's directory. Skips data: URIs.
+    Returns QAFailure listing missing image files, else None.
+    """
+    html = slide_path.read_text(encoding="utf-8")
+    slides_dir = slide_path.parent
+
+    missing: list[str] = []
+    for match in _IMG_SRC_RE.finditer(html):
+        src = match.group(1)
+        if src.startswith("data:"):
+            continue
+        resolved = (slides_dir / src).resolve()
+        if not resolved.is_file():
+            missing.append(src)
+
+    if missing:
+        return {
+            "invariant": "INV-19",
+            "description": (
+                f"Image files referenced by <img> tags are missing: "
+                f"{', '.join(missing)}."
+            ),
+            "revision_instruction": (
+                "Ensure all image files referenced in <img src=...> "
+                "exist at the specified paths relative to the slides/ "
+                f"directory. Missing: {', '.join(missing)}."
+            ),
+        }
+    return None
+
+
+# ---------------------------------------------------------------------------
+# INV-23: check_math_assets_exist
+# ---------------------------------------------------------------------------
+
+
+def check_math_assets_exist(slide_path: Path, project_root: Path) -> Optional[QAFailure]:
+    """INV-23: Verify KaTeX assets exist when KaTeX is referenced in slide.
+
+    If the slide HTML contains 'katex' (case-insensitive), checks that
+    a KaTeX stylesheet exists under assets/vendor/. Returns QAFailure
+    if KaTeX is referenced but assets are missing, else None.
+    """
+    html = slide_path.read_text(encoding="utf-8")
+    if "katex" not in html.lower():
+        return None
+
+    vendor_dir = project_root / "assets" / "vendor"
+    # Check common KaTeX stylesheet locations
+    katex_paths = [
+        vendor_dir / "katex" / "katex.min.css",
+        vendor_dir / "katex" / "katex.css",
+    ]
+    # Also search for any katex*.css under vendor/
+    found = False
+    for candidate in katex_paths:
+        if candidate.is_file():
+            found = True
+            break
+    if not found and vendor_dir.is_dir():
+        for css_file in vendor_dir.rglob("katex*.css"):
+            found = True
+            break
+
+    if not found:
+        return {
+            "invariant": "INV-23",
+            "description": (
+                "Slide references KaTeX but no KaTeX stylesheet was found "
+                "under assets/vendor/."
+            ),
+            "revision_instruction": (
+                "Ensure KaTeX assets are bundled under assets/vendor/katex/. "
+                "At minimum, assets/vendor/katex/katex.min.css must exist."
+            ),
+        }
+    return None
+
+
+# ---------------------------------------------------------------------------
+# INV-13: check_images_respect_margins (Playwright-based)
+# ---------------------------------------------------------------------------
+
+
+def check_images_respect_margins(
+    page: "playwright.sync_api.Page",
+) -> Optional[QAFailure]:
+    """INV-13: Verify all images stay within 10% horizontal margins.
+
+    Evaluates JS to check each <img> bounding rect against 10% margins
+    of the slide width. Returns QAFailure if any image violates.
+    """
+    script = """
+    () => {
+        const imgs = document.querySelectorAll('img');
+        const slideWidth = document.body.scrollWidth || window.innerWidth;
+        const leftMargin = slideWidth * 0.1;
+        const rightMargin = slideWidth * 0.9;
+        const violations = [];
+        for (const img of imgs) {
+            const rect = img.getBoundingClientRect();
+            if (rect.width === 0 && rect.height === 0) continue;
+            if (rect.left < leftMargin || rect.right > rightMargin) {
+                violations.push({
+                    src: img.getAttribute('src') || '(no src)',
+                    left: Math.round(rect.left),
+                    right: Math.round(rect.right),
+                });
+            }
+        }
+        return violations.length > 0 ? violations : null;
+    }
+    """
+    result = page.evaluate(script)
+    if result:
+        descs = [
+            f"{v['src']} (left={v['left']}, right={v['right']})"
+            for v in result
+        ]
+        return {
+            "invariant": "INV-13",
+            "description": (
+                f"Images exceed 10% horizontal margins: "
+                f"{'; '.join(descs)}."
+            ),
+            "revision_instruction": (
+                "Resize or reposition images so they stay within the 10% "
+                "horizontal margin on each side of the slide."
+            ),
+        }
+    return None
+
+
+# ---------------------------------------------------------------------------
+# INV-14: check_math_no_overflow (Playwright-based)
+# ---------------------------------------------------------------------------
+
+
+def check_math_no_overflow(
+    page: "playwright.sync_api.Page",
+) -> Optional[QAFailure]:
+    """INV-14: Verify math (KaTeX) elements do not overflow their parents.
+
+    Evaluates JS to check each .katex element's scrollWidth against
+    its parent's clientWidth. Returns QAFailure if overflow detected.
+    """
+    script = """
+    () => {
+        const els = document.querySelectorAll('.katex');
+        const overflows = [];
+        for (const el of els) {
+            if (el.scrollWidth > el.parentElement.clientWidth) {
+                overflows.push({
+                    text: el.textContent.substring(0, 60),
+                    scrollW: el.scrollWidth,
+                    parentW: el.parentElement.clientWidth,
+                });
+            }
+        }
+        return overflows.length > 0 ? overflows : null;
+    }
+    """
+    result = page.evaluate(script)
+    if result:
+        return {
+            "invariant": "INV-14",
+            "description": (
+                f"Math (KaTeX) elements overflow their containers: "
+                f"{len(result)} element(s) affected."
+            ),
+            "revision_instruction": (
+                "Reduce the size of math expressions or increase the "
+                "container width so that KaTeX-rendered math does not "
+                "overflow horizontally."
+            ),
+        }
+    return None
+
+
+# ---------------------------------------------------------------------------
+# INV-15: check_diagrams_no_errors (Playwright-based)
+# ---------------------------------------------------------------------------
+
+
+def check_diagrams_no_errors(
+    page: "playwright.sync_api.Page",
+) -> Optional[QAFailure]:
+    """INV-15: Verify no diagram rendering errors are present in the DOM.
+
+    Checks for .mermaid .error, .error-text, [data-error], and elements
+    containing "Syntax error" or "Parse error". Returns QAFailure if found.
+    """
+    script = """
+    () => {
+        const selectors = [
+            '.mermaid .error',
+            '.error-text',
+            '[data-error]',
+        ];
+        for (const sel of selectors) {
+            if (document.querySelector(sel)) {
+                return sel;
+            }
+        }
+        const allEls = document.querySelectorAll('*');
+        for (const el of allEls) {
+            const text = el.textContent || '';
+            if (/Syntax error/i.test(text) || /Parse error/i.test(text)) {
+                if (el.children.length === 0) {
+                    return 'text:' + text.substring(0, 80);
+                }
+            }
+        }
+        return null;
+    }
+    """
+    result = page.evaluate(script)
+    if result:
+        return {
+            "invariant": "INV-15",
+            "description": (
+                f"Diagram rendering error detected in DOM: {result}."
+            ),
+            "revision_instruction": (
+                "Fix the diagram source code to eliminate rendering errors. "
+                "Check Mermaid syntax and ensure all diagram definitions "
+                "are valid."
+            ),
+        }
+    return None
+
+
+# ---------------------------------------------------------------------------
+# INV-20: check_image_aspect_ratio (Playwright-based)
+# ---------------------------------------------------------------------------
+
+
+def check_image_aspect_ratio(
+    page: "playwright.sync_api.Page",
+) -> Optional[QAFailure]:
+    """INV-20: Verify images are not distorted beyond 2% aspect ratio change.
+
+    Compares each <img>'s naturalWidth/naturalHeight to its rendered
+    width/height. Returns QAFailure if distortion exceeds 2%.
+    """
+    script = """
+    () => {
+        const imgs = document.querySelectorAll('img');
+        const distorted = [];
+        for (const img of imgs) {
+            if (!img.naturalWidth || !img.naturalHeight) continue;
+            if (!img.width || !img.height) continue;
+            const naturalRatio = img.naturalWidth / img.naturalHeight;
+            const renderedRatio = img.width / img.height;
+            const distortion = Math.abs(naturalRatio - renderedRatio) / naturalRatio;
+            if (distortion > 0.02) {
+                distorted.push({
+                    src: img.getAttribute('src') || '(no src)',
+                    naturalRatio: naturalRatio.toFixed(3),
+                    renderedRatio: renderedRatio.toFixed(3),
+                    distortion: (distortion * 100).toFixed(1),
+                });
+            }
+        }
+        return distorted.length > 0 ? distorted : null;
+    }
+    """
+    result = page.evaluate(script)
+    if result:
+        descs = [
+            f"{v['src']} ({v['distortion']}% distortion)"
+            for v in result
+        ]
+        return {
+            "invariant": "INV-20",
+            "description": (
+                f"Images have aspect ratio distortion >2%: "
+                f"{'; '.join(descs)}."
+            ),
+            "revision_instruction": (
+                "Preserve image aspect ratios by using CSS "
+                "object-fit: contain or removing explicit width/height "
+                "overrides that distort the original proportions."
+            ),
+        }
+    return None
+
+
+# ---------------------------------------------------------------------------
+# INV-22: check_inline_math_line_height (Playwright-based)
+# ---------------------------------------------------------------------------
+
+
+def check_inline_math_line_height(
+    page: "playwright.sync_api.Page",
+) -> Optional[QAFailure]:
+    """INV-22: Verify inline math does not increase line height by >5%.
+
+    Finds .katex-inline elements and compares each element's offsetHeight
+    to the parent's computed lineHeight. Returns QAFailure if any inline
+    math causes >5% line-height increase.
+    """
+    script = """
+    () => {
+        const els = document.querySelectorAll('.katex-inline');
+        const violations = [];
+        for (const el of els) {
+            const parent = el.parentElement;
+            if (!parent) continue;
+            const parentLineHeight = parseFloat(
+                window.getComputedStyle(parent).lineHeight
+            );
+            if (isNaN(parentLineHeight) || parentLineHeight === 0) continue;
+            const elHeight = el.offsetHeight;
+            const increase = (elHeight - parentLineHeight) / parentLineHeight;
+            if (increase > 0.05) {
+                violations.push({
+                    text: el.textContent.substring(0, 40),
+                    elHeight: Math.round(elHeight),
+                    lineHeight: Math.round(parentLineHeight),
+                    increase: (increase * 100).toFixed(1),
+                });
+            }
+        }
+        return violations.length > 0 ? violations : null;
+    }
+    """
+    result = page.evaluate(script)
+    if result:
+        return {
+            "invariant": "INV-22",
+            "description": (
+                f"Inline math elements increase line height by >5%: "
+                f"{len(result)} element(s) affected."
+            ),
+            "revision_instruction": (
+                "Reduce the size of inline math expressions or adjust "
+                "CSS to prevent .katex-inline elements from increasing "
+                "the surrounding line height by more than 5%."
+            ),
+        }
+    return None
+
+
+# ---------------------------------------------------------------------------
 # run_programmatic_checks
 # ---------------------------------------------------------------------------
 
@@ -428,15 +932,25 @@ def run_programmatic_checks(
     style_config: dict[str, Any],
     page: "playwright.sync_api.Page",
     slug: str = "",
+    project_root: Optional[Path] = None,
 ) -> tuple[list[QAFailure], list[QAWarning], bool]:
     """Run all programmatic invariant checks assigned to qa_checker.py.
 
     Returns (failures, warnings, veto) tuple. If veto is True, the
     slide has a hard-blocker violation per REQ-QA-2.
+
+    BUG-AUDIT-38: added 10 new INV checks (12-23) alongside the
+    original 5 (04/06/07/08/10) and 3 VETOs (01/04/06).
     """
     failures: list[QAFailure] = []
     warnings: list[QAWarning] = []
     veto = False
+
+    # Infer project_root from slide_path if not provided
+    if project_root is None:
+        project_root = slide_path.parent.parent  # slides/<slug>.html → project/
+
+    # --- Original INV checks ---
 
     # INV-04: contrast
     result = check_contrast(page)
@@ -464,7 +978,60 @@ def run_programmatic_checks(
     if result is not None:
         failures.append(result)
 
-    # BUG-AUDIT-37: VETO checks (hard blockers)
+    # --- BUG-AUDIT-38: 10 new INV checks ---
+
+    # INV-12: valid HTML5
+    result = check_valid_html5(slide_path)
+    if result is not None:
+        failures.append(result)
+
+    # INV-13: images respect margins
+    result = check_images_respect_margins(page)
+    if result is not None:
+        failures.append(result)
+
+    # INV-14: math doesn't overflow
+    result = check_math_no_overflow(page)
+    if result is not None:
+        failures.append(result)
+
+    # INV-15: diagrams render clean
+    result = check_diagrams_no_errors(page)
+    if result is not None:
+        failures.append(result)
+
+    # INV-16: fonts loadable
+    result = check_fonts_loadable(slide_path, project_root)
+    if result is not None:
+        failures.append(result)
+
+    # INV-17: CSS vars defined
+    result = check_css_vars_defined(slide_path, project_root)
+    if result is not None:
+        failures.append(result)
+
+    # INV-19: image paths exist
+    result = check_image_paths_exist(slide_path, project_root)
+    if result is not None:
+        failures.append(result)
+
+    # INV-20: image aspect ratio
+    result = check_image_aspect_ratio(page)
+    if result is not None:
+        failures.append(result)
+
+    # INV-22: inline math line-height
+    result = check_inline_math_line_height(page)
+    if result is not None:
+        failures.append(result)
+
+    # INV-23: math assets exist
+    result = check_math_assets_exist(slide_path, project_root)
+    if result is not None:
+        failures.append(result)
+
+    # --- BUG-AUDIT-37: VETO checks (hard blockers) ---
+
     result = check_text_overflow(page)
     if result is not None:
         failures.append(result)
@@ -555,19 +1122,16 @@ def main_qa_checker(
             append_qa_log(project_root, entry)
             sys.exit(1)
 
-        # Run programmatic checks (including VETO checks per BUG-AUDIT-37)
+        # Run programmatic checks (BUG-AUDIT-37 veto + BUG-AUDIT-38 full INV)
         failures, warnings, veto = run_programmatic_checks(
-            slide_path, screenshot_path, style_config, page, slug=slug
+            slide_path, screenshot_path, style_config, page,
+            slug=slug, project_root=project_root,
         )
         checks_run = [
-            "INV-04",
-            "INV-06",
-            "INV-07",
-            "INV-08",
-            "INV-10",
-            "VETO-01",
-            "VETO-04",
-            "VETO-06",
+            "INV-04", "INV-06", "INV-07", "INV-08", "INV-10",
+            "INV-12", "INV-13", "INV-14", "INV-15", "INV-16",
+            "INV-17", "INV-19", "INV-20", "INV-22", "INV-23",
+            "VETO-01", "VETO-04", "VETO-06",
         ]
         passed = len(failures) == 0
         entry = build_qa_log_entry(
