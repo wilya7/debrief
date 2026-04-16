@@ -135,6 +135,24 @@ def generate_css_root_block(config: dict[str, Any]) -> str:
     """
     flat = flatten_config(config)
 
+    # BUG-AUDIT-40: warn on unmapped config keys. These get the fallback
+    # naming convention which may not match what slides expect. The
+    # canonical template's keys are all in CSS_PROPERTY_MAP; unmapped
+    # keys indicate the stylist drifted to non-canonical names.
+    unmapped = [
+        p for p in flat
+        if p not in CSS_PROPERTY_MAP
+    ]
+    if unmapped:
+        import sys
+
+        print(
+            f"WARNING: {len(unmapped)} style_config key(s) not in "
+            f"CSS_PROPERTY_MAP (using fallback naming — may not match "
+            f"slide CSS expectations): {', '.join(sorted(unmapped))}",
+            file=sys.stderr,
+        )
+
     lines: list[str] = [":root {"]
     for dot_path, value in flat.items():
         css_var = CSS_PROPERTY_MAP.get(dot_path, path_to_css_var(dot_path))
