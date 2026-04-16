@@ -542,7 +542,7 @@ _BC_NAMED_FUNCTIONS = {
     "BC-4.3": "check_g3_2_machine_gate",
     "BC-4.5": "validate_gate_response",
     "BC-4.6": "promote_style_draft",
-    "BC-4.7": "consume_gate_data",
+    # BUG-AUDIT-30: BC-4.7 / consume_gate_data removed (dead at runtime).
     "BC-4.7c": "propose_presentation_folder_name",
     "BC-4.21": "merge_approval_payload",
 }
@@ -550,12 +550,9 @@ _BC_NAMED_FUNCTIONS = {
 
 # Whitelist for functions that are intentionally orphaned pending a
 # tracked BUG-AUDIT. Each entry MUST reference a BUG-AUDIT number.
-_ORPHAN_WHITELIST = {
-    "BC-4.7": (
-        "consume_gate_data — pending cross-cycle wiring in main_prepare. "
-        "See BUG-AUDIT-21 (deferred from BUG-AUDIT-20 for scope control)."
-    ),
-}
+# BUG-AUDIT-30: _ORPHAN_WHITELIST is now empty. consume_gate_data was
+# the only whitelisted entry; it has been deleted from routing.py.
+_ORPHAN_WHITELIST: dict[str, str] = {}
 
 
 def _function_has_production_caller(func_name: str) -> tuple[bool, list[str]]:

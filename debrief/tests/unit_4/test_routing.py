@@ -51,7 +51,6 @@ from unittest import mock
 import pytest
 from routing import (
     check_g3_2_machine_gate,
-    consume_gate_data,
     handle_red_green_transition,
     main_routing,
     main_update_state,
@@ -956,59 +955,10 @@ class TestG21StylePromotionDispatch:
 # ---------------------------------------------------------------------------
 
 
-class TestConsumeGateData:
-    """BC-4.7 — consume_gate_data delete-on-match, exit-4 on mismatch."""
-
-    def test_returns_none_when_file_absent(self, tmp_path: Path) -> None:
-        """When gate_data.json does not exist, return None."""
-        project_root = _make_project_root(tmp_path)
-        result = consume_gate_data("G1.3_figure_selection", project_root)
-        assert result is None
-
-    def test_returns_data_and_deletes_file_on_match(self, tmp_path: Path) -> None:
-        """When gate_id matches, return data dict and delete the file."""
-        project_root = _make_project_root(tmp_path)
-        gate_data = {
-            "gate_id": "G1.3_figure_selection",
-            "data": {"selected_figures": [1, 2, 3]},
-        }
-        gate_file = project_root / ".debrief" / "gate_data.json"
-        gate_file.write_text(json.dumps(gate_data), encoding="utf-8")
-
-        result = consume_gate_data("G1.3_figure_selection", project_root)
-
-        assert result == {"selected_figures": [1, 2, 3]}
-        assert not gate_file.exists(), "gate_data.json must be deleted after match"
-
-    def test_exits_code_4_on_gate_id_mismatch(self, tmp_path: Path) -> None:
-        """When gate_id mismatches expected, must exit with code 4."""
-        project_root = _make_project_root(tmp_path)
-        gate_data = {
-            "gate_id": "G1.3_figure_selection",
-            "data": {"selected_figures": [1, 2]},
-        }
-        gate_file = project_root / ".debrief" / "gate_data.json"
-        gate_file.write_text(json.dumps(gate_data), encoding="utf-8")
-
-        with pytest.raises(SystemExit) as exc_info:
-            consume_gate_data("G2.1_style_config_review", project_root)
-        assert exc_info.value.code == 4
-
-    def test_gate_data_file_not_deleted_on_mismatch(self, tmp_path: Path) -> None:
-        """On gate_id mismatch, the file must remain (we exit before deleting)."""
-        project_root = _make_project_root(tmp_path)
-        gate_data = {
-            "gate_id": "G1.3_figure_selection",
-            "data": {},
-        }
-        gate_file = project_root / ".debrief" / "gate_data.json"
-        gate_file.write_text(json.dumps(gate_data), encoding="utf-8")
-
-        with pytest.raises(SystemExit):
-            consume_gate_data("G2.1_style_config_review", project_root)
-
-        # File should still exist (we exited before any delete could happen)
-        assert gate_file.exists()
+# BUG-AUDIT-30: TestConsumeGateData (4 tests) deleted. The function
+# consume_gate_data was removed from routing.py — it was dead at
+# runtime (called only from main_prepare, which has zero callers).
+# See Bug Catalog entry BUG-AUDIT-30.
 
 
 # ---------------------------------------------------------------------------

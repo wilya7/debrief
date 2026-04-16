@@ -787,40 +787,11 @@ def promote_style_draft(project_root: Path) -> None:
         shutil.rmtree(str(draft_dir))
 
 
-# ---------------------------------------------------------------------------
-# consume_gate_data (BC-4.7)
-# ---------------------------------------------------------------------------
-
-
-def consume_gate_data(
-    expected_gate_id: str,
-    project_root: Path,
-) -> Optional[dict[str, Any]]:
-    """Read .debrief/gate_data.json if present.
-
-    If gate_id matches expected_gate_id, return the data payload and delete
-    the file. If gate_id mismatches, exit with code 4. If file absent,
-    return None.
-    """
-    gate_file = project_root / ".debrief" / "gate_data.json"
-    if not gate_file.exists():
-        return None
-
-    raw = gate_file.read_text(encoding="utf-8")
-    data = json.loads(raw)
-
-    actual_gate_id = data.get("gate_id", "")
-    if actual_gate_id != expected_gate_id:
-        print(
-            f"gate_data.json gate_id mismatch: expected "
-            f"{expected_gate_id!r}, got {actual_gate_id!r}",
-            file=sys.stderr,
-        )
-        sys.exit(4)
-
-    payload = data.get("data", {})
-    gate_file.unlink()
-    return payload
+# BUG-AUDIT-30: consume_gate_data deleted. The function was dead at
+# runtime — called only from main_prepare, which has zero callers in
+# commands/, hooks/, or agents/. The consultant carries cross-cycle
+# feedback natively via Task-tool prompts. BC-4.7 is removed. See the
+# Bug Catalog entry for Prior-Art for Rebuild.
 
 
 # ---------------------------------------------------------------------------
