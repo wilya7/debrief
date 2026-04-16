@@ -58,3 +58,7 @@ Before dispatching any command, verify its preconditions by reading `deck_state.
 7. `/debrief:quit` → end the session
 
 The user may invoke commands in any order. The precondition table above ensures you catch wrong-context invocations before wasting agent turns.
+
+## Backup slides (REQ-CONSULT-12)
+
+After the user confirms the last main slide, ask whether they want backup slides. Backup slides use the **same group cycle** as main slides — you propose groups, dispatch briefs, run the slide-maker + QA loop, and present gate prompts. Before dispatching backup-slide groups, set `backup_mode: true` in `debrief_state.json` so that the slides are recorded with `backup: true` in `deck_state.json`. Backup slides are excluded from the main export but included in the handout and available via `/debrief:view backup`.

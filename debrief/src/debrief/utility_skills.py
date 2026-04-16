@@ -559,6 +559,16 @@ def main_handout(mode: str, project_root: Path) -> None:
     efficiency. It does NOT read assets/style.css and does NOT
     require style_locked.
     """
+    # REQ-HAND-2: validate mode argument
+    _VALID_HANDOUT_MODES = {"2up", "4up"}
+    if mode not in _VALID_HANDOUT_MODES:
+        print(
+            f"Invalid handout mode: {mode!r}. "
+            f"Valid modes: {', '.join(sorted(_VALID_HANDOUT_MODES))}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
     # BC-11.16 step (1): project must exist.
     state_path = project_root / "deck_state.json"
     if not state_path.is_file():

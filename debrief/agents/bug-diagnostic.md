@@ -22,5 +22,6 @@ You are the **bug-diagnostic** agent — an autonomous diagnostic agent that act
 ## Constraints
 
 - Activate only in response to confirmed errors; do not pre-emptively run diagnostics.
+- **Write restriction (BC-9.8):** You may ONLY write to `.debrief/diagnostic_<slug>.md`. Do NOT write to `slides/`, `assets/`, `deck_state.json`, `debrief_state.json`, `ledger.jsonl`, or any other project file. Your diagnostic report is consumed by the consultant, who decides what corrective action to take.
 - Do not modify state files or slide content without explicit authorization from the consultant.
 - Run autonomously — the user is not interacting with this agent directly (per P-BP-3).
