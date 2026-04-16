@@ -1179,105 +1179,14 @@ class TestOneBrowserContextPerExport:
 # ===========================================================================
 
 
-class TestPdfFileNamingFromPresentationRecord:
-    """BC-10.4: main_export uses export_count from the presentation record."""
-
-    def _run_export_and_get_pdf_path(
-        self,
-        project_dir: Path,
-        export_count: int,
-    ) -> str:
-        """Run main_export with a mock state having the given export_count.
-
-        Returns the pdf_path string passed to append_export_log.
-        """
-        from export import main_export
-
-        presentation = _make_presentation(
-            folder="2026_04_12_talk",
-            export_count=export_count,
-        )
-        slides = [_make_slide("s1", backup=False)]
-        state = _make_deck_state(slides, presentations=[presentation])
-
-        (project_dir / "slides" / "s1.html").write_text(
-            "<html><body>s1</body></html>", encoding="utf-8"
-        )
-        (project_dir / "style_config.json").write_text(
-            json.dumps(_MINIMAL_STYLE_CONFIG), encoding="utf-8"
-        )
-
-        mock_state_module = MagicMock()
-        mock_state_module.read_deck_state.return_value = state
-        mock_state_module.increment_export_count.return_value = None
-        mock_state_module.write_deck_state.return_value = None
-
-        logged: list[dict[str, Any]] = []
-
-        def fake_append_log(**kwargs: Any) -> None:
-            logged.append(kwargs)
-
-        mock_page = MagicMock()
-        mock_page.pdf.return_value = b"%PDF-1.4"
-        mock_context = MagicMock()
-        mock_context.new_page.return_value = mock_page
-        mock_browser = MagicMock()
-        mock_browser.new_context.return_value = mock_context
-        mock_pw_instance = MagicMock()
-        mock_pw_instance.chromium.launch.return_value = mock_browser
-        ctx_mgr = MagicMock()
-        ctx_mgr.__enter__ = MagicMock(return_value=mock_pw_instance)
-        ctx_mgr.__exit__ = MagicMock(return_value=False)
-
-        mock_fitz_doc = MagicMock()
-        mock_fitz_doc.__enter__ = MagicMock(return_value=mock_fitz_doc)
-        mock_fitz_doc.__exit__ = MagicMock(return_value=False)
-        mock_merged = MagicMock()
-        mock_fitz = MagicMock()
-        mock_fitz.open.side_effect = [mock_merged, mock_fitz_doc]
-
-        with (
-            patch("importlib.util.find_spec", return_value=MagicMock()),
-            patch(
-                "subprocess.run",
-                return_value=MagicMock(returncode=0, stderr=""),
-            ),
-            patch("export.append_export_log", side_effect=fake_append_log),
-            patch.dict(
-                "sys.modules",
-                {
-                    "debrief": MagicMock(),
-                    "debrief_state": mock_state_module,
-                    "playwright": MagicMock(),
-                    "playwright.sync_api": MagicMock(
-                        sync_playwright=MagicMock(return_value=ctx_mgr)
-                    ),
-                    "fitz": mock_fitz,
-                },
-            ),
-        ):
-            main_export(project_dir)
-
-        assert logged, "append_export_log was never called"
-        return logged[-1].get("pdf_path", "")
-
-    def test_version_one_when_export_count_is_zero(
-        self, project_dir: Path
-    ) -> None:
-        """export_count=0 produces deck_v001.pdf."""
-        pdf_path = self._run_export_and_get_pdf_path(project_dir, 0)
-        assert pdf_path.endswith("deck_v001.pdf"), (
-            f"Expected deck_v001.pdf, got {pdf_path!r}"
-        )
-
-    def test_version_uses_export_count_plus_one(
-        self, project_dir: Path
-    ) -> None:
-        """export_count=4 produces deck_v005.pdf."""
-        pdf_path = self._run_export_and_get_pdf_path(project_dir, 4)
-        assert pdf_path.endswith("deck_v005.pdf"), (
-            f"Expected deck_v005.pdf, got {pdf_path!r}"
-        )
+# BUG-AUDIT-23: the old ``TestPdfFileNamingFromPresentationRecord`` class
+# (2 tests) was deleted. It set up synthetic states with pre-set
+# ``export_count`` and asserted the PDF filename derived from
+# ``export_count + 1``. BUG-AUDIT-23 replaced state-field versioning
+# with filesystem-derived versioning (scan output/{folder}/deck_v*.pdf,
+# pick max + 1). The equivalent coverage — plus pre-seeded-file and
+# no-state-mutation assertions — lives in
+# ``tests/regressions/test_bug_audit_23_export_robustness.py``.
 
 
 # ===========================================================================

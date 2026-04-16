@@ -46,9 +46,20 @@ def main_export(project_root: Path) -> None:
     Exit 0 on success. Exit 1 on Playwright or file failure.
     Exit 2 on env corruption.
     """
-    # BC-10.7: Check playwright availability at entry
+    # BC-10.7 / BUG-AUDIT-23: Check env dependencies at entry.
+    # Order: playwright first (needed for rendering), then fitz
+    # (needed for multi-page merge). Both checked before any
+    # expensive work so missing-dep failures are fast and clear.
     if importlib.util.find_spec("playwright") is None:
         print(_ENV_CORRUPT_MSG, file=sys.stderr)
+        sys.exit(2)
+    if importlib.util.find_spec("fitz") is None:
+        print(
+            "Cannot export: PyMuPDF (fitz) is not importable. "
+            "Multi-page PDF merging requires PyMuPDF. "
+            "Run 'debrief --rebuild-env' to restore the environment.",
+            file=sys.stderr,
+        )
         sys.exit(2)
 
     # BC-10.1: Run style_compiler before opening Playwright
@@ -101,21 +112,34 @@ def main_export(project_root: Path) -> None:
 
     presentation = state.presentations[-1]
     folder = presentation.folder
-    version = presentation.export_count + 1
     output_dir = project_root / "output" / folder
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # BUG-AUDIT-23 / BC-10.4: filesystem-derived versioning. Scan the
+    # output directory for existing deck_v*.pdf files and pick (max + 1).
+    # This replaces the old presentation.export_count + 1 pattern, which
+    # could drift if state was rolled back or corrupted. Consistent with
+    # handout's BC-11.17 approach.
+    existing_versions: list[int] = []
+    for existing in output_dir.glob("deck_v*.pdf"):
+        stem = existing.stem
+        if stem.startswith("deck_v"):
+            suffix = stem[len("deck_v"):]
+            try:
+                existing_versions.append(int(suffix))
+            except ValueError:
+                continue
+    version = (max(existing_versions) + 1) if existing_versions else 1
     pdf_file = output_dir / f"deck_v{version:03d}.pdf"
 
     # Build page list
     pages = build_page_list(state, project_root)
     slide_count = len(pages)
 
-    # BC-10.2: One BrowserContext per export
-    try:
-        from playwright.sync_api import sync_playwright  # type: ignore[import]
-    except ImportError:
-        print(_ENV_CORRUPT_MSG, file=sys.stderr)
-        sys.exit(2)
+    # BC-10.2: One BrowserContext per export.
+    # BUG-AUDIT-23: find_spec check at entry guarantees playwright is
+    # importable, so no try/except ImportError here.
+    from playwright.sync_api import sync_playwright  # type: ignore[import]
 
     error_message: Optional[str] = None
     pdf_path_str = ""
@@ -142,24 +166,20 @@ def main_export(project_root: Path) -> None:
                     finally:
                         pw_page.close()
 
-                # Merge PDF buffers using PyMuPDF (fitz)
-                try:
-                    import fitz  # type: ignore[import]
+                # BUG-AUDIT-23: merge PDF buffers using PyMuPDF (fitz).
+                # fitz is guaranteed importable after the entry check.
+                # No except ImportError fallback — the old fallback
+                # silently wrote only the first page for multi-page
+                # decks, producing silent data loss. If fitz raises a
+                # runtime error here, let it propagate as a real bug.
+                import fitz  # type: ignore[import]
 
-                    merged = fitz.open()
-                    for buf in pdf_buffers:
-                        with fitz.open(stream=buf, filetype="pdf") as doc:
-                            merged.insert_pdf(doc)
-                    merged.save(str(pdf_file))
-                    merged.close()
-                except ImportError:
-                    # Fallback: write first buffer if only one page
-                    if len(pdf_buffers) == 1:
-                        pdf_file.write_bytes(pdf_buffers[0])
-                    elif pdf_buffers:
-                        # Write concatenated (not standards-compliant but best
-                        # effort without fitz)
-                        pdf_file.write_bytes(pdf_buffers[0])
+                merged = fitz.open()
+                for buf in pdf_buffers:
+                    with fitz.open(stream=buf, filetype="pdf") as doc:
+                        merged.insert_pdf(doc)
+                merged.save(str(pdf_file))
+                merged.close()
 
             finally:
                 context.close()
@@ -183,20 +203,14 @@ def main_export(project_root: Path) -> None:
         )
         sys.exit(1)
 
-    # BC-10.5: Increment export_count and append log AFTER PDF is written
-    try:
-        # BC-10.X / BUG-AUDIT-18: see the note at the `read_deck_state`
-        # import above for the module-name fix history.
-        from debrief_state import (  # type: ignore[import]
-            increment_export_count,
-            write_deck_state,
-        )
+    # BUG-AUDIT-23: no state mutation. Version is filesystem-derived
+    # (BC-10.4 amendment), so increment_export_count and
+    # write_deck_state are no longer called. The old block was:
+    #   increment_export_count(state, folder)
+    #   write_deck_state(project_root, state)
+    # with a catch-all except that silently swallowed errors.
 
-        increment_export_count(state, folder)
-        write_deck_state(project_root, state)
-    except Exception as exc:
-        print(f"Failed to update export count: {exc}", file=sys.stderr)
-
+    # BC-10.5: append log AFTER PDF is written
     append_export_log(
         project_root=project_root,
         presentation_folder=folder,
