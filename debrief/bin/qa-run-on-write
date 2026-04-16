@@ -43,6 +43,14 @@ def _extract_slide_path(hook_input: dict) -> Optional[Path]:
     paths that contain a ``slides/`` segment and end in ``.html``.
     Returns ``None`` for any non-slide write (empty path, wrong
     extension, non-slides directory).
+
+    NOTE (BC-7.8 / BC-9.6 / BUG-AUDIT-36): preview slides at
+    ``.debrief/draft/preview_slides/*.html`` are intentionally
+    excluded by this filter — they do not have ``slides`` as a
+    path segment (they have ``preview_slides``), so they return
+    ``None`` and the QA hook is a no-op. This is the correct
+    behavior: preview slides are transient draft artifacts, not
+    production slides subject to QA invariant checks.
     """
     tool_input = hook_input.get("tool_input", {})
     raw = tool_input.get("file_path", "")

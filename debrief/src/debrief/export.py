@@ -105,10 +105,44 @@ def main_export(project_root: Path) -> None:
         print(f"Failed to read style_config.json: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    # Determine presentation folder and export version
+    # Determine presentation folder and export version.
+    # BUG-AUDIT-36 / REQ-LIFE-2: if no presentation record exists (first
+    # export), create one with a deterministic folder name. The old routing
+    # loop created this; in the consultant-orchestrated model, export
+    # self-bootstraps on first run.
     if not state.presentations:
-        print("No presentation record found.", file=sys.stderr)
-        sys.exit(1)
+        from datetime import date
+        from debrief_state import (  # type: ignore[import]
+            sanitize_identifier,
+            write_deck_state,
+        )
+
+        today = date.today().strftime("%Y_%m_%d")
+        title_part = sanitize_identifier(state.project_name, max_length=40)
+        folder_name = f"{today}_{title_part}"
+
+        new_pres = type(state.presentations)()  # empty list of same type
+        # Build a minimal PresentationRecord-compatible dict and let
+        # the state layer handle it. Since presentations is a list of
+        # PresentationRecord dataclass instances, we construct one:
+        from debrief_state import PresentationRecord  # type: ignore[import]
+
+        new_rec = PresentationRecord(
+            folder=folder_name,
+            created_at=date.today().isoformat(),
+            slide_manifest=[s.slug for s in state.slides if s.status == "approved" and not s.backup],
+            export_count=0,
+            script_count=0,
+            handout_count=0,
+            separator_position=None,
+            separator_content=None,
+        )
+        state.presentations.append(new_rec)
+        write_deck_state(project_root, state)
+        print(
+            f"Created first presentation record: {folder_name}",
+            file=sys.stderr,
+        )
 
     presentation = state.presentations[-1]
     folder = presentation.folder

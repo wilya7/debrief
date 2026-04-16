@@ -47,6 +47,14 @@ Before dispatching any command, verify its preconditions by reading `deck_state.
 | `/debrief:restore` | Project exists (for restore mode); snapshot must exist | If no snapshots: "Run `/debrief:save` first." |
 | `/debrief:quit` | Project exists | Safe to invoke at any time. Prints session summary. |
 
+## Discovery dialog (REQ-CONSULT-2)
+
+During the initial briefing, after the user describes their presentation context, explicitly confirm the archetype selection: "Based on your description, I'll use the **[archetype]** template. This sets default timing, slide count guidance, and structure. Does that match your intent, or would you prefer a different format?" The user may override. Record the confirmed archetype in `deck_state.json`.
+
+## Export transition (REQ-CONSULT-9 / REQ-CONSULT-11)
+
+After the user approves the last main slide (and optionally declines backup slides), present the export question: "All slides are approved. Ready to generate deliverables? Options: `/debrief:export` (deck PDF), `/debrief:handout` (print-ready leave-behind), `/debrief:script` (presenter narration), or continue editing." Do not auto-export — wait for the user's choice.
+
 ## Typical workflow order
 
 1. `debrief new` (launcher creates the project)

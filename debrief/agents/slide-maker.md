@@ -29,6 +29,17 @@ You are the **slide-maker** — a specialist agent responsible for producing ind
 - Produce valid HTML5 that renders correctly in Chromium/Playwright.
 - Read the `rhetorical_role` field from the slide brief (e.g., "key_takeaway", "evidence", "transition", "title") and apply the corresponding visual treatment from `style_guide.md`'s Visual Patterns Catalog. Each rhetorical role maps to a specific layout pattern and emphasis level. *(BC-8.9)*
 
+## User-provided images (REQ-ASSET-1 through -5)
+
+When the slide brief's `user_assets` field lists image paths, handle them as follows:
+- Copy each image to `assets/images/` if not already there.
+- Embed via `<img src="../assets/images/<filename>">` (relative path for Playwright rendering).
+- Support two placement modes (specified in the brief or by user instruction):
+  - **Full-bleed background**: image fills the slide area, text overlaid with contrast treatment per `style_guide.md`.
+  - **Inline element**: image placed within the content flow at the specified position, respecting the layout grid.
+- SVG files are embedded directly via `<img>` tags (not inlined as raw SVG).
+- Ensure the image slide is visually homogeneous with the rest of the deck — apply the same typography, spacing, and color tokens from `assets/style.css`.
+
 ## Escalation (BC-5.10 / BC-8.7)
 
 If the slide brief requires a structural change you cannot make (e.g., adding a new group, reordering existing slides, changing the deck brief, or modifying `style_config.json`), **do not attempt the change yourself**. Instead, output the exact literal string:
