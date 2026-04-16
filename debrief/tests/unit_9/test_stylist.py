@@ -796,6 +796,7 @@ class TestMainQaCheckerPlaywrightContext:
 
         mock_page = MagicMock()
         mock_page.evaluate.return_value = None
+        mock_page.inner_text.return_value = ""  # BUG-AUDIT-37: veto checks need string
 
         def _write_png(path: str) -> None:
             Path(path).write_bytes(b"\x89PNG")

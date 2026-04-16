@@ -318,6 +318,106 @@ def check_aspect_ratio(
 
 
 # ---------------------------------------------------------------------------
+# VETO checks (BUG-AUDIT-37 / REQ-QA-2)
+# ---------------------------------------------------------------------------
+
+_RAW_SOURCE_PATTERNS = re.compile(
+    r"<div\b|</div>|<span\b|</span>|<p\b|</p>"
+    r"|\\begin\{|\\end\{|\\frac\{|\\sum_|\\int_"
+    r"|style\s*=\s*[\"']",
+    re.IGNORECASE,
+)
+
+
+def check_text_overflow(
+    page: "playwright.sync_api.Page",
+) -> Optional[QAFailure]:
+    """VETO-01: detect text overflowing beyond its container boundary."""
+    script = """
+    () => {
+        const els = document.querySelectorAll('*');
+        for (const el of els) {
+            const s = window.getComputedStyle(el);
+            if (s.display === 'none' || s.visibility === 'hidden') continue;
+            if (el.scrollWidth > el.clientWidth + 2 ||
+                el.scrollHeight > el.clientHeight + 2) {
+                if (s.overflow === 'hidden' || s.overflowX === 'hidden' ||
+                    s.overflowY === 'hidden') {
+                    return el.tagName + (el.className ? '.' + el.className.split(' ')[0] : '');
+                }
+            }
+        }
+        return null;
+    }
+    """
+    result = page.evaluate(script)
+    if result:
+        return {
+            "invariant": "VETO-01",
+            "description": (
+                f"Text overflows beyond slide boundary at element: {result}. "
+                "Content is clipped or truncated."
+            ),
+            "revision_instruction": (
+                "Reduce content length, decrease font size, or restructure "
+                "layout so all text fits within the slide boundary."
+            ),
+        }
+    return None
+
+
+def check_raw_source_visible(
+    page: "playwright.sync_api.Page",
+) -> Optional[QAFailure]:
+    """VETO-04: detect raw HTML/CSS/LaTeX source visible as literal text."""
+    try:
+        visible_text = page.inner_text("body")
+    except Exception:
+        return None
+    if _RAW_SOURCE_PATTERNS.search(visible_text):
+        return {
+            "invariant": "VETO-04",
+            "description": (
+                "Raw HTML, CSS, or LaTeX source code is visible as "
+                "literal text in the rendered slide."
+            ),
+            "revision_instruction": (
+                "Ensure all HTML tags are properly rendered (not escaped "
+                "as text), all LaTeX is processed by KaTeX, and no CSS "
+                "properties appear as visible content."
+            ),
+        }
+    return None
+
+
+def check_slug_not_in_content(
+    page: "playwright.sync_api.Page",
+    slug: str,
+) -> Optional[QAFailure]:
+    """VETO-06: detect the slide's slug rendered as visible body content."""
+    if not slug:
+        return None
+    try:
+        visible_text = page.inner_text("body")
+    except Exception:
+        return None
+    if slug in visible_text:
+        return {
+            "invariant": "VETO-06",
+            "description": (
+                f"Slide slug '{slug}' appears as visible text in the "
+                "rendered content. Meta-identifiers must not be shown."
+            ),
+            "revision_instruction": (
+                f"Remove the literal string '{slug}' from the slide's "
+                "visible content area. Slugs are internal identifiers, "
+                "not presentation text."
+            ),
+        }
+    return None
+
+
+# ---------------------------------------------------------------------------
 # run_programmatic_checks
 # ---------------------------------------------------------------------------
 
@@ -327,13 +427,16 @@ def run_programmatic_checks(
     screenshot_path: Path,
     style_config: dict[str, Any],
     page: "playwright.sync_api.Page",
-) -> tuple[list[QAFailure], list[QAWarning]]:
+    slug: str = "",
+) -> tuple[list[QAFailure], list[QAWarning], bool]:
     """Run all programmatic invariant checks assigned to qa_checker.py.
 
-    Returns (failures, warnings) tuple.
+    Returns (failures, warnings, veto) tuple. If veto is True, the
+    slide has a hard-blocker violation per REQ-QA-2.
     """
     failures: list[QAFailure] = []
     warnings: list[QAWarning] = []
+    veto = False
 
     # INV-04: contrast
     result = check_contrast(page)
@@ -361,7 +464,23 @@ def run_programmatic_checks(
     if result is not None:
         failures.append(result)
 
-    return failures, warnings
+    # BUG-AUDIT-37: VETO checks (hard blockers)
+    result = check_text_overflow(page)
+    if result is not None:
+        failures.append(result)
+        veto = True
+
+    result = check_raw_source_visible(page)
+    if result is not None:
+        failures.append(result)
+        veto = True
+
+    result = check_slug_not_in_content(page, slug)
+    if result is not None:
+        failures.append(result)
+        veto = True
+
+    return failures, warnings, veto
 
 
 # ---------------------------------------------------------------------------
@@ -436,9 +555,9 @@ def main_qa_checker(
             append_qa_log(project_root, entry)
             sys.exit(1)
 
-        # Run programmatic checks
-        failures, warnings = run_programmatic_checks(
-            slide_path, screenshot_path, style_config, page
+        # Run programmatic checks (including VETO checks per BUG-AUDIT-37)
+        failures, warnings, veto = run_programmatic_checks(
+            slide_path, screenshot_path, style_config, page, slug=slug
         )
         checks_run = [
             "INV-04",
@@ -446,12 +565,15 @@ def main_qa_checker(
             "INV-07",
             "INV-08",
             "INV-10",
+            "VETO-01",
+            "VETO-04",
+            "VETO-06",
         ]
         passed = len(failures) == 0
         entry = build_qa_log_entry(
             slug=slug,
             passed=passed,
-            veto=False,
+            veto=veto,
             checks_run=checks_run,
             failures=failures,
             warnings=warnings,
