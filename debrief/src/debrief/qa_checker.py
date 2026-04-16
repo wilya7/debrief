@@ -487,23 +487,101 @@ def main_qa_checker(
 
 
 # ---------------------------------------------------------------------------
+# check_slide_iteration_limit (REQ-SLIDE-5 / BUG-AUDIT-35)
+# ---------------------------------------------------------------------------
+
+
+def check_slide_iteration_limit(
+    slug: str,
+    project_root: Path,
+    limit: int = 5,
+) -> dict[str, Any]:
+    """Count consecutive RED qa_log entries for a slug from the tail.
+
+    Reads ``output/qa_log.jsonl``, filters for the given slug, and
+    counts how many consecutive ``passed: false`` entries appear from
+    the most recent entry backward. Stops at the first GREEN (passed)
+    entry or at the beginning of the log.
+
+    Returns ``{"limit_reached": bool, "iteration": int, "limit": int}``.
+    """
+    log_path = project_root / "output" / "qa_log.jsonl"
+    if not log_path.is_file():
+        return {"limit_reached": False, "iteration": 0, "limit": limit}
+
+    entries: list[dict[str, Any]] = []
+    for line in log_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if entry.get("slug") == slug:
+            entries.append(entry)
+
+    consecutive_red = 0
+    for entry in reversed(entries):
+        if entry.get("passed", True):
+            break
+        consecutive_red += 1
+
+    return {
+        "limit_reached": consecutive_red >= limit,
+        "iteration": consecutive_red,
+        "limit": limit,
+    }
+
+
+# ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
 
 
-def _parse_args() -> tuple[Path, Path, Path]:
+def _parse_args() -> tuple:
     import argparse
 
     parser = argparse.ArgumentParser(
         description="Debrief QA checker — programmatic slide invariant checks"
     )
-    parser.add_argument("--slide-path", required=True, type=Path)
-    parser.add_argument("--screenshot-path", required=True, type=Path)
-    parser.add_argument("--project-root", required=True, type=Path)
+    subparsers = parser.add_subparsers(dest="command")
+
+    # Default: run QA checks
+    check_parser = subparsers.add_parser("check", help="Run QA checks")
+    check_parser.add_argument("--slide-path", required=True, type=Path)
+    check_parser.add_argument("--screenshot-path", required=True, type=Path)
+    check_parser.add_argument("--project-root", required=True, type=Path)
+
+    # BUG-AUDIT-35: check iteration limit
+    limit_parser = subparsers.add_parser(
+        "check_limit", help="Check red-green iteration limit for a slug"
+    )
+    limit_parser.add_argument("--slug", required=True)
+    limit_parser.add_argument("--project-root", required=True, type=Path)
+    limit_parser.add_argument("--limit", type=int, default=5)
+
     args = parser.parse_args()
-    return args.slide_path, args.screenshot_path, args.project_root
+
+    if args.command == "check_limit":
+        return ("check_limit", args)
+    if args.command == "check":
+        return ("check", args)
+    # Backward compat: no subcommand → original positional args
+    parser2 = argparse.ArgumentParser()
+    parser2.add_argument("--slide-path", required=True, type=Path)
+    parser2.add_argument("--screenshot-path", required=True, type=Path)
+    parser2.add_argument("--project-root", required=True, type=Path)
+    args2 = parser2.parse_args()
+    return ("check", args2)
 
 
 if __name__ == "__main__":
-    _slide_path, _screenshot_path, _project_root = _parse_args()
-    main_qa_checker(_slide_path, _screenshot_path, _project_root)
+    _cmd, _args = _parse_args()
+    if _cmd == "check_limit":
+        result = check_slide_iteration_limit(
+            _args.slug, _args.project_root, _args.limit
+        )
+        print(json.dumps(result))
+    else:
+        main_qa_checker(_args.slide_path, _args.screenshot_path, _args.project_root)

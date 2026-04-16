@@ -20,7 +20,7 @@ Synthetic data generation assumptions
 - ``DebriefState`` stand-ins are ``SimpleNamespace`` objects with the
   fields used by BC-11.1 through BC-11.3: ``phase``, ``sub_phase``,
   ``pending_gate``, ``pre_view_state``, ``view_deferred``,
-  ``red_green_iteration``, ``red_green_started_at``.
+  ``red_green_started_at``.
 - ``PresentationRecord`` stand-ins carry: ``folder``, ``created_at``,
   ``slide_manifest`` ([]), ``export_count``, ``script_count``,
   ``handout_count``, ``separator_position`` (None), ``separator_content``
@@ -157,7 +157,6 @@ def _make_debrief_state(
     pending_gate: Optional[str] = None,
     pre_view_state: Optional[dict] = None,
     view_deferred: bool = False,
-    red_green_iteration: int = 0,
     red_green_started_at: Optional[str] = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
@@ -169,7 +168,6 @@ def _make_debrief_state(
         current_slide_slug=None,
         pending_gate=pending_gate,
         last_gate_response=None,
-        red_green_iteration=red_green_iteration,
         red_green_started_at=red_green_started_at,
         group_slide_index=0,
         group_slide_count=1,
@@ -218,7 +216,6 @@ def _write_debrief_state(
     pending_gate: Optional[str] = None,
     pre_view_state: Optional[dict] = None,
     view_deferred: bool = False,
-    red_green_iteration: int = 0,
     red_green_started_at: Optional[str] = None,
 ) -> None:
     data: dict[str, Any] = {
@@ -230,7 +227,6 @@ def _write_debrief_state(
         "current_slide_slug": None,
         "pending_gate": pending_gate,
         "last_gate_response": None,
-        "red_green_iteration": red_green_iteration,
         "red_green_started_at": red_green_started_at,
         "group_slide_index": 0,
         "group_slide_count": 1,
@@ -727,12 +723,11 @@ class TestMainViewRedGreenDeferral:
             tmp_path,
             slides=[_slide_dict("intro")],
         )
-        # red-green cycle is active: iteration > 0
+        # red-green cycle is active: sub_phase + red_green_started_at
         _write_debrief_state(
             tmp_path,
             phase="production",
             sub_phase="production/red_green",
-            red_green_iteration=2,
             red_green_started_at=_TS,
         )
         with patch("webbrowser.open"):
@@ -759,7 +754,6 @@ class TestMainViewRedGreenDeferral:
             tmp_path,
             phase="production",
             sub_phase="production/red_green",
-            red_green_iteration=1,
             red_green_started_at=_TS,
         )
         with patch("webbrowser.open"):

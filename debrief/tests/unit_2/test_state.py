@@ -131,7 +131,6 @@ def _base_debrief_dict() -> dict[str, Any]:
         "current_slide_slug": "intro",
         "pending_gate": None,
         "last_gate_response": None,
-        "red_green_iteration": 2,
         "red_green_started_at": _TS,
         "group_slide_index": 1,
         "group_slide_count": 3,
@@ -163,7 +162,6 @@ def _make_debrief_state(d: dict[str, Any] | None = None) -> DebriefState:
         current_slide_slug=base.get("current_slide_slug"),
         pending_gate=base.get("pending_gate"),
         last_gate_response=base.get("last_gate_response"),
-        red_green_iteration=base["red_green_iteration"],
         red_green_started_at=base.get("red_green_started_at"),
         group_slide_index=base["group_slide_index"],
         group_slide_count=base["group_slide_count"],
@@ -366,12 +364,6 @@ class TestValidateDebriefState:
             validate_debrief_state(d)
 
     # numeric counter non-negative
-    def test_negative_red_green_iteration_raises(self) -> None:
-        d = self._valid()
-        d["red_green_iteration"] = -1
-        with pytest.raises(StateCorruptError):
-            validate_debrief_state(d)
-
     def test_negative_group_slide_index_raises(self) -> None:
         d = self._valid()
         d["group_slide_index"] = -1
@@ -386,7 +378,6 @@ class TestValidateDebriefState:
 
     def test_zero_counters_are_valid(self) -> None:
         d = self._valid()
-        d["red_green_iteration"] = 0
         d["group_slide_index"] = 0
         d["group_slide_count"] = 0
         validate_debrief_state(d)
@@ -818,7 +809,7 @@ class TestWriteDebriefState:
         assert not (tmp_path / "debrief_state.json.tmp").exists()
 
     def test_all_debrief_state_fields_written(self, tmp_path: Path) -> None:
-        """BC-2.13: all 25 fields must appear in the written JSON."""
+        """BC-2.13: all 24 fields must appear in the written JSON."""
         self._setup_lock_dir(tmp_path)
         state = _make_debrief_state()
         write_debrief_state(tmp_path, state)
@@ -832,7 +823,6 @@ class TestWriteDebriefState:
             "current_slide_slug",
             "pending_gate",
             "last_gate_response",
-            "red_green_iteration",
             "red_green_started_at",
             "group_slide_index",
             "group_slide_count",

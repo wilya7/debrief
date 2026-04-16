@@ -52,7 +52,7 @@ def _write_state_files(
     *,
     phase: str = "production",
     sub_phase: str = "production/red_green",
-    red_green_iteration: int = 0,
+    red_green_started_at: Optional[str] = None,
     slides: Optional[list[dict[str, Any]]] = None,
     style_locked: bool = True,
     presentations: Optional[list[dict[str, Any]]] = None,
@@ -77,8 +77,7 @@ def _write_state_files(
         "current_slide_slug": None,
         "pending_gate": None,
         "last_gate_response": None,
-        "red_green_iteration": red_green_iteration,
-        "red_green_started_at": None,
+        "red_green_started_at": red_green_started_at,
         "group_slide_index": 0,
         "group_slide_count": 1,
         "backup_mode": False,
@@ -194,7 +193,6 @@ class TestQuitDefensiveCycleCheck:
     ) -> None:
         _write_state_files(
             tmp_path, sub_phase="production/slide_review",
-            red_green_iteration=0,
         )
         utility_skills.skill_quit(tmp_path)
         msg = capsys.readouterr().err
@@ -205,7 +203,7 @@ class TestQuitDefensiveCycleCheck:
     ) -> None:
         _write_state_files(
             tmp_path, sub_phase="production/red_green",
-            red_green_iteration=3,
+            red_green_started_at=_TS,
         )
         utility_skills.skill_quit(tmp_path)
         msg = capsys.readouterr().err
@@ -217,7 +215,7 @@ class TestQuitDefensiveCycleCheck:
     ) -> None:
         _write_state_files(
             tmp_path, sub_phase="production/red_green",
-            red_green_iteration=2,
+            red_green_started_at=_TS,
         )
         # Should complete without raising, despite the warning
         utility_skills.skill_quit(tmp_path)

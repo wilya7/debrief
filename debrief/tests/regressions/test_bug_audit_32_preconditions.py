@@ -50,7 +50,7 @@ def _write_state(root: Path, **kw: Any) -> None:
         "active_agent": "consultant", "archetype": "lab_meeting",
         "current_group_id": None, "current_slide_slug": None,
         "pending_gate": None, "last_gate_response": None,
-        "red_green_iteration": 0, "red_green_started_at": None,
+        "red_green_started_at": None,
         "group_slide_index": 0, "group_slide_count": 1,
         "backup_mode": False, "completed_groups": [],
         "pre_view_state": None, "view_deferred": False,

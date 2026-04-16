@@ -222,9 +222,10 @@ def main_view(query: str, project_root: Path) -> None:
         print(msg, file=sys.stderr)
         sys.exit(0)
 
-    # BC-11.3: Red-green deferral
+    # BC-11.3: Red-green deferral (BUG-AUDIT-35: red_green_iteration
+    # removed; use sub_phase + red_green_started_at as the active signal)
     rg_active = (
-        debrief_state.red_green_iteration > 0
+        "red_green" in (debrief_state.sub_phase or "")
         and debrief_state.red_green_started_at is not None
     )
     if rg_active:
@@ -878,13 +879,12 @@ def skill_quit(project_root: Path) -> None:
     # If it does, it means the concurrency model changed or state
     # is corrupted — either way, the user should know.
     if (
-        getattr(debrief_state, "red_green_iteration", 0) > 0
-        and "red_green" in (debrief_state.sub_phase or "")
+        "red_green" in (debrief_state.sub_phase or "")
+        and debrief_state.red_green_started_at is not None
     ):
         print(
             "WARNING: quit invoked during what appears to be an "
-            "active red-green cycle (red_green_iteration="
-            f"{debrief_state.red_green_iteration}, sub_phase="
+            "active red-green cycle (sub_phase="
             f"{debrief_state.sub_phase}). State will be flushed "
             "as-is. If a slide agent was mid-turn, its partial "
             "work may be lost.",

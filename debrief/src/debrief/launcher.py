@@ -363,7 +363,6 @@ def new(project_root: Path, archetype: Optional[str] = None) -> None:
         "current_slide_slug": None,
         "pending_gate": None,
         "last_gate_response": None,
-        "red_green_iteration": 0,
         "red_green_started_at": None,
         "group_slide_index": 0,
         "group_slide_count": 0,

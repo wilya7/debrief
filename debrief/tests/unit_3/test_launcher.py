@@ -623,10 +623,6 @@ class TestNewInitialDebriefStateValues:
         state = self._run_new(tmp_path, monkeypatch)
         assert state["active_agent"] == "consultant"
 
-    def test_red_green_iteration_is_zero(self, tmp_path: Path, monkeypatch) -> None:
-        state = self._run_new(tmp_path, monkeypatch)
-        assert state["red_green_iteration"] == 0
-
     def test_red_green_started_at_is_null(self, tmp_path: Path, monkeypatch) -> None:
         state = self._run_new(tmp_path, monkeypatch)
         assert state["red_green_started_at"] is None

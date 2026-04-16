@@ -131,7 +131,6 @@ def _make_minimal_debrief_state_dict(archetype: str = "lab_meeting") -> dict:
         "current_slide_slug": None,
         "pending_gate": None,
         "last_gate_response": None,
-        "red_green_iteration": 0,
         "red_green_started_at": None,
         "group_slide_index": 0,
         "group_slide_count": 0,
@@ -246,7 +245,7 @@ class TestLauncherToStateRoundTrip:
         assert state.phase == "discovery"
         assert state.sub_phase == "discovery/greeting"
         assert state.active_agent == "consultant"
-        assert state.red_green_iteration == 0
+
 
     def test_launcher_initial_deck_has_style_locked_false(
         self, tmp_path: Path
@@ -891,7 +890,6 @@ class TestStateRoundTrip:
             current_slide_slug=None,
             pending_gate=None,
             last_gate_response=None,
-            red_green_iteration=0,
             red_green_started_at=None,
             group_slide_index=0,
             group_slide_count=0,
@@ -928,7 +926,6 @@ class TestStateRoundTrip:
         assert read_back.sub_phase == state.sub_phase
         assert read_back.active_agent == state.active_agent
         assert read_back.archetype == state.archetype
-        assert read_back.red_green_iteration == state.red_green_iteration
         assert read_back.completed_groups == state.completed_groups
 
     def test_write_debrief_state_hash_is_valid_on_read(

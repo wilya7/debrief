@@ -106,7 +106,6 @@ class DebriefState:
     current_slide_slug: Optional[str]
     pending_gate: Optional[str]
     last_gate_response: Optional[str]
-    red_green_iteration: int
     red_green_started_at: Optional[str]
     group_slide_index: int
     group_slide_count: int
@@ -175,7 +174,6 @@ _DEBRIEF_REQUIRED_FIELDS = (
     "current_slide_slug",
     "pending_gate",
     "last_gate_response",
-    "red_green_iteration",
     "red_green_started_at",
     "group_slide_index",
     "group_slide_count",
@@ -345,7 +343,7 @@ def validate_debrief_state(state_dict: dict[str, Any]) -> None:
         )
 
     # Non-negative counters
-    for counter in ("red_green_iteration", "group_slide_index", "group_slide_count"):
+    for counter in ("group_slide_index", "group_slide_count"):
         val = state_dict[counter]
         if not isinstance(val, int) or val < 0:
             raise StateCorruptError(
@@ -599,7 +597,6 @@ def _debrief_state_to_dict(state: DebriefState) -> dict[str, Any]:
         "current_slide_slug": state.current_slide_slug,
         "pending_gate": state.pending_gate,
         "last_gate_response": state.last_gate_response,
-        "red_green_iteration": state.red_green_iteration,
         "red_green_started_at": state.red_green_started_at,
         "group_slide_index": state.group_slide_index,
         "group_slide_count": state.group_slide_count,
@@ -630,7 +627,6 @@ def _dict_to_debrief_state(d: dict[str, Any]) -> DebriefState:
         current_slide_slug=d.get("current_slide_slug"),
         pending_gate=d.get("pending_gate"),
         last_gate_response=d.get("last_gate_response"),
-        red_green_iteration=d["red_green_iteration"],
         red_green_started_at=d.get("red_green_started_at"),
         group_slide_index=d["group_slide_index"],
         group_slide_count=d["group_slide_count"],

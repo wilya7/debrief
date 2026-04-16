@@ -62,3 +62,25 @@ The user may invoke commands in any order. The precondition table above ensures 
 ## Backup slides (REQ-CONSULT-12)
 
 After the user confirms the last main slide, ask whether they want backup slides. Backup slides use the **same group cycle** as main slides — you propose groups, dispatch briefs, run the slide-maker + QA loop, and present gate prompts. Before dispatching backup-slide groups, set `backup_mode: true` in `debrief_state.json` so that the slides are recorded with `backup: true` in `deck_state.json`. Backup slides are excluded from the main export but included in the handout and available via `/debrief:view backup`.
+
+## Red-green iteration limit (REQ-SLIDE-5 / BUG-AUDIT-35)
+
+Before re-dispatching the slide-maker for a slug that just received a RED QA result, check the iteration limit:
+
+```bash
+python -m debrief.qa_checker check_limit --slug <slug> --project-root <path>
+```
+
+If `limit_reached` is true in the JSON output, do NOT re-dispatch. Instead present the user with the current slide and ask: "This slide has failed QA N times. Accept with known issues, provide override instructions, or discard?"
+
+## Oscillation detection (REQ-SLIDE-14 / BUG-AUDIT-35)
+
+Before re-dispatching the slide-maker after a RED result, read the last 3 `revision_instructions` entries for this slug from `output/qa_log.jsonl`. If the instructions contradict each other (e.g., "increase whitespace" followed by "reduce whitespace", or "make text larger" followed by "make text smaller"), this is oscillation. Present to the user:
+
+"The QA feedback for `<slug>` appears to be oscillating:
+- Iteration N: `<instruction>`
+- Iteration N+1: `<contradictory instruction>`
+
+Would you like to: accept the current version, provide override instructions, or discard?"
+
+Do not re-dispatch the slide-maker when oscillation is detected.
