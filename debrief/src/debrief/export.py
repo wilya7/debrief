@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -62,22 +61,20 @@ def main_export(project_root: Path) -> None:
         )
         sys.exit(2)
 
-    # BC-10.1: Run style_compiler before opening Playwright
-    compiler_result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "debrief.style_compiler",
-            "style_config.json",
-            "assets/style.css",
-        ],
-        capture_output=True,
-        text=True,
-        cwd=str(project_root),
-    )
-    if compiler_result.returncode != 0:
+    # BC-10.1: Run style_compiler before opening Playwright.
+    # BUG-AUDIT-41: direct function call instead of subprocess. The old
+    # subprocess used `python -m debrief.style_compiler` which required
+    # the debrief package to be pip-installed. A direct call removes
+    # that dependency and works in both workspace and delivered layouts.
+    try:
+        from style_engine import compile_style  # type: ignore[import]
+
+        config_path = project_root / "style_config.json"
+        css_path = project_root / "assets" / "style.css"
+        compile_style(config_path, css_path)
+    except Exception as exc:
         print(
-            f"Style compiler failed:\n{compiler_result.stderr}",
+            f"Style compiler failed: {exc}",
             file=sys.stderr,
         )
         sys.exit(1)

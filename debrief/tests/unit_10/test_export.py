@@ -838,35 +838,32 @@ class TestMainExportStyleCompilerInvocation:
         # Must not exit 0; exact code is 1 per contract
         assert exc_info.value.code != 0
 
-    def test_style_compiler_called_with_correct_arguments(
+    def test_style_compiler_called_before_playwright(
         self, project_dir: Path
     ) -> None:
-        """style_compiler is invoked with style_config.json and assets/style.css."""
+        """BUG-AUDIT-41: compile_style is called directly (not subprocess).
+        Verify it runs and if it fails, export aborts before Playwright.
+        """
         from export import main_export
 
         mock_find_spec = MagicMock(return_value=MagicMock())
-        captured_calls: list[Any] = []
+        compile_called = []
 
-        def fake_run(args: Any, **kwargs: Any) -> MagicMock:
-            captured_calls.append(args)
-            result = MagicMock()
-            result.returncode = 1  # fail fast to avoid deeper execution
-            result.stderr = "fail"
-            return result
+        def fake_compile(config_path, css_path):
+            compile_called.append((str(config_path), str(css_path)))
+            raise RuntimeError("compile test error")
 
         with (
             patch("importlib.util.find_spec", mock_find_spec),
-            patch("subprocess.run", side_effect=fake_run),
+            patch.dict("sys.modules", {
+                "style_engine": MagicMock(compile_style=fake_compile),
+            }),
         ):
-            with pytest.raises(SystemExit):
+            with pytest.raises(SystemExit) as exc_info:
                 main_export(project_dir)
-
-        assert len(captured_calls) >= 1
-        first_call = captured_calls[0]
-        cmd_str = " ".join(str(a) for a in first_call)
-        assert "style_compiler" in cmd_str
-        assert "style_config.json" in cmd_str
-        assert "style.css" in cmd_str
+        assert exc_info.value.code == 1
+        assert len(compile_called) == 1
+        assert "style_config.json" in compile_called[0][0]
 
 
 # ===========================================================================
@@ -946,34 +943,33 @@ class TestPageListTypeValues:
 class TestStyleCompilerFailureBehavior:
     """Additional BC-10.1 contracts: stderr output and Playwright not opened."""
 
-    def test_compiler_stderr_is_printed_when_compiler_fails(
+    def test_compiler_error_is_printed_when_compiler_fails(
         self,
         project_dir: Path,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Compiler stderr text must appear in main_export output on failure."""
+        """BUG-AUDIT-41: compiler exception text must appear in stderr."""
         from export import main_export
 
-        compiler_stderr = "SyntaxError: unknown token at line 7"
+        error_msg = "SyntaxError: unknown token at line 7"
         mock_find_spec = MagicMock(return_value=MagicMock())
 
-        def fake_run(args: Any, **kwargs: Any) -> MagicMock:
-            result = MagicMock()
-            result.returncode = 1
-            result.stderr = compiler_stderr
-            return result
+        def fake_compile(config_path, css_path):
+            raise RuntimeError(error_msg)
 
         with (
             patch("importlib.util.find_spec", mock_find_spec),
-            patch("subprocess.run", side_effect=fake_run),
+            patch.dict("sys.modules", {
+                "style_engine": MagicMock(compile_style=fake_compile),
+            }),
         ):
             with pytest.raises(SystemExit):
                 main_export(project_dir)
 
         captured = capsys.readouterr()
         combined = captured.out + captured.err
-        assert compiler_stderr in combined, (
-            f"Compiler stderr not printed. Got: {combined!r}"
+        assert error_msg in combined, (
+            f"Compiler error not printed. Got: {combined!r}"
         )
 
     def test_playwright_not_opened_when_compiler_fails(
