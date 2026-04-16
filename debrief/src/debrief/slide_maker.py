@@ -81,7 +81,11 @@ def sample_slides(total: int, cap: int = 10) -> list[int]:
 
 
 def adapt_pptx(reference: Path, project_root: Path) -> None:
-    """Convert .pptx to PNG batch via LibreOffice headless.
+    """Convert .pptx to per-slide PNG batch via LibreOffice + PyMuPDF.
+
+    BUG-AUDIT-39: two-step conversion (PPTX → PDF → per-page PNG).
+    The old single-step ``--convert-to png`` only rendered the first
+    slide. The PDF intermediate renders all slides.
 
     - Cap at 10 slides using sample_slides().
     - Extract theme metadata via python-pptx.
@@ -90,8 +94,8 @@ def adapt_pptx(reference: Path, project_root: Path) -> None:
     - Use -env:UserInstallation=file:///<tmp> for LibreOffice isolation.
     - 120-second timeout; exits 1 on timeout.
     """
-    # Lazy imports (BC-7.1: no top-level LLM SDK imports needed here)
     pptx_mod = importlib.import_module("pptx")
+    fitz = importlib.import_module("fitz")
 
     slides_out = project_root / "assets" / "reference" / "slides"
     slides_out.mkdir(parents=True, exist_ok=True)
@@ -100,21 +104,21 @@ def adapt_pptx(reference: Path, project_root: Path) -> None:
     if not ref_dest.exists():
         shutil.copy2(reference, ref_dest)
 
-    # Convert via LibreOffice headless with tmp profile (BC-7.3)
-    with tempfile.TemporaryDirectory() as tmp_profile:
-        profile_uri = f"file:///{tmp_profile}"
+    # Step 1: PPTX → PDF via LibreOffice (BC-7.3, BC-7.4)
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        profile_uri = f"file:///{tmp_dir}/profile"
         cmd = [
             "soffice",
             "--headless",
             f"-env:UserInstallation={profile_uri}",
             "--convert-to",
-            "png",
+            "pdf",
             "--outdir",
-            str(slides_out),
+            tmp_dir,
             str(reference),
         ]
         try:
-            subprocess.run(
+            result = subprocess.run(
                 cmd,
                 check=False,
                 capture_output=True,
@@ -126,6 +130,31 @@ def adapt_pptx(reference: Path, project_root: Path) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
+
+        # Find the produced PDF
+        pdf_candidates = list(Path(tmp_dir).glob("*.pdf"))
+        if not pdf_candidates:
+            print(
+                f"ERROR: LibreOffice produced no PDF from {reference.name}. "
+                f"stderr: {result.stderr.decode(errors='replace')[:200]}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        pdf_path = pdf_candidates[0]
+
+        # Step 2: PDF → per-page PNG via fitz (same approach as adapt_pdf)
+        doc = fitz.open(str(pdf_path))
+        page_count = len(doc)
+        sampled = sample_slides(page_count)
+
+        for idx in sampled:
+            if idx >= page_count:
+                continue
+            page = doc[idx]
+            pix = page.get_pixmap(dpi=150)
+            out_name = f"slide_{idx + 1:03d}.png"
+            pix.save(str(slides_out / out_name))
+        doc.close()
 
     # Extract metadata via python-pptx
     prs = pptx_mod.Presentation(str(reference))

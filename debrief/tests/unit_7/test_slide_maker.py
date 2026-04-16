@@ -368,6 +368,53 @@ class TestPlaywrightNoModuleLevelGlobal:
 # ---------------------------------------------------------------------------
 
 
+def _make_pptx_fake_run(captured_commands: list) -> Any:
+    """Create a fake subprocess.run that captures commands AND creates a
+    fake PDF in the --outdir (BUG-AUDIT-39: adapt_pptx now does
+    PPTX→PDF→PNG two-step conversion, so the mock must produce a PDF).
+    """
+
+    def fake_run(
+        cmd: Any, *args: Any, **kwargs: Any
+    ) -> subprocess.CompletedProcess[bytes]:
+        if isinstance(cmd, list):
+            captured_commands.append(cmd)
+            # If this is a soffice --convert-to pdf call, create a fake PDF
+            if any("soffice" in c for c in cmd) and "--convert-to" in cmd:
+                try:
+                    outdir_idx = cmd.index("--outdir") + 1
+                    outdir = Path(cmd[outdir_idx])
+                    input_file = Path(cmd[-1])
+                    fake_pdf = outdir / f"{input_file.stem}.pdf"
+                    fake_pdf.write_bytes(b"%PDF-1.4 fake")
+                except (ValueError, IndexError):
+                    pass
+        result: subprocess.CompletedProcess[bytes] = MagicMock(
+            spec=subprocess.CompletedProcess
+        )
+        result.returncode = 0
+        result.stdout = b""
+        result.stderr = b""
+        return result
+
+    return fake_run
+
+
+def _make_mock_fitz() -> MagicMock:
+    """Create a mock fitz module for adapt_pptx's PDF→PNG step."""
+    mock_page = MagicMock()
+    mock_pix = MagicMock()
+    mock_page.get_pixmap.return_value = mock_pix
+
+    mock_doc = MagicMock()
+    mock_doc.__len__ = MagicMock(return_value=1)
+    mock_doc.__getitem__ = MagicMock(return_value=mock_page)
+
+    mock_fitz = MagicMock()
+    mock_fitz.open.return_value = mock_doc
+    return mock_fitz
+
+
 class TestLibreOfficeIsolationProfile:
     """BC-7.3: adapt_pptx must pass -env:UserInstallation= to soffice."""
 
@@ -375,24 +422,9 @@ class TestLibreOfficeIsolationProfile:
         self, tmp_path: Path
     ) -> None:
         pptx_file = tmp_path / "test.pptx"
-        pptx_file.write_bytes(b"PK\x03\x04")  # minimal fake zip header
+        pptx_file.write_bytes(b"PK\x03\x04")
 
         captured_commands: list[list[str]] = []
-
-        def fake_run(
-            cmd: Any, *args: Any, **kwargs: Any
-        ) -> subprocess.CompletedProcess[bytes]:
-            if isinstance(cmd, list):
-                captured_commands.append(cmd)
-            elif isinstance(cmd, str):
-                captured_commands.append(cmd.split())
-            result: subprocess.CompletedProcess[bytes] = MagicMock(
-                spec=subprocess.CompletedProcess
-            )
-            result.returncode = 0
-            result.stdout = b""
-            result.stderr = b""
-            return result
 
         mock_pptx = MagicMock()
         mock_presentation = MagicMock()
@@ -401,9 +433,9 @@ class TestLibreOfficeIsolationProfile:
         mock_pptx.Presentation.return_value = mock_presentation
 
         with (
-            patch("subprocess.run", side_effect=fake_run),
-            patch("subprocess.Popen", side_effect=fake_run),
-            patch.dict(sys.modules, {"pptx": mock_pptx}),
+            patch("subprocess.run", side_effect=_make_pptx_fake_run(captured_commands)),
+            patch("subprocess.Popen", side_effect=_make_pptx_fake_run(captured_commands)),
+            patch.dict(sys.modules, {"pptx": mock_pptx, "fitz": _make_mock_fitz()}),
         ):
             try:
                 adapt_pptx(pptx_file, tmp_path)
@@ -440,11 +472,22 @@ class TestLibreOfficeTimeoutBehaviour:
         pptx_file.write_bytes(b"PK\x03\x04")
 
         captured_kwargs: list[dict[str, Any]] = []
+        captured_commands: list[list[str]] = []
 
         def fake_run(
             cmd: Any, *args: Any, **kwargs: Any
         ) -> subprocess.CompletedProcess[bytes]:
             captured_kwargs.append(kwargs)
+            if isinstance(cmd, list):
+                captured_commands.append(cmd)
+                if any("soffice" in c for c in cmd) and "--convert-to" in cmd:
+                    try:
+                        outdir_idx = cmd.index("--outdir") + 1
+                        outdir = Path(cmd[outdir_idx])
+                        input_file = Path(cmd[-1])
+                        (outdir / f"{input_file.stem}.pdf").write_bytes(b"%PDF-1.4 fake")
+                    except (ValueError, IndexError):
+                        pass
             result: subprocess.CompletedProcess[bytes] = MagicMock(
                 spec=subprocess.CompletedProcess
             )
@@ -459,7 +502,7 @@ class TestLibreOfficeTimeoutBehaviour:
         with (
             patch("subprocess.run", side_effect=fake_run),
             patch("subprocess.Popen", side_effect=fake_run),
-            patch.dict(sys.modules, {"pptx": mock_pptx}),
+            patch.dict(sys.modules, {"pptx": mock_pptx, "fitz": _make_mock_fitz()}),
         ):
             try:
                 adapt_pptx(pptx_file, tmp_path)
@@ -904,9 +947,9 @@ class TestLibreOfficeUserInstallationScheme:
         mock_pptx.Presentation.return_value = MagicMock(slides=[])
 
         with (
-            patch("subprocess.run", side_effect=fake_run),
-            patch("subprocess.Popen", side_effect=fake_run),
-            patch.dict(sys.modules, {"pptx": mock_pptx}),
+            patch("subprocess.run", side_effect=_make_pptx_fake_run(captured_commands)),
+            patch("subprocess.Popen", side_effect=_make_pptx_fake_run(captured_commands)),
+            patch.dict(sys.modules, {"pptx": mock_pptx, "fitz": _make_mock_fitz()}),
         ):
             try:
                 adapt_pptx(pptx_file, tmp_path)
