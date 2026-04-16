@@ -104,11 +104,18 @@ def adapt_pptx(reference: Path, project_root: Path) -> None:
     if not ref_dest.exists():
         shutil.copy2(reference, ref_dest)
 
+    # BUG-AUDIT-42: discover soffice path (cross-platform)
+    try:
+        from launcher import discover_soffice  # type: ignore[import]
+        soffice_bin = str(discover_soffice(project_root))
+    except (ImportError, FileNotFoundError):
+        soffice_bin = shutil.which("soffice") or "soffice"
+
     # Step 1: PPTX → PDF via LibreOffice (BC-7.3, BC-7.4)
     with tempfile.TemporaryDirectory() as tmp_dir:
         profile_uri = f"file:///{tmp_dir}/profile"
         cmd = [
-            "soffice",
+            soffice_bin,
             "--headless",
             f"-env:UserInstallation={profile_uri}",
             "--convert-to",

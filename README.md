@@ -13,6 +13,7 @@ debrief is distributed as a Claude Code plugin. Installation is handled automati
 **Prerequisites:**
 - [Claude Code](https://claude.ai/code) installed
 - [Miniforge or Conda](https://github.com/conda-forge/miniforge) available on your system
+- [LibreOffice](https://www.libreoffice.org/download/) installed (required for PPTX reference import). On macOS: `brew install --cask libreoffice`. On Linux: `sudo apt install libreoffice` or `sudo dnf install libreoffice`. On Windows: install from the download page and add to PATH.
 
 **Setup steps:**
 

@@ -523,6 +523,88 @@ def ensure_project(project_root: Path, plugin_root: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Cross-platform LibreOffice discovery (BUG-AUDIT-42)
+# ---------------------------------------------------------------------------
+
+_SOFFICE_KNOWN_PATHS: list[str] = [
+    # macOS
+    "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+    # Linux (distro packages)
+    "/usr/bin/soffice",
+    "/usr/lib/libreoffice/program/soffice",
+    "/usr/local/bin/soffice",
+    # Linux (snap)
+    "/snap/bin/libreoffice.soffice",
+    # Windows
+    r"C:\Program Files\LibreOffice\program\soffice.exe",
+    r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+]
+
+_INSTALL_INSTRUCTIONS = {
+    "Darwin": (
+        "Install LibreOffice from https://www.libreoffice.org/download/ "
+        "or run: brew install --cask libreoffice"
+    ),
+    "Linux": (
+        "Install LibreOffice via your package manager:\n"
+        "  Debian/Ubuntu: sudo apt install libreoffice\n"
+        "  Fedora/RHEL:   sudo dnf install libreoffice"
+    ),
+    "Windows": (
+        "Install LibreOffice from https://www.libreoffice.org/download/ "
+        "and ensure it is added to your system PATH."
+    ),
+}
+
+
+def discover_soffice(project_root: Path) -> Path:
+    """Find the LibreOffice ``soffice`` binary. Cross-platform.
+
+    Strategy:
+    1. Check persisted path in ``.debrief/soffice_path``.
+    2. ``shutil.which("soffice")`` (works if on PATH).
+    3. OS-specific known install locations.
+    4. Persist the discovered path for subsequent runs.
+    5. Raise FileNotFoundError with per-OS install instructions if not found.
+    """
+    import platform
+
+    persist_file = project_root / ".debrief" / "soffice_path"
+
+    # 1. Check persisted path
+    if persist_file.is_file():
+        persisted = Path(persist_file.read_text(encoding="utf-8").strip())
+        if persisted.is_file():
+            return persisted
+
+    # 2. shutil.which (cross-platform PATH search)
+    which_result = shutil.which("soffice")
+    if which_result:
+        found = Path(which_result)
+        persist_file.parent.mkdir(parents=True, exist_ok=True)
+        persist_file.write_text(str(found), encoding="utf-8")
+        return found
+
+    # 3. OS-specific known locations
+    for candidate in _SOFFICE_KNOWN_PATHS:
+        p = Path(candidate)
+        if p.is_file():
+            persist_file.parent.mkdir(parents=True, exist_ok=True)
+            persist_file.write_text(str(p), encoding="utf-8")
+            return p
+
+    # 4. Not found — fail with per-OS instructions
+    os_name = platform.system()
+    instructions = _INSTALL_INSTRUCTIONS.get(
+        os_name, _INSTALL_INSTRUCTIONS.get("Linux", "Install LibreOffice.")
+    )
+    raise FileNotFoundError(
+        f"LibreOffice (soffice) not found. Debrief requires LibreOffice "
+        f"for PPTX reference import.\n{instructions}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Entry point — spec §24.4 steps 8 & 9 dispatch (BC-3.12).
 # ---------------------------------------------------------------------------
 
