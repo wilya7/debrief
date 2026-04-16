@@ -1307,105 +1307,13 @@ class TestSkillSaveDoesNotTouchDebriefState:
         assert (tmp_path / "output" / "snapshots" / "untitled").exists()
 
 
-# ===========================================================================
-# BC-11.11 + BC-11.12: skill_reset confirmation string and CLAUDE.md exemption
-# ===========================================================================
-
-
-class TestSkillResetConfirmationAndExemption:
-    """Tests for BC-11.11 and BC-11.12."""
-
-    @pytest.fixture()
-    def populated_project(self, tmp_path: Path) -> Path:
-        """Create a minimal project directory with typical files for reset."""
-        (tmp_path / "slides").mkdir()
-        (tmp_path / "slides" / "intro.html").write_text("<html></html>")
-        (tmp_path / "output").mkdir()
-        (tmp_path / ".debrief").mkdir()
-        (tmp_path / "CLAUDE.md").write_text("# CLAUDE\n")
-        _write_deck_state(tmp_path)
-        _write_debrief_state(tmp_path)
-        (tmp_path / "ledger.jsonl").write_text("")
-        return tmp_path
-
-    def test_reset_with_exact_RESET_string_proceeds_to_delete_files(
-        self,
-        populated_project: Path,
-    ) -> None:
-        """BC-11.11: Exact 'RESET' input triggers the reset sequence."""
-        from utility_skills import skill_reset  # type: ignore[import]
-
-        with patch("builtins.input", return_value="RESET"):
-            skill_reset(populated_project)
-        # After reset, deck_state.json should be gone
-        assert not (populated_project / "deck_state.json").exists()
-
-    def test_reset_with_lowercase_reset_cancels_reset(
-        self,
-        populated_project: Path,
-    ) -> None:
-        """BC-11.11: 'reset' (lowercase) must cancel, not proceed."""
-        from utility_skills import skill_reset  # type: ignore[import]
-
-        with patch("builtins.input", return_value="reset"):
-            skill_reset(populated_project)
-        # deck_state.json should still exist
-        assert (populated_project / "deck_state.json").exists()
-
-    def test_reset_with_empty_input_cancels_reset(
-        self,
-        populated_project: Path,
-    ) -> None:
-        """BC-11.11: Empty input cancels the reset."""
-        from utility_skills import skill_reset  # type: ignore[import]
-
-        with patch("builtins.input", return_value=""):
-            skill_reset(populated_project)
-        assert (populated_project / "deck_state.json").exists()
-
-    def test_reset_with_leading_whitespace_around_RESET_cancels(
-        self,
-        populated_project: Path,
-    ) -> None:
-        """BC-11.11: ' RESET ' with surrounding whitespace must cancel."""
-        from utility_skills import skill_reset  # type: ignore[import]
-
-        with patch("builtins.input", return_value=" RESET "):
-            skill_reset(populated_project)
-        assert (populated_project / "deck_state.json").exists()
-
-    def test_reset_preserves_CLAUDE_md_file(
-        self,
-        populated_project: Path,
-    ) -> None:
-        """BC-11.12: CLAUDE.md must survive the reset."""
-        from utility_skills import skill_reset  # type: ignore[import]
-
-        with patch("builtins.input", return_value="RESET"):
-            skill_reset(populated_project)
-        assert (populated_project / "CLAUDE.md").exists()
-
-    def test_reset_removes_slides_directory(
-        self,
-        populated_project: Path,
-    ) -> None:
-        """BC-11.12: slides/ directory must be deleted after reset."""
-        from utility_skills import skill_reset  # type: ignore[import]
-
-        with patch("builtins.input", return_value="RESET"):
-            skill_reset(populated_project)
-        assert not (populated_project / "slides").exists()
-
-    def test_reset_removes_dot_debrief_directory(
-        self,
-        populated_project: Path,
-    ) -> None:
-        """BC-11.12: .debrief/ directory must be deleted after reset."""
-        from utility_skills import skill_reset  # type: ignore[import]
-
-        with patch("builtins.input", return_value="RESET"):
-            skill_reset(populated_project)
-        assert not (populated_project / ".debrief").exists()
+# BUG-AUDIT-22: the old ``TestSkillResetConfirmationAndExemption`` class
+# (7 tests) was deleted. It tested the hard-delete ``skill_reset`` function
+# that BUG-AUDIT-22 replaced with ``skill_restore`` (backup-restore from
+# ``output/snapshots/``). The equivalent coverage — and more (auto-save
+# safety net, orphan sweep, restore_log entry, invalid-label handling,
+# list mode) — lives in
+# ``tests/regressions/test_bug_audit_22_restore.py``.
 
 
 # ===========================================================================

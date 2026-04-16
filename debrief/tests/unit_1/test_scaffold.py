@@ -131,7 +131,7 @@ EXPECTED_COMMAND_FILES = {
     "export.md",
     "save.md",
     "view.md",
-    "reset.md",
+    "restore.md",
     "quit.md",
     "script.md",
     "handout.md",

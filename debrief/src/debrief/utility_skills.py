@@ -626,45 +626,153 @@ def skill_save(label: str, project_root: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# skill_reset (BC-11.11, BC-11.12)
+# skill_restore (BC-11.11, BC-11.12 — BUG-AUDIT-22)
+#
+# BUG-AUDIT-22 replaced the old hard-delete ``skill_reset`` with a
+# backup-restore function. The hard-delete behavior is permanently
+# dropped. See spec REQ-RESTORE-* and the Bug Catalog entry.
 # ---------------------------------------------------------------------------
 
-_RESET_PROMPT = (
-    "WARNING: This will delete all slides, state, and output. "
-    "This action cannot be undone.\n"
-    "Type RESET to confirm, or anything else to cancel: "
-)
 
-_RESET_ITEMS = [
-    "slides",
-    "output",
-    ".debrief",
-    "deck_state.json",
-    "debrief_state.json",
-    "ledger.jsonl",
-    "deck_brief.md",
-    "style_config.json",
-    "style_guide.md",
-    "assets",
-]
+def _list_snapshots(project_root: Path) -> list[str]:
+    """Return sorted list of valid snapshot labels in output/snapshots/.
 
-
-def skill_reset(project_root: Path) -> None:
-    """Reset the project directory, preserving CLAUDE.md (BC-11.12).
-
-    BC-11.11: Only 'RESET' (exact, no whitespace) confirms the reset.
+    A snapshot is valid if its directory contains ``deck_state.json``.
     """
-    confirmation = input(_RESET_PROMPT)
-    if confirmation != "RESET":
-        print("Reset cancelled.", file=sys.stderr)
+    snapshots_dir = project_root / "output" / "snapshots"
+    if not snapshots_dir.is_dir():
+        return []
+    labels: list[str] = []
+    for entry in sorted(snapshots_dir.iterdir()):
+        if entry.is_dir() and (entry / "deck_state.json").is_file():
+            labels.append(entry.name)
+    return labels
+
+
+def _sweep_orphan_slides(project_root: Path) -> list[str]:
+    """Delete slides/*.html files whose stem is not in deck_state's slug set.
+
+    Returns the list of swept filenames (stems) for logging.
+    """
+    deck_state = read_deck_state(project_root)
+    known_slugs = {s.slug for s in deck_state.slides}
+
+    slides_dir = project_root / "slides"
+    if not slides_dir.is_dir():
+        return []
+
+    swept: list[str] = []
+    for html_file in sorted(slides_dir.glob("*.html")):
+        if html_file.stem not in known_slugs:
+            html_file.unlink()
+            swept.append(html_file.stem)
+    return swept
+
+
+def skill_restore(label: Optional[str], project_root: Path) -> None:
+    """Restore project state from a named snapshot.
+
+    BUG-AUDIT-22: replaces the old ``skill_reset`` hard-delete.
+
+    Two-mode invocation (no ``input()`` calls):
+
+    - ``label is None``: list available snapshots, print, return.
+    - ``label is str``: validate snapshot exists, auto-save current
+      state, overwrite ``deck_state.json`` (and ``ledger.jsonl`` if
+      present in snapshot), sweep orphan slide HTML, write
+      restore_log entry to ``ledger.jsonl``, print confirmation.
+
+    BC-11.11: snapshot validation + auto-save + orphan sweep
+    BC-11.12: restore only overwrites deck_state.json and optionally
+              ledger.jsonl, then sweeps unmatched slides. All other
+              project files (CLAUDE.md, debrief_state.json,
+              style_config.json, style_guide.md, .debrief/, assets/)
+              are untouched.
+    """
+    import json as _json
+    from datetime import datetime, timezone
+
+    # --- List mode ---
+    if label is None:
+        labels = _list_snapshots(project_root)
+        if not labels:
+            print(
+                "No snapshots found. Run '/debrief:save' to create one.",
+                file=sys.stderr,
+            )
+            return
+
+        print("Available snapshots:", file=sys.stderr)
+        snapshots_dir = project_root / "output" / "snapshots"
+        for lbl in labels:
+            snap_dir = snapshots_dir / lbl
+            has_ledger = (snap_dir / "ledger.jsonl").is_file()
+            contents = "deck_state.json, ledger.jsonl" if has_ledger else "deck_state.json"
+            print(f"  - {lbl}  ({contents})", file=sys.stderr)
+        print(
+            "\nTo restore: /debrief:restore <label>",
+            file=sys.stderr,
+        )
         return
 
-    for item_name in _RESET_ITEMS:
-        item_path = project_root / item_name
-        if item_path.is_dir():
-            shutil.rmtree(item_path)
-        elif item_path.is_file():
-            item_path.unlink()
+    # --- Restore mode ---
+    snapshots_dir = project_root / "output" / "snapshots"
+    snap_dir = snapshots_dir / label
+    snap_deck = snap_dir / "deck_state.json"
+
+    if not snap_deck.is_file():
+        available = _list_snapshots(project_root)
+        avail_str = ", ".join(available) if available else "(none)"
+        print(
+            f"Snapshot '{label}' not found (no deck_state.json in "
+            f"{snap_dir}). Available snapshots: {avail_str}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    # BC-11.11 step 1: auto-save current state before overwrite.
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    auto_label = f"pre_restore_{ts}"
+    skill_save(auto_label, project_root)
+    print(
+        f"Auto-saved current state to output/snapshots/{auto_label}/",
+        file=sys.stderr,
+    )
+
+    # BC-11.11 step 2: restore deck_state.json.
+    shutil.copy2(snap_deck, project_root / "deck_state.json")
+
+    # BC-11.11 step 3: restore ledger.jsonl if present in snapshot.
+    snap_ledger = snap_dir / "ledger.jsonl"
+    if snap_ledger.is_file():
+        shutil.copy2(snap_ledger, project_root / "ledger.jsonl")
+
+    # BC-11.11 step 4: sweep orphan slide HTML.
+    swept = _sweep_orphan_slides(project_root)
+
+    # BC-11.11 step 5: write restore_log entry to ledger.jsonl.
+    log_entry = {
+        "event": "restore",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "restored_from": label,
+        "auto_saved_as": auto_label,
+        "swept_slugs": swept,
+    }
+    ledger_path = project_root / "ledger.jsonl"
+    with ledger_path.open("a", encoding="utf-8") as f:
+        f.write(_json.dumps(log_entry) + "\n")
+
+    # BC-11.11 step 6: print confirmation.
+    swept_msg = (
+        f"Swept {len(swept)} orphan slide(s): {', '.join(swept)}"
+        if swept
+        else "No orphan slides to sweep."
+    )
+    print(
+        f"Restored from '{label}'. {swept_msg} "
+        f"Auto-saved pre-restore state as '{auto_label}'.",
+        file=sys.stderr,
+    )
 
 
 # ---------------------------------------------------------------------------
