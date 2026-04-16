@@ -389,6 +389,12 @@ def new(project_root: Path, archetype: Optional[str] = None) -> None:
     if template_path.exists():
         render_project_claude_md(template_path, project_root, project_name)
 
+    # BUG-AUDIT-45: copy debrief_config.json template if not already present
+    config_template = plugin_root / "templates" / "debrief_config.json"
+    config_dest = project_root / "debrief_config.json"
+    if config_template.exists() and not config_dest.exists():
+        shutil.copy2(config_template, config_dest)
+
     # BC-3.13 / BUG-AUDIT-8: write project-scoped Claude Code settings so
     # `claude` (without --plugin-dir) loads debrief from the local
     # marketplace and namespaces its skills as /debrief:*.
@@ -450,6 +456,38 @@ def ensure_project_settings(project_root: Path, plugin_root: Path) -> None:
         enabled = {}
         data["enabledPlugins"] = enabled
     enabled["debrief@debrief"] = True
+
+    # BUG-AUDIT-45: read debrief_config.json and merge model + permission
+    # settings into the Claude Code settings. This makes model selection
+    # and permission bypass work via native Claude Code mechanisms.
+    config_path = project_root / "debrief_config.json"
+    if config_path.is_file():
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            config = {}
+
+        # Model settings
+        models = config.get("models", {})
+        session_model = models.get("session")
+        subagent_model = models.get("subagents")
+
+        if session_model:
+            data["model"] = session_model
+        if subagent_model:
+            env = data.get("env")
+            if not isinstance(env, dict):
+                env = {}
+                data["env"] = env
+            env["CLAUDE_CODE_SUBAGENT_MODEL"] = subagent_model
+
+        # Permission settings
+        permissions = config.get("permissions", {})
+        if permissions.get("bypass", False):
+            data["defaultMode"] = "bypassPermissions"
+        elif "defaultMode" in data and data["defaultMode"] == "bypassPermissions":
+            # Config says bypass=false but settings had it — remove
+            del data["defaultMode"]
 
     _atomic_write_json(settings_path, data)
 

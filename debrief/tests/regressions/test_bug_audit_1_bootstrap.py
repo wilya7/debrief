@@ -230,10 +230,10 @@ class TestBugAudit1BinDebriefBootstrap:
         # marketplace registration and produced bare-named skills that
         # collided with built-in `/export`, `/save`, `/quit`.
         import re
-        assert re.search(r"\bexec claude\s*(?:\n|$)", bin_debrief_text, re.MULTILINE), (
-            "§24.4 step 10 / BC-1.16 / BUG-AUDIT-8 requires `exec claude` "
-            "(no flags) as the final launch. Claude Code auto-discovers "
-            "the project-scoped `.claude/settings.json`."
+        # BUG-AUDIT-45: exec claude may now have $_DEBRIEF_CLAUDE_FLAGS
+        assert re.search(r"\bexec claude\b", bin_debrief_text, re.MULTILINE), (
+            "§24.4 step 10 / BC-1.16 requires `exec claude` as the final "
+            "launch. BUG-AUDIT-45 allows optional flags via config."
         )
 
     def test_bin_debrief_is_executable(self) -> None:

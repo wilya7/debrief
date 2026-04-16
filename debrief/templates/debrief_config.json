@@ -1,0 +1,9 @@
+{
+  "models": {
+    "session": "opus",
+    "subagents": "sonnet"
+  },
+  "permissions": {
+    "bypass": true
+  }
+}

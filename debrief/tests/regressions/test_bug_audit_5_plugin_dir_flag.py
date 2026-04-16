@@ -65,11 +65,11 @@ class TestBugAudit5PluginDirFlag:
     """
 
     def test_bin_debrief_uses_no_plugin_flag(self, bin_debrief_text: str) -> None:
-        # Positive: bare `exec claude` (no flags) must appear at least once
-        # in the dispatch. Match the form on its own line.
-        assert re.search(r"\bexec claude\s*(?:\n|$)", bin_debrief_text, re.MULTILINE), (
-            "BC-1.16 step 10 / BUG-AUDIT-8 requires plain `exec claude` "
-            "(no flags) as the launch invocation."
+        # Positive: `exec claude` (optionally with $_DEBRIEF_CLAUDE_FLAGS
+        # per BUG-AUDIT-45) must appear. No --plugin or --plugin-dir.
+        assert re.search(r"\bexec claude\b", bin_debrief_text, re.MULTILINE), (
+            "BC-1.16 step 10 / BUG-AUDIT-8 requires `exec claude` "
+            "as the launch invocation."
         )
 
     def test_bin_debrief_does_not_use_deprecated_plugin_flag(
@@ -107,13 +107,11 @@ class TestBugAudit5PluginDirFlag:
     def test_exec_claude_appears_in_both_dispatch_arms(
         self, bin_debrief_text: str
     ) -> None:
-        # The plain `exec claude` invocation must appear exactly twice: once
-        # in the `new)` arm and once in the bare `""` arm of step 9.
-        # Use regex on its own line to avoid matching `exec claude` inside
-        # comments or strings.
-        matches = re.findall(r"^\s*exec claude\s*$", bin_debrief_text, re.MULTILINE)
+        # `exec claude` (optionally with flags variable per BUG-AUDIT-45)
+        # must appear exactly twice: once in `new)` arm, once in bare `""` arm.
+        matches = re.findall(r"^\s*exec claude\b", bin_debrief_text, re.MULTILINE)
         assert len(matches) == 2, (
-            f"BC-1.16 step 10: bare `exec claude` must appear exactly twice "
+            f"BC-1.16 step 10: `exec claude` must appear exactly twice "
             f"in bin/debrief (once in the `new)` arm and once in the bare "
             f"`\"\"` arm of the step 9 subcommand dispatch). Found {len(matches)} "
             f"occurrences."

@@ -210,34 +210,55 @@ _debrief_print_greeting_prompt() {
   echo "" >&2
 }
 
+# ---------------------------------------------------------------------------
+# BUG-AUDIT-45: read debrief_config.json to determine claude launch flags.
+# If permissions.bypass is true, pass --dangerously-skip-permissions.
+# ---------------------------------------------------------------------------
+_DEBRIEF_CLAUDE_FLAGS=""
+if [[ -f "$(pwd)/debrief_config.json" ]]; then
+  _bypass=$(python -c "
+import json, sys
+try:
+    c = json.load(open('$(pwd)/debrief_config.json'))
+    print('1' if c.get('permissions', {}).get('bypass', False) else '0')
+except Exception:
+    print('0')
+" 2>/dev/null)
+  if [[ "$_bypass" == "1" ]]; then
+    _DEBRIEF_CLAUDE_FLAGS="--dangerously-skip-permissions"
+  fi
+fi
+
 case "${1:-}" in
   new)
     # `debrief.launcher new` writes deck_state.json, debrief_state.json,
-    # the project CLAUDE.md, AND .claude/settings.json (BC-3.13). The
-    # settings file makes Claude Code load the debrief plugin via the
-    # local marketplace and namespace its skills as /debrief:* — so we
-    # `exec claude` with no flags.
+    # the project CLAUDE.md, debrief_config.json, AND .claude/settings.json.
     python -m debrief.launcher new "$(pwd)"
+    # Re-read config after new (the template was just created)
+    if [[ -f "$(pwd)/debrief_config.json" ]]; then
+      _bypass=$(python -c "
+import json
+try:
+    c = json.load(open('$(pwd)/debrief_config.json'))
+    print('1' if c.get('permissions', {}).get('bypass', False) else '0')
+except Exception:
+    print('0')
+" 2>/dev/null)
+      if [[ "$_bypass" == "1" ]]; then
+        _DEBRIEF_CLAUDE_FLAGS="--dangerously-skip-permissions"
+      fi
+    fi
     _debrief_print_greeting_prompt
-    exec claude
+    exec claude $_DEBRIEF_CLAUDE_FLAGS
     ;;
   "")
     if [[ ! -f "$(pwd)/deck_state.json" ]]; then
       echo "ERROR: No project found in the current directory. Run 'debrief new' to create one." >&2
       exit 1
     fi
-    # BC-3.14 / BUG-AUDIT-15: re-scaffold the canonical project directory
-    # tree AND self-heal `.claude/settings.json` on every bare entry. The
-    # `ensure_project` orchestrator runs `create_project_structure` then
-    # `ensure_project_settings`, so any directory removed by a cleanup
-    # operation since the previous session (style-lock cleanup, skill_reset,
-    # skill_quit) is restored, and projects created before the project-
-    # scoped settings mechanism (or whose settings file points at a stale
-    # debrief repo path after the user moved the repo on disk) are
-    # self-healed at the same time. Idempotent.
     python -m debrief.launcher ensure_project "$(pwd)"
     _debrief_print_greeting_prompt
-    exec claude
+    exec claude $_DEBRIEF_CLAUDE_FLAGS
     ;;
   *)
     echo "Usage: debrief [new|--rebuild-env]" >&2

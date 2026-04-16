@@ -122,13 +122,12 @@ class TestBugAudit8ProjectSettings:
     def test_bin_debrief_launches_claude_with_no_flags(
         self, bin_debrief_text: str
     ) -> None:
-        # BC-1.16 step 10 / BUG-AUDIT-8: the launch is plain `exec claude`,
-        # no flags. Match the form on its own line so we don't false-match
-        # a comment or substring.
-        matches = re.findall(r"^\s*exec claude\s*$", bin_debrief_text, re.MULTILINE)
+        # BC-1.16 step 10 / BUG-AUDIT-8: launch is `exec claude` (optionally
+        # with $_DEBRIEF_CLAUDE_FLAGS per BUG-AUDIT-45). No --plugin-dir.
+        matches = re.findall(r"^\s*exec claude\b", bin_debrief_text, re.MULTILINE)
         assert len(matches) >= 1, (
-            "BC-1.16 step 10 / BUG-AUDIT-8: bin/debrief must `exec claude` "
-            "with no flags. Found no matches."
+            "BC-1.16 step 10 / BUG-AUDIT-8: bin/debrief must `exec claude`. "
+            "Found no matches."
         )
 
     def test_bin_debrief_does_not_pass_plugin_dir(
