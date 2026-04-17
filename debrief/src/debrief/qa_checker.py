@@ -342,6 +342,7 @@ def check_text_overflow(
         for (const el of els) {
             const s = window.getComputedStyle(el);
             if (s.display === 'none' || s.visibility === 'hidden') continue;
+            if (el.tagName === 'HTML' || el.tagName === 'BODY') continue;
             if (el.scrollWidth > el.clientWidth + 2 ||
                 el.scrollHeight > el.clientHeight + 2) {
                 if (s.overflow === 'hidden' || s.overflowX === 'hidden' ||
@@ -1094,6 +1095,7 @@ def main_qa_checker(
     try:
         browser = pw.chromium.launch()
         page = browser.new_page()
+        page.set_viewport_size({"width": 1920, "height": 1080})
 
         # BC-9.3: screenshot BEFORE checks
         slide_url = slide_path.resolve().as_uri()

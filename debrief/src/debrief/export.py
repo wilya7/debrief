@@ -537,3 +537,11 @@ def append_export_log(
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+if __name__ == "__main__":
+    import argparse
+    _parser = argparse.ArgumentParser(description="Debrief deck exporter")
+    _parser.add_argument("--project-root", type=Path, default=Path.cwd())
+    _args = _parser.parse_args()
+    main_export(_args.project_root.resolve())

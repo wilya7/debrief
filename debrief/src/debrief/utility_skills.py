@@ -198,6 +198,7 @@ def main_view(query: str, project_root: Path) -> None:
     BUG-AUDIT-32: precondition check for project existence + descriptive
     "no slides match" message on empty query result.
     """
+    project_root = project_root.resolve()
     # BUG-AUDIT-32: project precondition
     if not (project_root / "deck_state.json").is_file():
         print(
@@ -291,6 +292,7 @@ def main_present(project_root: Path) -> None:
     builds, generates a self-contained HTML file with keyboard
     navigation, and opens it in the default browser.
     """
+    project_root = project_root.resolve()
     # Preconditions
     state_path = project_root / "deck_state.json"
     if not state_path.is_file():
@@ -516,6 +518,7 @@ def main_script_generator(project_root: Path) -> None:
     replaces the old script_count + 1 state-field pattern. No state
     mutation. Precondition check for approved non-backup slides added.
     """
+    project_root = project_root.resolve()
     deck_state = read_deck_state(project_root)
 
     # BC-11.5: precondition — presentations must exist
@@ -723,6 +726,7 @@ def main_handout(mode: str, project_root: Path) -> None:
     efficiency. It does NOT read assets/style.css and does NOT
     require style_locked.
     """
+    project_root = project_root.resolve()
     # REQ-HAND-2: validate mode argument
     _VALID_HANDOUT_MODES = {"2up", "4up"}
     if mode not in _VALID_HANDOUT_MODES:
@@ -819,6 +823,7 @@ def skill_save(label: str, project_root: Path) -> None:
     BC-11.10: Does NOT copy debrief_state.json.
     BC-11.9: Sanitizes label; handles collisions; falls back to 'untitled'.
     """
+    project_root = project_root.resolve()
     sanitized = sanitize_save_label(label)
 
     snapshots_dir = project_root / "output" / "snapshots"
@@ -921,6 +926,7 @@ def skill_restore(label: Optional[str], project_root: Path) -> None:
               style_config.json, style_guide.md, .debrief/, assets/)
               are untouched.
     """
+    project_root = project_root.resolve()
     import json as _json
     from datetime import datetime, timezone
 
@@ -1033,6 +1039,7 @@ def skill_quit(project_root: Path) -> None:
       - Transient artifact cleanup: .debrief/task_prompt.md and
         .debrief/gate_data.json (dead routing-loop artifact).
     """
+    project_root = project_root.resolve()
     deck_state = read_deck_state(project_root)
     debrief_state = read_debrief_state(project_root)
 

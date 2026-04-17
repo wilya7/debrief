@@ -96,6 +96,7 @@ def adapt_pptx(reference: Path, project_root: Path) -> None:
     """
     pptx_mod = importlib.import_module("pptx")
     fitz = importlib.import_module("fitz")
+    fitz.TOOLS.mupdf_display_errors(False)
 
     slides_out = project_root / "assets" / "reference" / "slides"
     slides_out.mkdir(parents=True, exist_ok=True)
