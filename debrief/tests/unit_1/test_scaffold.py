@@ -1430,16 +1430,29 @@ EXPECTED_ARCHETYPE_KEYS = {
     "journal_club",
     "grant_panel",
     "job_talk",
+    "thesis_discussion",
+    "investor_pitch",
     "custom",
 }
 
 REQUIRED_ARCHETYPE_FIELDS = {
     "presentation_type",
     "time_default",
-    "content_signal_defaults",
+    "time_range",
+    "slide_density",
+    "disclosure_emphasis",
+    "narrative_style",
+    "audience_implied",
+    "audience_default",
+    "acknowledgment",
+    "handout_default",
+    "series_default",
+    "sub_modes",
     "rhetorical_emphasis",
-    "expected_deliverables",
+    "consultant_instructions",
     "key_defaults_text",
+    "content_signal_defaults",
+    "expected_deliverables",
 }
 
 

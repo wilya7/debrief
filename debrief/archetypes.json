@@ -1,7 +1,20 @@
 {
   "lab_meeting": {
     "presentation_type": "Lab Meeting",
-    "time_default": 12,
+    "time_default": 10,
+    "time_range": "5-15 min",
+    "slide_density": "dense",
+    "disclosure_emphasis": "available",
+    "narrative_style": "brief context, data/results, next steps",
+    "audience_implied": true,
+    "audience_default": "lab colleagues",
+    "acknowledgment": "optional",
+    "handout_default": false,
+    "series_default": false,
+    "sub_modes": null,
+    "rhetorical_emphasis": "Data-centric, iterative, invites critique and discussion from peers",
+    "consultant_instructions": "Keep briefing short: ask for data figures early (expected but not mandatory) and confirm duration. Structure slides as brief context, then data/results, then next steps. Dense slides are fine but enforce legibility from back of room (serif titles at 36px+, sans-serif body at 20px+). Propose multi-slide progressive disclosure builds where figures benefit from staged reveal. Minimal background — colleagues know the field.",
+    "key_defaults_text": "10-minute lab meeting. 2-3 dense slides. Focus on new results and open questions. Minimal background; colleagues know the field.",
     "content_signal_defaults": {
       "figures": true,
       "methods": true,
@@ -9,13 +22,24 @@
       "background": false,
       "conclusions": true
     },
-    "rhetorical_emphasis": "Data-centric, iterative, invites critique and discussion from peers",
-    "expected_deliverables": ["slide deck", "script"],
-    "key_defaults_text": "12-minute lab meeting format. Focus on new results and open questions. Minimal background; colleagues know the field."
+    "expected_deliverables": ["slide deck", "script"]
   },
   "conference_talk": {
     "presentation_type": "Conference Talk",
     "time_default": 15,
+    "time_range": "10-45 min",
+    "slide_density": "light",
+    "disclosure_emphasis": "available",
+    "narrative_style": "hero journey with narrative arc and antagonist",
+    "audience_implied": false,
+    "audience_default": null,
+    "acknowledgment": "required",
+    "handout_default": false,
+    "series_default": false,
+    "sub_modes": null,
+    "rhetorical_emphasis": "Broad accessibility, compelling narrative arc from problem to solution, one idea per slide",
+    "consultant_instructions": "Always ask duration first (10-45 min range is wide). Strictly enforce one idea per slide — this is non-negotiable for conference talks. Actively propose a narrative arc: hero journey, antagonist framing, or problem-solution drama. Ask about Q&A duration and size a backup deck (~1 slide per 1.5 min of Q&A). Conduct a defensive backup session where you role-play as a field expert using Socratic method, proposing alternatives when the user is stuck. Body text can be smaller than lab meeting since projector context allows it.",
+    "key_defaults_text": "15-minute conference talk. Strictly one idea per slide. Strong narrative arc. Backup slides sized to Q&A duration.",
     "content_signal_defaults": {
       "figures": true,
       "methods": true,
@@ -23,13 +47,24 @@
       "background": true,
       "conclusions": true
     },
-    "rhetorical_emphasis": "Broad accessibility, narrative arc from problem to solution, compelling visuals",
-    "expected_deliverables": ["slide deck", "script", "handout"],
-    "key_defaults_text": "15-minute conference talk. Accessible to a broad audience. Strong narrative: problem, approach, results, impact."
+    "expected_deliverables": ["slide deck", "script", "backup slides"]
   },
   "seminar": {
     "presentation_type": "Seminar",
     "time_default": 45,
+    "time_range": "30-60 min",
+    "slide_density": "medium",
+    "disclosure_emphasis": "available",
+    "narrative_style": "logical progression with clarity over persuasion",
+    "audience_implied": false,
+    "audience_default": null,
+    "acknowledgment": "required",
+    "handout_default": false,
+    "series_default": false,
+    "sub_modes": null,
+    "rhetorical_emphasis": "Clarity over persuasion, logical progression, discussion-oriented engagement",
+    "consultant_instructions": "Confirm the 45-minute default. Slide style should be clean like a conference talk (one idea per slide preferred, but not as strictly enforced). Frame the briefing around: 'What should the audience understand by the end?' Run a prerequisite check: 'What can I assume the audience already knows?' Ask if the seminar is part of a series (unlikely but possible). Rhetoric serves engagement — use logical progression rather than hero journey. May include the presenter's own research; orient toward discussion.",
+    "key_defaults_text": "45-minute seminar. Peer audience, standalone. Clean slides, one idea per slide preferred. Clarity over persuasion.",
     "content_signal_defaults": {
       "figures": true,
       "methods": true,
@@ -37,13 +72,24 @@
       "background": true,
       "conclusions": true
     },
-    "rhetorical_emphasis": "Depth and rigor, comprehensive methods, pedagogical clarity",
-    "expected_deliverables": ["slide deck", "script", "handout"],
-    "key_defaults_text": "45-minute seminar. Deep technical content acceptable. Include comprehensive background and methods sections."
+    "expected_deliverables": ["slide deck", "script"]
   },
   "lecture": {
     "presentation_type": "Lecture",
     "time_default": 60,
+    "time_range": "30-90 min",
+    "slide_density": "dense",
+    "disclosure_emphasis": "heavy",
+    "narrative_style": "stepwise concept building with learning objectives",
+    "audience_implied": true,
+    "audience_default": "students",
+    "acknowledgment": "no",
+    "handout_default": true,
+    "series_default": true,
+    "sub_modes": null,
+    "rhetorical_emphasis": "Pedagogical clarity, stepwise concept building, student engagement",
+    "consultant_instructions": "Series continuity is the default — assume the lecture is part of a course and ask 'Which lesson is this?' Frame the briefing around learning objectives: 'What should students be able to DO after this?' Run a prerequisite check that references course structure. Dense slides with heavy progressive disclosure are expected since students need layered reveals. Handout is assumed (students need study material). Pure teaching context: established knowledge, presenter's own research is optional. Clarity is paramount; rhetoric serves student engagement, not persuasion.",
+    "key_defaults_text": "60-minute lecture, part of a course series. Dense slides with heavy progressive disclosure. Handout assumed. Learning-objective driven.",
     "content_signal_defaults": {
       "figures": true,
       "methods": true,
@@ -51,13 +97,30 @@
       "background": true,
       "conclusions": true
     },
-    "rhetorical_emphasis": "Pedagogical clarity, stepwise concept building, student engagement",
-    "expected_deliverables": ["slide deck", "handout", "script"],
-    "key_defaults_text": "60-minute lecture. Teach from first principles. Build concepts progressively. Include worked examples."
+    "expected_deliverables": ["slide deck", "handout", "script"]
   },
   "journal_club": {
     "presentation_type": "Journal Club",
     "time_default": 20,
+    "time_range": "15-30 min",
+    "slide_density": "medium",
+    "disclosure_emphasis": "available",
+    "narrative_style": "figure-by-figure critical dissection",
+    "audience_implied": true,
+    "audience_default": "lab or department peers",
+    "acknowledgment": "optional",
+    "handout_default": false,
+    "series_default": false,
+    "sub_modes": {
+      "mode_field": "paper_scope",
+      "options": {
+        "single_paper": "Figure-by-figure dissection following paper logic with deep critique",
+        "multi_paper": "Thematic narrative across papers (seminar-like) with comparative critique"
+      }
+    },
+    "rhetorical_emphasis": "Critical appraisal, fair representation, ethical guardian role against misrepresentation",
+    "consultant_instructions": "First ask: 'Single paper or topic review across multiple papers?' In single-paper mode, follow the paper's own logic figure by figure with deep critique. In multi-paper mode, build a thematic narrative across papers with comparative critique. The paper PDF is the primary asset — treat ALL paper elements as candidate slides (propose all, negotiate cuts). Verify the presenter understands the methods: never let someone present what they cannot defend. Act as ethical guardian: ensure fair representation, push back on misrepresentation or fallacies with charitable criticism. If the user insists on an unfair framing, comply but register dissent.",
+    "key_defaults_text": "20-minute journal club. Single-paper or multi-paper mode. Figure-by-figure dissection with critical appraisal.",
     "content_signal_defaults": {
       "figures": true,
       "methods": true,
@@ -65,13 +128,24 @@
       "background": true,
       "conclusions": true
     },
-    "rhetorical_emphasis": "Critical appraisal, figure-by-figure analysis, strengths and limitations",
-    "expected_deliverables": ["slide deck"],
-    "key_defaults_text": "20-minute journal club. Walk through a paper figure by figure. Highlight methods, statistics, and interpretation."
+    "expected_deliverables": ["slide deck", "script"]
   },
   "grant_panel": {
     "presentation_type": "Grant Panel Presentation",
     "time_default": 12,
+    "time_range": "10-15 min",
+    "slide_density": "medium",
+    "disclosure_emphasis": "available",
+    "narrative_style": "structured argument: worthy problem, right idea, I can deliver, real impact",
+    "audience_implied": true,
+    "audience_default": "grant review panel",
+    "acknowledgment": "required",
+    "handout_default": false,
+    "series_default": false,
+    "sub_modes": null,
+    "rhetorical_emphasis": "Heavily persuasive, logic-dominant, credibility-heavy, minimal pathos; every slide justifies funding",
+    "consultant_instructions": "Ask for grant guidelines and written proposal as assets (both optional but common). Read guidelines, extract evaluation criteria, and map the proposal to those criteria. Slide structure must be DERIVED FROM the guidelines' criteria — never use a generic template. Ask if the guidelines require a budget slide. Apply the 'so what' test on every slide: each must justify funding in isolation. Q&A calibration is the harshest sparring — role-play as a skeptical grant reviewer. Coach the user: 'every slide is a premise — what is the argument?' The narrative arc is NOT hero journey; it is a structured legal case: worthy problem, right idea, I can deliver, real impact. Every claim must be backed by evidence or credentials.",
+    "key_defaults_text": "12-minute grant panel. Structure derived from grant guidelines. Every slide justifies funding. Harshest Q&A sparring.",
     "content_signal_defaults": {
       "figures": true,
       "methods": true,
@@ -79,13 +153,31 @@
       "background": true,
       "conclusions": true
     },
-    "rhetorical_emphasis": "Significance, innovation, feasibility; persuasive and concise",
-    "expected_deliverables": ["slide deck", "handout"],
-    "key_defaults_text": "12-minute grant panel. Lead with significance. Demonstrate feasibility with preliminary data. Emphasize innovation."
+    "expected_deliverables": ["slide deck", "script", "backup slides"]
   },
   "job_talk": {
     "presentation_type": "Job Talk",
     "time_default": 45,
+    "time_range": "20-45 min",
+    "slide_density": "medium",
+    "disclosure_emphasis": "available",
+    "narrative_style": "scientific identity narrative with career trajectory",
+    "audience_implied": false,
+    "audience_default": null,
+    "acknowledgment": "required",
+    "handout_default": false,
+    "series_default": false,
+    "sub_modes": {
+      "mode_field": "position_type",
+      "options": {
+        "postdoc": "Older work establishes credibility; emphasis on recent work; close with 'what I bring to your lab'",
+        "pi_faculty": "Vision-driven like grant panel rhetoric; close with 'why your department needs this'",
+        "phd_application": "Lead with motivation and learning ability; show research aptitude; humility appropriate; know the target lab deeply"
+      }
+    },
+    "rhetorical_emphasis": "Honest but directed persuasion, logic and credibility dominant, career trajectory woven in",
+    "consultant_instructions": "Ask three questions upfront: position type (postdoc, PI/faculty, or PhD application), target department/lab, and what they work on. Duration varies by level (20-30 min postdoc, 45 min PI). In postdoc mode, older work establishes credibility with emphasis on recent results; close with 'what I bring to your lab.' In PI mode, adopt grant-panel-style vision-driven rhetoric; close with 'why your department needs this.' In PhD mode, lead with motivation and learning ability over results. Career trajectory slide is optional and brief. Q&A sparring covers both scientific AND career questions — this is deep sparring.",
+    "key_defaults_text": "45-minute job talk. Mode varies by position type. Coherent scientific story with career arc. Deep Q&A sparring.",
     "content_signal_defaults": {
       "figures": true,
       "methods": true,
@@ -93,13 +185,62 @@
       "background": true,
       "conclusions": true
     },
-    "rhetorical_emphasis": "Showcase scientific identity, breadth and depth, future vision",
-    "expected_deliverables": ["slide deck", "script", "handout"],
-    "key_defaults_text": "45-minute job talk. Tell a coherent scientific story. Show past work, current results, and future directions."
+    "expected_deliverables": ["slide deck", "script", "backup slides"]
   },
-  "custom": {
-    "presentation_type": "Custom",
-    "time_default": 20,
+  "thesis_discussion": {
+    "presentation_type": "Thesis Defense",
+    "time_default": 35,
+    "time_range": "20-45 min",
+    "slide_density": "medium",
+    "disclosure_emphasis": "available",
+    "narrative_style": "hero journey with aggressive cuts to highlights",
+    "audience_implied": true,
+    "audience_default": "thesis committee and department",
+    "acknowledgment": "required",
+    "handout_default": false,
+    "series_default": false,
+    "sub_modes": {
+      "mode_field": "degree_type",
+      "options": {
+        "phd": "Hero journey narrative, beautiful slides, LESS content MORE impact, demonstrate communication mastery",
+        "masters": "All of PhD mode plus emphasis on showing learning, technique mastery, scientific method understanding"
+      }
+    },
+    "rhetorical_emphasis": "Compelling narrative, ethos through presentation quality, nothing boring",
+    "consultant_instructions": "The thesis document is a mandatory asset (PDF). Read the thesis, propose a structure mapped to chapters, then aggressively cut to highlights — less content, more impact. Ask: 'PhD or Master's defense?' Duration varies (PhD typically 30-45 min, Master's 20-30 min). In PhD mode, build a hero journey narrative with beautiful slides; push the user: 'What is the exciting version?' Nothing should be boring. In Master's mode, add emphasis on demonstrating learning, technique mastery, and scientific method understanding. Prepare backup slides covering methodology challenges and alternative interpretations. Probe the user: 'Why did you choose this method? Can you defend it?'",
+    "key_defaults_text": "35-minute thesis defense. Thesis PDF required. Hero journey narrative. Aggressive cuts to highlights. Backup slides for methodology.",
+    "content_signal_defaults": {
+      "figures": true,
+      "methods": true,
+      "results": true,
+      "background": true,
+      "conclusions": true
+    },
+    "expected_deliverables": ["slide deck", "script", "backup slides"]
+  },
+  "investor_pitch": {
+    "presentation_type": "Investor Pitch",
+    "time_default": 15,
+    "time_range": "5-20 min",
+    "slide_density": "light",
+    "disclosure_emphasis": "available",
+    "narrative_style": "problem, solution, market, traction, team, ask",
+    "audience_implied": true,
+    "audience_default": "investors",
+    "acknowledgment": "optional",
+    "handout_default": false,
+    "series_default": false,
+    "sub_modes": {
+      "mode_field": "funding_stage",
+      "options": {
+        "pre_seed": "Vision-heavy emphasis; story and opportunity dominate over metrics",
+        "seed": "Balanced vision and early traction; demonstrate product-market fit signals",
+        "series_a": "Metrics-heavy emphasis; traction, unit economics, and growth trajectory dominate"
+      }
+    },
+    "rhetorical_emphasis": "Opportunity-driven persuasion, business vocabulary (TAM/SAM, moat, burn rate), not academic",
+    "consultant_instructions": "Ask three questions upfront: funding stage (pre-seed, seed, Series A), whether an existing pitch deck is available as an asset, and the specific ask (how much, for what). The funding stage changes emphasis: pre-seed is vision-heavy, seed balances vision with early traction, Series A is metrics-heavy. Structure follows: problem, solution, market, traction, team, ask. Use business vocabulary throughout — TAM/SAM, traction, moat, burn rate — never academic jargon. Acknowledgment is optional because the team slide serves a similar credibility purpose. Rhetoric is opportunity-driven persuasion.",
+    "key_defaults_text": "15-minute investor pitch. Stage-dependent emphasis (vision vs. metrics). Business vocabulary. Problem-solution-market-traction-team-ask structure.",
     "content_signal_defaults": {
       "figures": true,
       "methods": false,
@@ -107,8 +248,31 @@
       "background": false,
       "conclusions": true
     },
-    "rhetorical_emphasis": "User-defined; all defaults are overrideable",
-    "expected_deliverables": ["slide deck"],
-    "key_defaults_text": "Custom presentation format. All defaults are user-configurable. Specify duration, audience, and goals during briefing."
+    "expected_deliverables": ["slide deck", "script"]
+  },
+  "custom": {
+    "presentation_type": "Custom",
+    "time_default": 20,
+    "time_range": "any",
+    "slide_density": "medium",
+    "disclosure_emphasis": "available",
+    "narrative_style": "borrowed from matched archetypes based on user answers",
+    "audience_implied": false,
+    "audience_default": null,
+    "acknowledgment": "optional",
+    "handout_default": false,
+    "series_default": false,
+    "sub_modes": null,
+    "rhetorical_emphasis": "User-defined; all defaults are overrideable; conscious selection from other archetypes",
+    "consultant_instructions": "Open with four questions: 'What is the occasion? Who is the audience? How long? What do you need to achieve?' Based on the answers, propose which archetype's principles to borrow and explicitly name the borrowed rules. Custom is not the absence of rules — it is the conscious selection from other archetypes' rules applied to a non-standard context. All defaults are overrideable. Universal principles still apply; only archetype-specific defaults are negotiated fresh.",
+    "key_defaults_text": "Custom presentation. All defaults are user-configurable. Consultant proposes borrowed rules from matching archetypes.",
+    "content_signal_defaults": {
+      "figures": true,
+      "methods": false,
+      "results": true,
+      "background": false,
+      "conclusions": true
+    },
+    "expected_deliverables": ["slide deck"]
   }
 }
