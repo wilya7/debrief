@@ -279,6 +279,169 @@ def main_view(query: str, project_root: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# main_present (REQ-PRESENT-1..5 / BUG-AUDIT-50)
+# ---------------------------------------------------------------------------
+
+
+def main_present(project_root: Path) -> None:
+    """Generate output/presentation.html and open in browser.
+
+    BUG-AUDIT-50: browser-based full-screen presentation mode.
+    Reads approved non-backup slides, detects progressive disclosure
+    builds, generates a self-contained HTML file with keyboard
+    navigation, and opens it in the default browser.
+    """
+    # Preconditions
+    state_path = project_root / "deck_state.json"
+    if not state_path.is_file():
+        print(
+            "Cannot present: no project found at "
+            f"{project_root} (deck_state.json missing). "
+            "Run 'debrief new' to create a project first.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    deck_state = read_deck_state(project_root)
+    approved = [
+        s for s in deck_state.slides
+        if s.status == "approved" and not s.backup
+    ]
+    if not approved:
+        print(
+            "Cannot present: no approved non-backup slides. "
+            "Author slides with '/debrief:slide' and approve at "
+            "least one before presenting.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    slides_dir = project_root / "slides"
+
+    # Build the slide sequence including progressive disclosure builds
+    slide_sequence: list[Path] = []
+    for slide in approved:
+        slug = slide.slug
+        # Check for build files: slug_build_1.html, slug_build_2.html, ...
+        build_idx = 1
+        while True:
+            build_file = slides_dir / f"{slug}_build_{build_idx}.html"
+            if build_file.is_file():
+                slide_sequence.append(build_file)
+                build_idx += 1
+            else:
+                break
+        # The final complete slide
+        final_file = slides_dir / f"{slug}.html"
+        if final_file.is_file():
+            slide_sequence.append(final_file)
+
+    if not slide_sequence:
+        print(
+            "Cannot present: no slide HTML files found in slides/.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    # Read each slide's body content
+    slide_bodies: list[str] = []
+    for slide_path in slide_sequence:
+        html = slide_path.read_text(encoding="utf-8")
+        # Extract body content — look for <body> tags
+        import re as _re
+        body_match = _re.search(
+            r"<body[^>]*>(.*?)</body>", html, _re.DOTALL | _re.IGNORECASE
+        )
+        if body_match:
+            slide_bodies.append(body_match.group(1))
+        else:
+            slide_bodies.append(html)
+
+    # Read the style.css if it exists
+    css_path = project_root / "assets" / "style.css"
+    css_content = ""
+    if css_path.is_file():
+        css_content = css_path.read_text(encoding="utf-8")
+
+    # Generate presentation.html
+    total = len(slide_bodies)
+    slides_html = ""
+    for i, body in enumerate(slide_bodies):
+        display = "flex" if i == 0 else "none"
+        slides_html += (
+            f'<div class="slide" data-index="{i}" '
+            f'style="display:{display};">{body}</div>\n'
+        )
+
+    presentation_html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Debrief Presentation</title>
+<style>
+{css_content}
+* {{ margin: 0; padding: 0; box-sizing: border-box; }}
+body {{ background: #000; overflow: hidden; }}
+.slide {{
+  width: 100vw; height: 100vh;
+  align-items: center; justify-content: center;
+  flex-direction: column;
+  background: #fff;
+}}
+.slide-counter {{
+  position: fixed; bottom: 12px; right: 20px;
+  color: #888; font-family: sans-serif; font-size: 14px;
+  z-index: 9999; pointer-events: none;
+}}
+</style>
+</head>
+<body>
+{slides_html}
+<div class="slide-counter" id="counter">1 / {total}</div>
+<script>
+(function() {{
+  let current = 0;
+  const slides = document.querySelectorAll('.slide');
+  const total = slides.length;
+  const counter = document.getElementById('counter');
+
+  function show(idx) {{
+    slides.forEach((s, i) => s.style.display = i === idx ? 'flex' : 'none');
+    counter.textContent = (idx + 1) + ' / ' + total;
+  }}
+
+  document.addEventListener('keydown', function(e) {{
+    if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'Enter') {{
+      e.preventDefault();
+      if (current < total - 1) {{ current++; show(current); }}
+    }} else if (e.key === 'ArrowLeft') {{
+      e.preventDefault();
+      if (current > 0) {{ current--; show(current); }}
+    }} else if (e.key === 'f' || e.key === 'F') {{
+      if (!document.fullscreenElement) {{
+        document.documentElement.requestFullscreen();
+      }} else {{
+        document.exitFullscreen();
+      }}
+    }}
+  }});
+
+  show(0);
+}})();
+</script>
+</body>
+</html>"""
+
+    out_dir = project_root / "output"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "presentation.html"
+    out_path.write_text(presentation_html, encoding="utf-8")
+
+    webbrowser.open(out_path.as_uri())
+    print(str(out_path), file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
 # generate_script_content (BC-11.6 / REQ-SCRIPT-3)
 # ---------------------------------------------------------------------------
 

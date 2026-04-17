@@ -62,6 +62,7 @@ _EXPECTED_COMMAND_FILES = {
     "save.md",
     "view.md",
     "restore.md",
+    "present.md",
     "quit.md",
     "script.md",
     "handout.md",
