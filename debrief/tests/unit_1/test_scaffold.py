@@ -348,7 +348,7 @@ AGENT_FRONTMATTER_SPEC: dict[str, dict[str, Any]] = {
         ),
         "model": "claude-sonnet-4-6",
         "maxTurns": 20,
-        "tools": "Read, Write, Edit",
+        "tools": "Read, Write, Edit, Bash",
     },
 }
 

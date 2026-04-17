@@ -3,7 +3,7 @@ name: stylist
 description: Style co-design agent that produces style_config.json and style_guide.md
 model: claude-sonnet-4-6
 maxTurns: 20
-tools: Read, Write, Edit
+tools: Read, Write, Edit, Bash
 ---
 
 # Stylist Agent

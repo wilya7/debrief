@@ -388,11 +388,18 @@ def validate_debrief_state(state_dict: dict[str, Any]) -> None:
 
 
 def _dict_to_slide_record(d: dict[str, Any]) -> SlideRecord:
-    """Convert a dict to SlideRecord, applying defaults for optional fields."""
+    """Convert a dict to SlideRecord, applying defaults for optional fields.
+
+    BUG-AUDIT-52 / BUG-ST-17: all fields use d.get() with sensible
+    defaults so that consultant-written records with missing fields
+    still load instead of crashing downstream (export, restore).
+    Only 'slug' is truly required — a record without a slug is
+    meaningless.
+    """
     return SlideRecord(
         slug=d["slug"],
-        title=d["title"],
-        status=d["status"],
+        title=d.get("title", d.get("slug", "Untitled")),
+        status=d.get("status", "draft"),
         backup=d.get("backup", False),
         content_summary=d.get("content_summary"),
         visual_approach=d.get("visual_approach"),

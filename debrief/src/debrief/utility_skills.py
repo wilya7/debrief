@@ -968,6 +968,21 @@ def skill_restore(label: Optional[str], project_root: Path) -> None:
         )
         sys.exit(2)
 
+    # BUG-AUDIT-52 / BUG-ST-19: validate snapshot BEFORE overwriting.
+    # If the snapshot's deck_state.json is structurally invalid, refuse
+    # the restore with a clear message instead of crashing mid-sequence.
+    try:
+        read_deck_state(snap_dir)
+    except Exception as exc:
+        print(
+            f"Cannot restore from '{label}': the snapshot's "
+            f"deck_state.json is structurally invalid ({exc}). "
+            f"The snapshot may have been saved with malformed state. "
+            f"Your current project state is untouched.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
     # BC-11.11 step 1: auto-save current state before overwrite.
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     auto_label = f"pre_restore_{ts}"
