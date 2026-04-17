@@ -40,6 +40,68 @@ When the slide brief's `user_assets` field lists image paths, handle them as fol
 - SVG files are embedded directly via `<img>` tags (not inlined as raw SVG).
 - Ensure the image slide is visually homogeneous with the rest of the deck — apply the same typography, spacing, and color tokens from `assets/style.css`.
 
+## Progressive Disclosure Builds (REQ-UNIV-6 / BUG-AUDIT-46)
+
+When the slide brief specifies a progressive disclosure build group, produce MULTIPLE HTML files for the same logical slide:
+- `<slug>_build_1.html` — first disclosure step (e.g., title + left panel only)
+- `<slug>_build_2.html` — second step (e.g., add right panel)
+- `<slug>.html` — final complete slide (all elements visible)
+
+Each build file shares the same base layout and CSS. The only difference is which elements are visible (`display: none` on undisclosed elements, or simply absent from the HTML). The build order is specified in the slide brief by the consultant.
+
+## Statistical Detail Styling (REQ-UNIV-11)
+
+When a slide contains statistical data (sample sizes, p-values, test names), render the statistical details in a dedicated `.stat-detail` element: smaller font (12-14px), intentionally lower contrast (e.g., `color: #999` on white background). This makes the details visible to those who look for them without distracting from the main point.
+
+```html
+<div class="stat-detail">n=42, p<0.01, two-tailed t-test</div>
+```
+
+## Citation Elements (REQ-UNIV-9 / REQ-UNIV-10)
+
+Every claim, figure, or data point sourced from external work MUST have a citation element. Place citations as small, lower-contrast text near the referenced content:
+
+```html
+<div class="citation">Source: Smith et al., Nature 2024</div>
+```
+
+If the consultant provided BibTeX metadata, format the citation precisely (author, year, journal). If only a DOI or link was provided, use a short-form citation.
+
+## Video Placeholder (REQ-UNIV-19)
+
+When the slide brief includes a video asset:
+- If presenting from browser (`/debrief:present`): embed a `<video>` tag with controls.
+- If presenting from PDF: create a still-frame placeholder with a clickable link and a `▶ PLAY VIDEO` overlay. The link uses `file:///` protocol to open the video in the system player.
+
+```html
+<!-- Browser mode -->
+<video src="../assets/videos/clip.mp4" controls style="max-width:100%;"></video>
+
+<!-- PDF mode -->
+<a href="file:///path/to/assets/videos/clip.mp4">
+  <img src="still_frame.png" alt="Click to play video">
+  <div class="video-overlay">▶ PLAY VIDEO (45s)</div>
+</a>
+```
+
+## Confidentiality Tag (REQ-UNIV-12)
+
+When the slide brief marks a slide as confidential, add a visible tag in the title area:
+
+```html
+<div class="confidential-tag">[CONFIDENTIAL — DO NOT DISTRIBUTE]</div>
+```
+
+Style with an accent color (red or orange) at the same size as the title.
+
+## Acknowledgment Slide (REQ-UNIV-17)
+
+When the consultant requests an acknowledgment slide, produce a clean layout with:
+- Names and roles (collaborators, funding agencies, mentors, lab members)
+- Funding logos/grant numbers if provided
+- No paragraph text — names and affiliations only
+- Layout follows the deck's typography and spacing
+
 ## Escalation (BC-5.10 / BC-8.7)
 
 If the slide brief requires a structural change you cannot make (e.g., adding a new group, reordering existing slides, changing the deck brief, or modifying `style_config.json`), **do not attempt the change yourself**. Instead, output the exact literal string:
