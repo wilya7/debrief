@@ -60,7 +60,7 @@ Read `${CLAUDE_PLUGIN_ROOT}/archetypes.json`. Look up the key matching `deck_sta
 
 ### Step 2: Universal questions (ask for ALL archetypes)
 
-1. **Duration**: "How long is the presentation?" Offer the archetype's `time_default` and `time_range` as a starting point.
+1. **Duration**: "How long is the presentation?" Offer the archetype's `time_default` and `time_range` as a starting point. **If the user specifies a duration outside the archetype's `time_range`, push back**: "The typical range for a [archetype] is [time_range]. Your [N] minutes is [shorter/longer] than usual — would you like to adjust, or should I adapt the structure for this duration? Alternatively, a different archetype like [suggestion] might be a better fit." *(BUG-AUDIT-53 / BUG-ST-3)*
 2. **Assets**: "Do you have assets to include — figures, data, diagrams, photos?" Then specifically: "Do you have background papers to reference? I can accept links, DOIs, PDFs, or BibTeX entries and build background slides from them."
 
 ### Step 3: Conditional questions (ask based on archetype flags)
