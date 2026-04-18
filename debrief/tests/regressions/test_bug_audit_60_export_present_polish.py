@@ -143,10 +143,11 @@ def _init_minimal_project_with_slide(project_root: Path) -> None:
 
 
 def test_build_presentation_html_writes_file_without_browser(tmp_path):
-    """BUG-AUDIT-60 / BUG-ST-xp-1:
+    """BUG-AUDIT-60 / BUG-ST-xp-1 (refresh-from-export flow) +
+    BUG-AUDIT-67 / BC-11.18a (srcdoc iframe embedding):
     build_presentation_html must write output/presentation.html and
-    return its path — without launching a browser.
-    """
+    return its path — without launching a browser. Each file-backed
+    slide is embedded as a srcdoc iframe so per-slide CSS survives."""
     _init_minimal_project_with_slide(tmp_path)
 
     out_path = utility_skills.build_presentation_html(tmp_path)
@@ -156,8 +157,13 @@ def test_build_presentation_html_writes_file_without_browser(tmp_path):
     assert out_path.is_file()
 
     html = out_path.read_text(encoding="utf-8")
-    # Embeds slide content inline (no iframe)
-    assert "<iframe" not in html
+    # BUG-AUDIT-67: file-backed slides are embedded via <iframe srcdoc=...>.
+    # Content is inline (srcdoc carries verbatim HTML), not a URL reference,
+    # so presentation.html remains self-contained.
+    assert "<iframe" in html
+    assert "srcdoc=" in html
+    # Slide content still reachable (srcdoc preserves < and > literal;
+    # the standalone slide body included <h1>Demo</h1>).
     assert "Demo" in html
     # Counter markup present
     assert "slide-counter" in html

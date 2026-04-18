@@ -394,10 +394,15 @@ Checks:
 Checks:
 - `output/presentation.html` exists.
 - Valid HTML (has `<html>` and `</html>`).
-- Embeds slide content (not just `<iframe>`).
-- Contains keyboard-nav JS (arrow keys, Space, Enter, F for fullscreen).
-- Includes a slide counter.
-- Progressive-disclosure slide: builds appear in sequence (build_1 → build_2 → final).
+- Embeds slide content via `<iframe srcdoc="…">` (BUG-AUDIT-67 / BC-11.18a). `srcdoc` is inline content, NOT a URL reference — the file remains self-contained.
+- Each file-backed slide is one `<iframe class="slide-frame" srcdoc="…">` inside its `<div class="slide" data-index="N">` wrapper.
+- srcdoc content begins with `<!DOCTYPE` (full slide HTML preserved).
+- Contains keyboard-nav JS (arrow keys, Space, Enter, F for fullscreen) AT THE TOP-LEVEL window AND also attached to each iframe's `contentDocument` on load (BC-11.18b).
+- Arrow keys targeting `<video>`, `<input>`, `<textarea>`, `<select>` pass through (not intercepted for slide navigation).
+- Includes a slide counter at the top level; counter value reflects main + separator + backup counts.
+- Progressive-disclosure slide: each of build_1, build_2, final gets its own iframe in sequence.
+
+**BUG-AUDIT-67 fix-validation (visual correctness):** open `output/presentation.html` in a browser. The first slide MUST render with per-slide styling intact — the hook slide should display its heading, styled text, and background per the locked style config. If the page renders as an empty white/black page, the iframe embedding regressed — log `BUG-ST-round6-a-N`. Also verify: pressing arrow right advances one slide at a time (including through build steps); the slide counter increments in lockstep.
 
 **BUG-AUDIT-65 BUG-ST-a-e3-present fix-validation (present includes backup):** the approved backup slide from A7 MUST appear in `output/presentation.html`. Between the last main slide and the first backup slide, a **blank separator slide** must be present (a `<div class="slide"><div class="slide-separator-inner" style="...background:<locked-color>...">` marker with no text content). The slide counter MUST reflect main + builds + 1 separator + backup count. If the backup slide is missing, or the separator slide is missing/has text content, log `BUG-ST-round6-a-N`.
 

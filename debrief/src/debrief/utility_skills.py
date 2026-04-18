@@ -454,6 +454,19 @@ def main_present(project_root: Path) -> None:
     print(str(out_path), file=sys.stderr)
 
 
+def _escape_srcdoc(html_content: str) -> str:
+    """Escape an HTML document for embedding in an iframe srcdoc attribute.
+
+    BUG-AUDIT-67 / REQ-PRESENT-IFRAME-1: per the HTML5 attribute-value
+    grammar, only `&` and the attribute's delimiter (`"`) MUST be
+    escaped inside a double-quoted attribute value. `<` and `>` are
+    legal literal characters inside attribute values and are left as-is
+    so existing tests + human inspection of presentation.html can still
+    grep for slide-body markup directly.
+    """
+    return html_content.replace("&", "&amp;").replace('"', "&quot;")
+
+
 def _write_presentation_html(
     project_root: Path,
     slide_sequence: "list[Any]",
@@ -463,40 +476,45 @@ def _write_presentation_html(
     two public entry points.
 
     Each item in ``slide_sequence`` is either a ``Path`` to a slide HTML
-    file (the body is extracted) or a ``str`` body snippet already rendered
-    (used for the blank separator per BC-11.18 / BUG-AUDIT-65). Strings are
-    embedded verbatim inside a ``<div class="slide">``.
+    file or a ``str`` body snippet already rendered (used for the blank
+    separator per BC-11.18 / BUG-AUDIT-65).
+
+    BUG-AUDIT-67 / REQ-PRESENT-IFRAME-1 / BC-11.18a: file-backed slides
+    are embedded via `<iframe srcdoc="…">` carrying the verbatim
+    original slide HTML (head + body). This preserves per-slide
+    `<style>` blocks that define slide-specific class rules
+    (`.statement-block`, `.main-heading`, etc.) — extracting only
+    `<body>` dropped those rules and left every element unstyled.
+    String-backed bodies (blank separator) have no per-slide styling
+    and remain plain div content.
     """
-    # Read each slide's body content
-    slide_bodies: list[str] = []
+    # Build each slide's wrapper HTML. Path items → iframe srcdoc; str
+    # items → plain div content.
+    slide_markups: list[str] = []
     for item in slide_sequence:
         if isinstance(item, Path):
-            html = item.read_text(encoding="utf-8")
-            import re as _re
-            body_match = _re.search(
-                r"<body[^>]*>(.*?)</body>", html, _re.DOTALL | _re.IGNORECASE
+            full_html = item.read_text(encoding="utf-8")
+            slide_markups.append(
+                '<iframe class="slide-frame" srcdoc="'
+                + _escape_srcdoc(full_html)
+                + '" style="width:100%;height:100%;border:0;display:block;"'
+                + "></iframe>"
             )
-            if body_match:
-                slide_bodies.append(body_match.group(1))
-            else:
-                slide_bodies.append(html)
         else:
-            # Pre-rendered body (e.g., blank separator from
-            # _blank_separator_body). Embed verbatim.
-            slide_bodies.append(str(item))
+            slide_markups.append(str(item))
 
     css_path = project_root / "assets" / "style.css"
     css_content = ""
     if css_path.is_file():
         css_content = css_path.read_text(encoding="utf-8")
 
-    total = len(slide_bodies)
+    total = len(slide_markups)
     slides_html = ""
-    for i, body in enumerate(slide_bodies):
+    for i, markup in enumerate(slide_markups):
         display = "flex" if i == 0 else "none"
         slides_html += (
             f'<div class="slide" data-index="{i}" '
-            f'style="display:{display};">{body}</div>\n'
+            f'style="display:{display};">{markup}</div>\n'
         )
 
     presentation_html = f"""<!DOCTYPE html>
@@ -527,7 +545,10 @@ body {{ background: #000; overflow: hidden; }}
 <script>
 (function() {{
   let current = 0;
-  const slides = document.querySelectorAll('.slide');
+  // BC-11.18a: count top-level .slide wrappers only. Nested .slide
+  // divs inside iframes live in separate documents and are not seen
+  // by this querySelectorAll.
+  const slides = document.querySelectorAll('body > .slide');
   const total = slides.length;
   const counter = document.getElementById('counter');
 
@@ -536,7 +557,16 @@ body {{ background: #000; overflow: hidden; }}
     counter.textContent = (idx + 1) + ' / ' + total;
   }}
 
-  document.addEventListener('keydown', function(e) {{
+  // BC-11.18b / REQ-PRESENT-IFRAME-2: keydown must work across iframes.
+  // Arrow keys targeting VIDEO/INPUT/TEXTAREA/SELECT pass through so
+  // native behavior (video seeking, form input) is preserved.
+  const PASS_THROUGH_TAGS = ['VIDEO', 'INPUT', 'TEXTAREA', 'SELECT'];
+  const NAV_KEYS = ['ArrowRight', 'ArrowLeft', ' ', 'Enter'];
+  function handleKeyDown(e) {{
+    const tag = (e.target && e.target.tagName) || '';
+    if (NAV_KEYS.includes(e.key) && PASS_THROUGH_TAGS.includes(tag)) {{
+      return; // let the focused element handle it
+    }}
     if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'Enter') {{
       e.preventDefault();
       if (current < total - 1) {{ current++; show(current); }}
@@ -549,6 +579,27 @@ body {{ background: #000; overflow: hidden; }}
       }} else {{
         document.exitFullscreen();
       }}
+    }}
+  }}
+
+  // Top-level window
+  document.addEventListener('keydown', handleKeyDown);
+
+  // Each iframe: attach keydown handler to its contentDocument on load,
+  // so key events fire regardless of which frame holds focus.
+  document.querySelectorAll('iframe.slide-frame').forEach(function(iframe) {{
+    function attach() {{
+      try {{
+        if (iframe.contentDocument) {{
+          iframe.contentDocument.addEventListener('keydown', handleKeyDown);
+        }}
+      }} catch (err) {{ /* cross-origin or detached — skip */ }}
+    }}
+    iframe.addEventListener('load', attach);
+    // srcdoc iframes load synchronously in most browsers; attempt immediate
+    // attach as well in case we missed the load event.
+    if (iframe.contentDocument && iframe.contentDocument.readyState === 'complete') {{
+      attach();
     }}
   }});
 
