@@ -347,7 +347,7 @@ Checks:
 
 Checks:
 - `output/<folder>/script_v001.md` exists.
-- Header contains `**Target duration:** 5 minutes`.
+- Header contains `**Target duration:** 5 minutes`. **Cluster 3 fix-validation (BUG-ST-a-4):** this must be **5**, not **45**. Pre-fix the regex picked up "45 min" from the duration-warning sentence. A value of 45 means the fix regressed — log as `BUG-ST-round4-a-N`.
 - Each slide has `### Key talking points`, `### Transition`, `### Estimated speaking time`.
 - When `content_summary` contains a transition sentence, `### Transition` uses it (not the placeholder).
 - TIME CHECK markers appear (e.g., "TIME CHECK (halfway mark)").
@@ -387,6 +387,16 @@ Checks:
 - `debrief_state.json` reflects each update; no hash mismatch warning on second call.
 - `ledger.jsonl` contains `"event": "smoke_test_complete"`.
 - `ledger.jsonl` has many entries from throughout the session (not just quit/restore).
+
+**Cluster 1 fix-validation (BUG-AUDIT-60):** immediately after the three commands above, attempt a DELIBERATELY invalid sub_phase and assert the write fails at write time (not on next read):
+
+```bash
+python -m debrief.debrief_state update --set sub_phase=production/backup_decision --project-root .
+# Expected: non-zero exit; stderr contains "sub_phase" and "invalid".
+# debrief_state.json must remain unchanged (`sub_phase: complete` from the prior step).
+```
+
+Also verify phase derivation: `python -m debrief.debrief_state update --set sub_phase=production/red_green --project-root .` without passing `phase=` should leave `phase: production` in the state file. Log any deviation as BUG-ST-round4-a-N.
 
 Append Profile A summary to `profile_a.md`. **Do NOT run A15 or A16 yet — they are deferred to Phase 4.**
 
@@ -431,11 +441,14 @@ Checks:
 ### C4 — Math / KaTeX
 
 - Request a slide with Bayes' theorem: `P(A|B) = P(B|A)P(A)/P(B)`.
+- **Cluster 2 fix-validation (BUG-ST-c-1 / c-2):** do NOT pre-add `katex` to `style_config.json.constraints.permitted_diagram_types`. The default should pass as-is.
 
 Checks:
 - Slide HTML contains `.katex-src` / KaTeX markup.
 - References KaTeX vendor assets under `../assets/vendor/`.
 - `deck_state.json` slide record has `has_math: true`.
+- **Fix-validation:** Tier 1 QA passes **clean** on the first try — no INV-10 failure on `katex.min.js`, no VETO-01 failure on `SPAN.katex-mathml`. If either fires, the fix regressed — log as `BUG-ST-round4-c-N`.
+- `slide.accepted_violations` is an **empty list** (pre-fix it contained `VETO-01_katex_mathml_overflow_false_positive`).
 
 ### C5 — Acknowledgment slide
 
@@ -447,7 +460,7 @@ Checks:
 - Funding agency + grant number present.
 - Typography/spacing matches deck.
 
-### C6 — Style re-lock warning
+### C6 — Style re-lock warning + ledger path validation
 
 - With `style_locked: true`, run `/debrief:style` again.
 
@@ -455,6 +468,19 @@ Checks:
 - Consultant warns that re-opening may invalidate slides.
 - Consultant asks for confirmation.
 - Say "cancel" — do not proceed.
+
+**Cluster 4 fix-validation (BUG-ST-c-3):** after the re-lock warning records its event, verify that consultant-side ledger writes land at project root, not in `.debrief/`:
+
+```bash
+# Trigger a consultant-style ledger entry via the unit_5 code path
+python -c "import sys; sys.path.insert(0, '/Users/cfusco/.claude/plugins/cache/debrief/debrief/1.1.0/src/debrief'); import ledger; from pathlib import Path; ledger.append_ledger_entry(Path('.'), role='system', content='round4 ledger path test', event='smoke_round4_ledger_check')"
+
+# Check outcomes
+tail -1 ledger.jsonl | grep "smoke_round4_ledger_check"   # expected: match
+ls .debrief/ledger.jsonl 2>&1                              # expected: No such file or directory
+```
+
+If `.debrief/ledger.jsonl` exists, the fix regressed — log as `BUG-ST-round4-c-N`.
 
 ### C7 — Iteration limit + oscillation
 
@@ -471,7 +497,7 @@ Checks:
 - JSON output has `"limit_reached": true`, `"iteration": 5`.
 - If consultant asked to revise this slug, it refuses to re-dispatch and offers accept/override/discard.
 
-### C8 — Filesystem-derived versioning
+### C8 — Filesystem-derived versioning + presentation/manifest refresh
 
 - A9 already produced `deck_v001.pdf`. Run `/debrief:export` once more.
 
@@ -479,6 +505,26 @@ Checks:
 - Both `deck_v001.pdf` AND `deck_v002.pdf` exist.
 - `deck_state.json` presentation record: `export_count: 0` (vestigial per BUG-AUDIT-23 — confirms NOT a bug).
 - `output/export_log.jsonl` has 2 entries.
+
+**Cluster 5 fix-validation (BUG-ST-xp-1 / xp-2):**
+- `output/presentation.html` has been **refreshed** by this export. Its slide counter (`<div class="slide-counter">1 / N</div>`) and embedded slide count must match the new post-C deck size (likely 8+, including C-phase additions). Pre-fix the counter stayed frozen at A12's count.
+- `deck_state.presentations[0].slide_manifest` now lists the **current** approved non-backup slugs (including acknowledgments, bayes-theorem, video-demo, confidential-data, image slides from Profile C). Pre-fix the manifest was frozen at the 4 slugs from first export.
+
+**BUG-AUDIT-61 C1 fix-validation (full-bleed INV-13 exemption):** the full-bleed image slide in C1 MUST be produced using `<img class="fullbleed" src="...">` — NOT the pre-fix 0×0 hidden-img + CSS-background workaround. Check the slide HTML:
+
+```bash
+grep -E 'class="[^"]*fullbleed' slides/c1-image-fullbleed.html   # expected: match (img carries fullbleed class)
+grep -E 'width="0"|width:0|width: 0' slides/c1-image-fullbleed.html  # expected: no match (workaround gone)
+```
+
+Tier 1 must still pass clean — INV-13 no longer fires on the full-bleed image. If the slide-maker reverts to the 0×0 workaround OR INV-13 trips, log as `BUG-ST-round5-c-N`.
+
+```bash
+python3 -c "import json; d=json.load(open('deck_state.json')); m=d['presentations'][0]['slide_manifest']; slides=[s['slug'] for s in d['slides'] if s['status']=='approved' and not s['backup']]; print('manifest:', m); print('live:   ', slides); print('match:', m==slides)"
+# Expected: `match: True`. If False, BUG-ST-xp-2 fix regressed.
+```
+
+If the counter or the manifest does not reflect the live deck, log `BUG-ST-round4-xp-N`.
 
 Append Profile C summary to `profile_c.md`.
 
@@ -498,7 +544,24 @@ Checks:
 - Auto-saves current state before restoring (new `pre_restore_*` label appears).
 - `deck_state.json` matches the `full_pipeline_test` snapshot (3 main + 1 backup slides; no C-phase additions; no presentation record).
 - **KB-1 verification:** `ledger.jsonl` restore entry includes `swept_slugs` listing the progressive-disclosure build files and any C-phase slide HTML. Log an entry in `profile_a.md` confirming KB-1 behavior.
-- **KB-2 check:** inspect `output/<dated-folder>/` — are the PDFs still on disk even though deck_state no longer references them? If yes, note as MEDIUM-severity orphan-output issue.
+
+**BUG-AUDIT-61 A15 fix-validation (restore orphan-output warning):** the restore MUST emit an orphan-output warning because the restored state has `presentations: []` but `output/<YYYY_MM_DD_*>/` folders persist on disk.
+
+- Stderr output from the restore MUST contain the word "orphan" and the dated folder path (e.g., `output/2026_04_18_project/`).
+- `ledger.jsonl` MUST contain at least one `{"event": "restore_orphan_warning", ...}` entry whose `orphan_folder` equals the dated folder path and whose `file_count` is a positive integer:
+
+```bash
+tail -20 ledger.jsonl | grep restore_orphan_warning   # expected: at least 1 match
+python3 -c "import json; [print(e) for e in (json.loads(l) for l in open('ledger.jsonl').read().splitlines() if l.strip()) if e.get('event')=='restore_orphan_warning']"
+```
+
+- Orphan files MUST still exist on disk after restore (scope preservation — the warning is advisory, not destructive):
+
+```bash
+ls output/2026_04_18_project/deck_v*.pdf   # expected: v001 and v002 still present
+```
+
+If the warning is missing OR files are deleted, log as `BUG-ST-round5-a-N`.
 
 ### A16 — Quit
 
@@ -525,6 +588,11 @@ Append to `cross_profile.md`.
 - [ ] **State hash integrity:** `debrief_state.json` shows no hash-mismatch warnings during the session.
 - [ ] **Ledger populated:** `ledger.jsonl` has entries from throughout (not just quit/restore).
 - [ ] **No `pytest.skip`:** If regression tests are run post-smoke, 0 skipped.
+
+**Cluster 6 fix-validation (BUG-ST-a-1 / c-4):**
+
+- [ ] `python -m debrief.qa_checker check_limit --help` output contains `Default: 5` (BUG-ST-c-4 — pre-fix the help did not disclose the default).
+- [ ] Across all slide-maker return messages in this session (grep the ledger or agent-output logs), no return contains the literal string `Tier 1 PASSED` or `Tier 1 PASS` as a verdict declaration (BUG-ST-a-1 — the slide-maker must report only the qa_log path and failing invariant IDs, not a PASS verdict). Reports of failing invariants (e.g., `INV-07 failed: external URL`) are permitted and expected in A6.
 
 ---
 
