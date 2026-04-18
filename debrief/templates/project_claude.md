@@ -67,7 +67,7 @@ State is tracked in:
 | `/debrief:script` | Generate a speaker script |
 | `/debrief:handout` | Generate a printable handout |
 | `/debrief:save` | Save a checkpoint |
-| `/debrief:reset` | Restore from a checkpoint |
+| `/debrief:restore` | Restore from a checkpoint |
 | `/debrief:quit` | End the session |
 
 ## Notes

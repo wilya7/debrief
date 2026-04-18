@@ -158,6 +158,9 @@ def generate_css_root_block(config: dict[str, Any]) -> str:
         css_var = CSS_PROPERTY_MAP.get(dot_path, path_to_css_var(dot_path))
         lines.append(f"  {css_var}: {value};")
     lines.append("}")
+    # Default slide background — ensures every slide inherits the deck's
+    # background color via the custom property set above.
+    lines.append(".slide { background-color: var(--color-background, #ffffff); }")
 
     return "\n".join(lines)
 

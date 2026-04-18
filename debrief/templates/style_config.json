@@ -36,8 +36,14 @@
     "annotation_color": "#e74c3c"
   },
   "constraints": {
-    "permitted_diagram_types": ["mermaid", "inline-svg"],
-    "math_renderer": "katex"
+    "permitted_diagram_types": ["mermaid", "inline-svg", "rough.js"],
+    "math_renderer": "katex",
+    "roughjs_defaults": {
+      "roughness": 2.5,
+      "bowing": 2,
+      "fill_style": "hachure",
+      "arrowhead_style": "hand-drawn"
+    }
   },
   "provenance": {
     "colors.primary": {"source": "default"},

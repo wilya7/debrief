@@ -175,6 +175,16 @@ def check_no_external_requests(slide_path: Path) -> Optional[QAFailure]:
 _KNOWN_DIAGRAM_LIBS = ["mermaid", "katex", "rough", "d3", "chart"]
 
 
+def _normalize_lib_name(name: str) -> str:
+    """Strip trailing .js / .min.js suffix and lowercase for comparison."""
+    n = name.lower()
+    if n.endswith(".min.js"):
+        n = n[: -len(".min.js")]
+    elif n.endswith(".js"):
+        n = n[: -len(".js")]
+    return n
+
+
 def check_permitted_libraries(
     slide_path: Path,
     permitted: list[str],
@@ -182,8 +192,12 @@ def check_permitted_libraries(
     """INV-10: Verify slide HTML only references permitted diagram libraries.
 
     Returns QAFailure if a non-permitted library is referenced, else None.
+    Normalizes both the detected library name and the permitted list entries
+    by stripping .js / .min.js suffixes before comparison.
     """
     html = slide_path.read_text(encoding="utf-8")
+    # Normalize the permitted list once for comparison
+    permitted_normalized = {_normalize_lib_name(p) for p in permitted}
     # Find all script src attributes referencing vendor/*.min.js files
     script_src_re = re.compile(
         r'<script[^>]+src\s*=\s*["\']([^"\']*)["\']', re.IGNORECASE
@@ -192,8 +206,10 @@ def check_permitted_libraries(
         src = match.group(1).lower()
         # Check if this src refers to a known diagram library
         for lib in _KNOWN_DIAGRAM_LIBS:
-            if lib in src:
-                if lib not in permitted:
+            # Use word-boundary regex to avoid false substring matches
+            if re.search(r'(?:^|[\W/])' + re.escape(lib) + r'(?:[\W.]|$)', src):
+                lib_normalized = _normalize_lib_name(lib)
+                if lib_normalized not in permitted_normalized:
                     return {
                         "invariant": "INV-10",
                         "description": (

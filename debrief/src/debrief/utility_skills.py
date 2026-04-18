@@ -813,6 +813,79 @@ def main_handout(mode: str, project_root: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# promote_style_draft (BC-11.16 — restored from routing.py post-BUG-AUDIT-31)
+# ---------------------------------------------------------------------------
+
+
+def promote_style_draft(project_root: Path) -> None:
+    """Promote draft style files to project root and compile CSS.
+
+    1. Verify .debrief/draft/style_config.json and style_guide.md exist.
+    2. Copy both to project_root/ (overwrite if exists).
+    3. Run style compiler to produce assets/style.css.
+    4. Set style_locked = True in deck_state.json.
+    5. Delete .debrief/draft/ recursively.
+    6. Print confirmation to stderr.
+    """
+    import json as _json
+
+    project_root = project_root.resolve()
+
+    draft_dir = project_root / ".debrief" / "draft"
+    draft_config = draft_dir / "style_config.json"
+    draft_guide = draft_dir / "style_guide.md"
+
+    if not draft_config.is_file() or not draft_guide.is_file():
+        missing = []
+        if not draft_config.is_file():
+            missing.append(str(draft_config))
+        if not draft_guide.is_file():
+            missing.append(str(draft_guide))
+        print(
+            f"Cannot promote style draft: missing file(s): "
+            f"{', '.join(missing)}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    # Step 2: copy draft files to project root
+    shutil.copy2(draft_config, project_root / "style_config.json")
+    shutil.copy2(draft_guide, project_root / "style_guide.md")
+
+    # Step 3: run style compiler
+    try:
+        from style_engine import compile_style  # type: ignore[import]
+
+        compile_style(
+            project_root / "style_config.json",
+            project_root / "assets" / "style.css",
+        )
+    except Exception as exc:
+        print(f"Style compilation failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    # Step 4: set style_locked = True in deck_state.json
+    deck_state_path = project_root / "deck_state.json"
+    deck_data = _json.loads(deck_state_path.read_text(encoding="utf-8"))
+    deck_data["style_locked"] = True
+    deck_state_path.write_text(
+        _json.dumps(deck_data, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    # Step 5: delete draft directory
+    shutil.rmtree(draft_dir)
+
+    # Step 6: confirmation
+    print(
+        "Style draft promoted: style_config.json and style_guide.md "
+        "copied to project root, assets/style.css compiled, "
+        "style_locked set to true, draft directory removed.",
+        file=sys.stderr,
+    )
+
+
+# ---------------------------------------------------------------------------
 # skill_save (BC-11.9, BC-11.10)
 # ---------------------------------------------------------------------------
 
@@ -1124,3 +1197,34 @@ def skill_quit(project_root: Path) -> None:
         f"Run 'debrief' to resume.",
         file=sys.stderr,
     )
+
+
+# ---------------------------------------------------------------------------
+# CLI dispatcher (__main__)
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    import argparse
+
+    _parser = argparse.ArgumentParser(description="Debrief utility skills")
+    _parser.add_argument("command", choices=[
+        "save", "restore", "quit", "present", "view", "promote_style_draft",
+    ])
+    _parser.add_argument("--project-root", type=Path, default=Path.cwd())
+    _parser.add_argument("--label", default=None)
+    _parser.add_argument("--query", default="all")
+    _args = _parser.parse_args()
+    _root = _args.project_root.resolve()
+
+    if _args.command == "save":
+        skill_save(_args.label or "snapshot", _root)
+    elif _args.command == "restore":
+        skill_restore(_args.label, _root)
+    elif _args.command == "quit":
+        skill_quit(_root)
+    elif _args.command == "present":
+        main_present(_root)
+    elif _args.command == "view":
+        main_view(_args.query, _root)
+    elif _args.command == "promote_style_draft":
+        promote_style_draft(_root)

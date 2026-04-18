@@ -136,7 +136,7 @@ These rules apply to EVERY archetype. They are non-negotiable unless the user ex
 
 15. **Font legibility per archetype**: Enforce minimum font sizes. Lab meetings and lectures (viewed on flat screens, not projectors): serif titles at 36px+, sans-serif body at 20px+. Conference talks and other projected formats: body text can go smaller since projector context allows it. The archetype's `slide_density` field provides additional guidance.
 16. **White space is intentional**: White space is a design element, not wasted space. Do not fill empty areas with decorative content. If a slide looks sparse, it may be correctly emphasizing its one idea.
-17. **Slide numbering**: Always present. Small font. Bottom corner. No exceptions.
+17. **Slide numbering**: Default ON. Small font, bottom corner. The stylist may opt out for explicitly minimalist styles by documenting the exception in the style guide's anti-patterns section — but ONLY if the user's style direction calls for a stripped-down aesthetic. If the stylist opts out, do NOT flag missing slide numbers as a QA violation. *(BUG-AUDIT-57 / BUG-ST-7)*
 18. **Closing slide**: The closing slide must contain a takeaway message — not "Thank you" and not "Questions?" The audience should leave with a concrete thought, not a pleasantry.
 19. **Acknowledgment slide**: Include per the archetype's `acknowledgment` field — `"required"` means always include it, `"optional"` means ask the user, `"no"` means omit it.
 
@@ -178,6 +178,36 @@ When the user provides a single interviewer's profile:
 
 For conference_talk, job_talk, and grant_panel: ask the user how long the Q&A period is. Size the backup deck at approximately **1 slide per 1.5 minutes of Q&A time**. For a 10-minute Q&A, prepare ~7 backup slides.
 
+## SlideRecord Schema (BUG-AUDIT-57 / BUG-ST-13)
+
+When writing slides to `deck_state.json`, you MUST use these exact field names. Any unknown fields will be silently dropped on the next read/write cycle. This is the canonical schema:
+
+| Field | Type | Required | Default |
+|---|---|---|---|
+| `slug` | string | YES | — |
+| `title` | string | yes | slug |
+| `status` | `"draft"` \| `"approved"` \| `"needs_revision"` \| `"discarded"` | yes | `"draft"` |
+| `backup` | bool | yes | `false` |
+| `content_summary` | string \| null | no | `null` |
+| `visual_approach` | string \| null | no | `null` |
+| `design_choices` | string \| null | no | `null` |
+| `forks_not_taken` | string \| null | no | `null` |
+| `user_recommendations` | string \| null | no | `null` |
+| `qa_passed` | bool | yes | `false` |
+| `accepted_violations` | list | yes | `[]` |
+| `last_modified` | ISO 8601 string | yes | `""` |
+| `group_id` | string \| null | no | `null` |
+| `user_assets` | list of strings | yes | `[]` |
+| `has_math` | bool | yes | `false` |
+
+**To approve a slide**, set `status: "approved"` and `qa_passed: true`. Do NOT invent fields like `approved: true` or `approved_at` — they will be silently dropped.
+
+## Valid sub_phase Values (BUG-AUDIT-57 / BUG-ST-15)
+
+When writing `debrief_state.json`, the `sub_phase` field MUST be one of these values. Any other value will cause `read_debrief_state` to raise `StateCorruptError`:
+
+`discovery/greeting`, `discovery/dialog`, `discovery/brief_review`, `discovery/paper_analysis`, `discovery/reference_import`, `style/style_dialog`, `style/style_review`, `style/style_lock`, `production/group_planning`, `production/brief_dispatch`, `production/slide_authoring`, `production/red_green`, `production/slide_review`, `production/oscillation_review`, `production/group_review`, `production/backup_decision`, `production/closing_slide`, `finalization/export_ordering`, `finalization/export_confirm`, `finalization/export_options`, `finalization/post_export`, `finalization/complete`, `complete/done`, `complete/idle`
+
 ## Command Dispatch Menu
 
 Before dispatching any command, verify its preconditions by reading `deck_state.json`. If a precondition is not met, tell the user what's missing and what command to run first.
@@ -202,6 +232,8 @@ During the initial briefing, after the user describes their presentation context
 ## Export Transition
 
 After the user approves the last main slide (and optionally declines backup slides), present the export question: "All slides are approved. Ready to generate deliverables? Options: `/debrief:export` (deck PDF), `/debrief:handout` (print-ready leave-behind), `/debrief:script` (presenter narration), or continue editing." Do not auto-export — wait for the user's choice.
+
+**Before running `/debrief:script`** (BUG-AUDIT-57 / BUG-ST-14): ensure each approved slide's `content_summary` in `deck_state.json` includes a REAL transition sentence to the next slide. The script generator uses `content_summary` directly — if it contains only a topic label, the generated script will have placeholder transitions ("Lead into the next slide by..."). Write real transitions: "This sets the stage for why code matters — which is exactly what we explore next."
 
 ## Typical Workflow Order
 
