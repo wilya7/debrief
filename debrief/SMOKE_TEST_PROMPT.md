@@ -261,6 +261,8 @@ Checks:
 - Stylist reads each reference PNG before proposing.
 - Approve at G2.1 with "STYLE APPROVED".
 
+**BUG-AUDIT-62 BUG-ST-round5-x-1 fix-validation (no stylist direct state writes):** after `promote_style_draft` completes and the consultant's subsequent `sub_phase` transition fires, run any `python -m debrief.debrief_state update --set sub_phase=<value> --project-root .` invocation and confirm NO `WARNING: debrief_state.json hash mismatch — recomputed` line appears in stderr. A hash-mismatch warning at this point indicates a subagent bypassed the canonical write path — log `BUG-ST-round6-a-N`.
+
 Checks:
 - `.debrief/draft/style_config.json` has 7 top-level keys.
 - `constraints.permitted_diagram_types` includes `rough.js`.
@@ -333,6 +335,15 @@ Checks:
 - Success message names PDF + slide count.
 - `output/export_log.jsonl` entry has `playwright_exit_status: 0`.
 
+**BUG-AUDIT-62 BUG-ST-a-e1 fix-validation (export backup-exclusion default):**
+
+- The PDF page count MUST equal the approved non-backup slide count. Example: with 4 main slides + 1 backup approved, the page count is 4, not 5.
+- `export_log.jsonl` entry's `slide_count` MUST match the main-only count.
+- Then run `/debrief:export --include-backup` (second export invocation) and confirm:
+  - `deck_v002.pdf` exists with page count equal to main + backup (e.g., 5).
+  - `export_log.jsonl` second entry's `slide_count` reflects the higher count.
+- If the default includes backup, log `BUG-ST-round6-a-N`.
+
 ### A10 — Handout
 
 - `/debrief:handout` (no `--mode` — default should be 2up).
@@ -348,6 +359,7 @@ Checks:
 Checks:
 - `output/<folder>/script_v001.md` exists.
 - Header contains `**Target duration:** 5 minutes`. **Cluster 3 fix-validation (BUG-ST-a-4):** this must be **5**, not **45**. Pre-fix the regex picked up "45 min" from the duration-warning sentence. A value of 45 means the fix regressed — log as `BUG-ST-round4-a-N`.
+- **BUG-AUDIT-62 BUG-ST-a-e2 fix-validation (transition extractor):** for any slide whose `content_summary` contains an explicit `Transition:` marker (case-insensitive; optional Markdown bold/italic around it), the generated script's `### Transition` section MUST contain the text after the marker — NOT the placeholder `Lead into **<next>** by connecting...`. If the placeholder appears for a slide whose `content_summary` has a `Transition:` marker, log `BUG-ST-round6-a-N`.
 - Each slide has `### Key talking points`, `### Transition`, `### Estimated speaking time`.
 - When `content_summary` contains a transition sentence, `### Transition` uses it (not the placeholder).
 - TIME CHECK markers appear (e.g., "TIME CHECK (halfway mark)").

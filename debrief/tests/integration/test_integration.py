@@ -394,7 +394,9 @@ class TestLedgerBriefToState:
     def test_append_ledger_entry_produces_readable_jsonl(
         self, tmp_path: Path
     ) -> None:
-        """BC-5.4: each ledger entry is a valid JSON line with required keys."""
+        """BC-5.4: each ledger entry is a valid JSON line with required keys.
+        Post BUG-AUDIT-60 Cluster 4 / BUG-ST-c-3: ledger lives at project
+        root, NOT under .debrief/."""
         from ledger import append_ledger_entry
 
         (tmp_path / ".debrief").mkdir(parents=True, exist_ok=True)
@@ -406,13 +408,15 @@ class TestLedgerBriefToState:
             tmp_path, "user", "User reply", slug="intro"
         )
 
-        ledger_path = tmp_path / ".debrief" / "ledger.jsonl"
+        ledger_path = tmp_path / "ledger.jsonl"
         lines = ledger_path.read_text(encoding="utf-8").splitlines()
         assert len(lines) == 2
         for line in lines:
             entry = json.loads(line)
             for key in ("timestamp", "role", "content", "metadata"):
                 assert key in entry
+        # Ensure the pre-fix .debrief/ledger.jsonl location is NOT also written
+        assert not (tmp_path / ".debrief" / "ledger.jsonl").exists()
 
     def test_write_slide_brief_invalid_rhetorical_role_raises(
         self, tmp_path: Path
@@ -799,7 +803,9 @@ class TestExportPageOrder:
     def test_main_slides_appear_before_backup(
         self, tmp_path: Path
     ) -> None:
-        """BC-10.3: main approved slides come before backup slides."""
+        """BC-10.3 / BC-10.3a: when include_backup=True, main approved
+        slides come before backup slides. Default build_page_list excludes
+        backup per BUG-AUDIT-62; this test opts in to verify ordering."""
         from export import build_page_list
 
         (tmp_path / ".debrief").mkdir(parents=True, exist_ok=True)
@@ -808,7 +814,7 @@ class TestExportPageOrder:
             main_slugs=["intro", "methods"],
             backup_slugs=["appendix"],
         )
-        pages = build_page_list(state, tmp_path)
+        pages = build_page_list(state, tmp_path, include_backup=True)
 
         types_and_backup = [(p["type"], p.get("backup", False)) for p in pages]
         main_indices = [
@@ -819,10 +825,13 @@ class TestExportPageOrder:
             i for i, (t, b) in enumerate(types_and_backup)
             if t == "slide" and b
         ]
-        if main_indices and backup_indices:
-            assert max(main_indices) < min(backup_indices), (
-                "Main slides must all precede backup slides"
-            )
+        assert main_indices and backup_indices, (
+            "With include_backup=True and both main and backup slides, "
+            "both lists should be populated."
+        )
+        assert max(main_indices) < min(backup_indices), (
+            "Main slides must all precede backup slides"
+        )
 
     def test_no_approved_slides_returns_empty_page_list(
         self, tmp_path: Path

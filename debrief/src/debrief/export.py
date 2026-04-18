@@ -30,17 +30,24 @@ _ENV_CORRUPT_MSG = (
 )
 
 
-def main_export(project_root: Path) -> None:
-    """Entry point for: python -m debrief.export --project-root <path>
+def main_export(project_root: Path, include_backup: bool = False) -> None:
+    """Entry point for: python -m debrief.export --project-root <path> [--include-backup]
 
     1. Run style_compiler to ensure CSS is current.
     2. Open sync_playwright() session, launch Chromium, one BrowserContext.
-    3. Build page list in canonical PDF order (Section 24.10).
+    3. Build page list in canonical PDF order (Section 24.10) — backup
+       slides excluded by default; appended when include_backup is True.
     4. Render each slide to PDF.
     5. Write output/<folder>/deck_v{NNN}.pdf.
     6. Close browser context.
     7. Increment export_count via increment_export_count().
     8. Append entry to output/export_log.jsonl.
+
+    BUG-AUDIT-62 / BUG-ST-a-e1 / REQ-EXPORT-BACKUP-1: include_backup
+    defaults to False to match /debrief:present and /debrief:view
+    default behavior. Passing --include-backup on the CLI (or
+    include_backup=True in-process) restores the pre-fix behavior of
+    appending backup slides at the end of the PDF.
 
     Exit 0 on success. Exit 1 on Playwright or file failure.
     Exit 2 on env corruption.
@@ -164,7 +171,7 @@ def main_export(project_root: Path) -> None:
     pdf_file = output_dir / f"deck_v{version:03d}.pdf"
 
     # Build page list
-    pages = build_page_list(state, project_root)
+    pages = build_page_list(state, project_root, include_backup=include_backup)
     slide_count = len(pages)
 
     # BC-10.2: One BrowserContext per export.
@@ -290,6 +297,7 @@ def main_export(project_root: Path) -> None:
 def build_page_list(
     state: Any,
     project_root: Path,
+    include_backup: bool = False,
 ) -> list[dict[str, Any]]:
     """Build the ordered list of pages for the PDF in canonical order per
     Section 24.10:
@@ -297,7 +305,13 @@ def build_page_list(
     2. Closing slide if closing_slide == 'empty' (in-memory styled slide).
     3. Separator if separator_position is not None
        (in-memory from separator_content).
-    4. Approved slides with backup=True in array order.
+    4. Approved slides with backup=True in array order — **only when
+       include_backup is True**.
+
+    BUG-AUDIT-62 / BUG-ST-a-e1 / REQ-EXPORT-BACKUP-1 / BC-10.3a: backup
+    slides are EXCLUDED by default, matching /debrief:present and
+    /debrief:view default behavior. Callers opt in via include_backup=True
+    (the export CLI's --include-backup flag).
 
     Each page is a dict: {"type": "slide"|"closing"|"separator",
     "path": Path|None, "content": str|None}.
@@ -352,7 +366,12 @@ def build_page_list(
             )
             separator_added = True
 
-    # 4. Backup approved slides (backup=True)
+    # 4. Backup approved slides (backup=True) — only when opted in.
+    # BUG-AUDIT-62 / BUG-ST-a-e1 / BC-10.3a: default behavior excludes
+    # backup slides from the main PDF. Passing include_backup=True
+    # restores the prior-behavior backup-at-end ordering.
+    if not include_backup:
+        return pages
     for slide in state.slides:
         if slide.status != "approved":
             continue
@@ -575,5 +594,17 @@ if __name__ == "__main__":
     import argparse
     _parser = argparse.ArgumentParser(description="Debrief deck exporter")
     _parser.add_argument("--project-root", type=Path, default=Path.cwd())
+    _parser.add_argument(
+        "--include-backup",
+        action="store_true",
+        help=(
+            "Include approved backup slides at the end of the PDF. "
+            "Default: exclude, matching /debrief:present and "
+            "/debrief:view default behavior (BUG-AUDIT-62 / BC-10.3a)."
+        ),
+    )
     _args = _parser.parse_args()
-    main_export(_args.project_root.resolve())
+    main_export(
+        _args.project_root.resolve(),
+        include_backup=_args.include_backup,
+    )

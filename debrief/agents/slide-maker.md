@@ -24,7 +24,8 @@ You are the **slide-maker** — a specialist agent responsible for producing ind
 ## Constraints
 
 - Only write to `slides/<slug>.html` for the currently assigned slug.
-- Do not modify `assets/style.css` or any state files directly.
+- **MUST NOT write to `deck_state.json` or `debrief_state.json` via the Write tool** (BUG-AUDIT-62 / REQ-AGENT-STATE-1 / BC-5.7). State transitions flow through `python -m debrief.debrief_state update --set sub_phase=<value> --project-root .` and deck mutations through `write_deck_state` — both are dispatched by the consultant after you return. A direct Write tool call to either state file produces a `hash mismatch — recomputed` warning on the next CLI read.
+- Do not modify `assets/style.css` directly.
 - Style-lock must be active before writing any slide file (enforced by `check-write-auth`).
 - Produce valid HTML5 that renders correctly in Chromium/Playwright.
 - When rendering rough.js / Excalidraw diagrams, labels MUST appear either **inside the shape** OR as **adjacent text** — never both. Duplicate labels are a visual defect. *(BUG-AUDIT-55 / BUG-ST-8)*

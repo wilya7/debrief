@@ -540,20 +540,49 @@ _TRANSITION_SIGNALS = (
     "next", "which leads", "sets the stage", "explore next",
     "where we go next", "which brings us", "let's turn to",
     "this leads", "moving on", "that's why",
+    # BUG-AUDIT-62 / BUG-ST-a-e2 / REQ-SCRIPT-TRANSITION-1: broaden.
+    "set up", "the first move", "next up", "move into", "turn to",
+    "bringing us to", "leading into", "into the next",
+)
+
+_TRANSITION_MARKER_RE = re.compile(
+    r'(?:^|\n|\.\s+|!\s+|\?\s+)\**(?:_)?transition(?:_)?\**\s*:\s*(.+?)(?:\n\s*\n|$)',
+    re.IGNORECASE | re.DOTALL,
 )
 
 
 def _extract_transition(content_summary: str) -> tuple[str, str | None]:
     """Split content_summary into (talking_points, transition_sentence).
 
-    BUG-AUDIT-59 / BUG-ST-12: If the last sentence of content_summary
-    contains a transition signal word/phrase, extract it as the transition
-    and return the remainder as talking points.
+    BUG-AUDIT-59 / BUG-ST-12 (signal-word fallback).
+    BUG-AUDIT-62 / BUG-ST-a-e2 / REQ-SCRIPT-TRANSITION-1 (explicit marker):
+    two patterns, marker wins:
+
+    1. **Explicit marker** — a line or sentence beginning with
+       `Transition:` (case-insensitive, optional Markdown bold/italic).
+       When matched, the text after the marker is the transition and the
+       text before it is the talking-points body.
+    2. **Signal-word fallback** — if no marker, check whether the final
+       sentence contains any phrase in `_TRANSITION_SIGNALS`.
 
     Returns (talking_points, transition) where transition may be None.
     """
-    import re
-    sentences = re.split(r'(?<=[.!?])\s+', content_summary.strip())
+    import re as _re
+
+    text = content_summary.strip()
+
+    # 1. Explicit Transition: marker (highest precedence).
+    match = _TRANSITION_MARKER_RE.search(text)
+    if match:
+        transition = match.group(1).strip()
+        body = text[: match.start()].rstrip()
+        # Strip a trailing isolated newline/period if the marker ate one.
+        if body and body[-1] not in ".!?":
+            body = body + "."
+        return body or content_summary, transition
+
+    # 2. Signal-word fallback on the final sentence.
+    sentences = _re.split(r'(?<=[.!?])\s+', text)
     if len(sentences) < 2:
         return content_summary, None
     last = sentences[-1]
@@ -1033,14 +1062,15 @@ def promote_style_draft(project_root: Path) -> None:
         print(f"Style compilation failed: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    # Step 4: set style_locked = True in deck_state.json
-    deck_state_path = project_root / "deck_state.json"
-    deck_data = _json.loads(deck_state_path.read_text(encoding="utf-8"))
-    deck_data["style_locked"] = True
-    deck_state_path.write_text(
-        _json.dumps(deck_data, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    # Step 4: set style_locked = True in deck_state.json.
+    # BUG-AUDIT-62 / BUG-ST-round5-x-1: use write_deck_state so hash
+    # recomputation + atomic write + ledger auto-append all happen.
+    # Prior code wrote the file directly, which left the on-disk state
+    # out of sync with any adjacent debrief_state.json writes and
+    # surfaced as `hash mismatch — recomputed` warnings on the next read.
+    deck_state = read_deck_state(project_root)
+    deck_state.style_locked = True
+    write_deck_state(project_root, deck_state)
 
     # Step 5: delete draft directory
     shutil.rmtree(draft_dir)
