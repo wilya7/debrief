@@ -55,6 +55,21 @@ fi
 # Relative path within project
 REL_PATH="${RESOLVED_PATH#$PROJECT_ROOT/}"
 
+# BC-1.10a: State-file protection (BUG-AUDIT-63 / REQ-WRITE-AUTH-STATE-1).
+# The Write tool is used by agents. Python code paths (atomic_write_json,
+# write_debrief_state, write_deck_state) are NOT affected because they
+# bypass the Write tool entirely. This hook therefore blocks only
+# agent-originated direct writes to state files, leaving canonical CLI
+# paths intact. BC-5.7 was prose-only; this is the enforcement layer.
+if [ "$REL_PATH" = "debrief_state.json" ]; then
+    echo "ERROR: Direct writes to debrief_state.json are not permitted. Use: python -m debrief.debrief_state update --set <field>=<value> --project-root ." >&2
+    exit 2
+fi
+if [ "$REL_PATH" = "deck_state.json" ]; then
+    echo "ERROR: Direct writes to deck_state.json are not permitted. Use the canonical write_deck_state path via the appropriate CLI (e.g., python -m debrief.utility_skills promote_style_draft for style-lock)." >&2
+    exit 2
+fi
+
 # BC-1.10: Check style-lock for protected paths.
 IS_PROTECTED=0
 if [[ "$REL_PATH" == slides/* ]] || [[ "$REL_PATH" == "assets/style.css" ]]; then
