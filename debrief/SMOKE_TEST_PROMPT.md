@@ -346,11 +346,16 @@ Checks:
 
 ### A10 — Handout
 
-- `/debrief:handout` (no `--mode` — default should be 2up).
+- `/debrief:handout` (no `--mode` — default should be 2up; backup excluded by default).
 
 Checks:
 - `output/handouts/handout_v001.pdf` exists, non-zero bytes.
 - Command succeeded without requiring `--mode`.
+
+**BUG-AUDIT-64 fix-validation (handout `--include-backup` parity):**
+- Then run `/debrief:handout --include-backup`. Expected: `output/handouts/handout_v002.pdf` produced, and its page count is higher than v001 by the number of approved backup slides.
+- Default handout page count should match the main-only slide count (e.g., 4 for the smoke-test deck with 4 main + 1 backup); `--include-backup` variant should match main + backup count (e.g., 5).
+- If the default includes backup, or `--include-backup` has no effect, log `BUG-ST-round6-a-N`.
 
 ### A11 — Script
 

@@ -901,8 +901,12 @@ def generate_layout_html(
 # ---------------------------------------------------------------------------
 
 
-def main_handout(mode: str, project_root: Path) -> None:
-    """Entry point for: python -m debrief.handout --mode <2up|4up>.
+def main_handout(
+    mode: str,
+    project_root: Path,
+    include_backup: bool = False,
+) -> None:
+    """Entry point for: python -m debrief.handout --mode <2up|4up> [--include-backup].
 
     BUG-AUDIT-21: handout is an independent output channel.
 
@@ -913,6 +917,10 @@ def main_handout(mode: str, project_root: Path) -> None:
         The Playwright import is deliberately attempted LAST so a
         missing-slides run does not report a misleading
         environment-corruption error.
+      - BC-11.16a backup-inclusion flag (BUG-AUDIT-64 / REQ-HAND-BACKUP-1):
+        ``include_backup`` extends the layout to include approved
+        backup slides after the main slides. Default False matches
+        /debrief:export's BC-10.3a — one flag name across commands.
       - BC-11.17 output path: output/handouts/handout_v{NNN}.pdf,
         where NNN is filesystem-derived — we scan the directory for
         existing ``handout_v*.pdf`` files and pick (max + 1). The
@@ -951,6 +959,8 @@ def main_handout(mode: str, project_root: Path) -> None:
         sys.exit(2)
 
     # BC-11.16 step (2): at least one approved non-backup slide.
+    # The precondition is unchanged by --include-backup — users still
+    # need at least one main slide; the flag only extends the layout.
     deck_state = read_deck_state(project_root)
     approved = [
         s for s in deck_state.slides
@@ -964,6 +974,15 @@ def main_handout(mode: str, project_root: Path) -> None:
             file=sys.stderr,
         )
         sys.exit(2)
+
+    # BC-11.16a (BUG-AUDIT-64): when --include-backup is passed, append
+    # approved backup slides after the main slides in array order.
+    if include_backup:
+        approved_backup = [
+            s for s in deck_state.slides
+            if s.status == "approved" and s.backup
+        ]
+        approved = approved + approved_backup
 
     # BC-11.16 step (3) / BC-11.7: environment check.
     if importlib.util.find_spec("playwright") is None:
@@ -1495,6 +1514,15 @@ if __name__ == "__main__":
     _parser.add_argument("--query", default="all")
     _parser.add_argument("--mode", default="2up",
                          help="Handout mode (default: 2up)")
+    _parser.add_argument(
+        "--include-backup",
+        action="store_true",
+        help=(
+            "Include approved backup slides at the end of the handout. "
+            "Default: exclude, matching /debrief:export, /debrief:present, "
+            "and /debrief:view default behavior (BUG-AUDIT-64 / BC-11.16a)."
+        ),
+    )
     _args = _parser.parse_args()
     _root = _args.project_root.resolve()
 
@@ -1511,4 +1539,4 @@ if __name__ == "__main__":
     elif _args.command == "promote_style_draft":
         promote_style_draft(_root)
     elif _args.command == "handout":
-        main_handout(_args.mode, _root)
+        main_handout(_args.mode, _root, include_backup=_args.include_backup)
