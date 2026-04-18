@@ -404,6 +404,14 @@ def main_style_analyzer(reference: Path, project_root: Path) -> None:
         )
         sys.exit(1)
 
+    # BUG-AUDIT-59 / BUG-ST-2: print success feedback
+    slides_dir = project_root / "assets" / "reference" / "slides"
+    slide_count = len(list(slides_dir.glob("*.png"))) if slides_dir.exists() else 0
+    print(
+        f"Imported {slide_count} slides, wrote analyzer_metadata.json",
+        file=sys.stderr,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Style guide generator (BC-7.9)

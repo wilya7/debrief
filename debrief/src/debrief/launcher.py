@@ -257,6 +257,46 @@ def select_archetype(archetypes_path: Path) -> str:
     sys.exit(1)
 
 
+def check_duration(
+    archetypes_path: Path, archetype: str, minutes: float,
+) -> tuple[bool, str]:
+    """Validate a user-specified duration against an archetype's time_range.
+
+    BUG-AUDIT-59 / BUG-ST-1: Provides a programmatic check that the
+    consultant (or CLI) can call to flag out-of-range durations.
+
+    Returns (in_range, message). If in_range is False, message contains
+    a warning string.
+    """
+    import re as _re
+
+    data: dict = json.loads(archetypes_path.read_text(encoding="utf-8"))
+    entry = data.get(archetype)
+    if entry is None:
+        return False, f"Unknown archetype: {archetype}"
+
+    time_range = entry.get("time_range", "any")
+    if time_range == "any":
+        return True, f"{archetype} accepts any duration."
+
+    m = _re.match(r"(\d+)\s*-\s*(\d+)", time_range)
+    if not m:
+        return True, f"Could not parse time_range '{time_range}'; skipping check."
+
+    lo, hi = int(m.group(1)), int(m.group(2))
+    if minutes < lo:
+        return False, (
+            f"WARNING: {minutes:.0f} min is below {archetype} range "
+            f"({lo}-{hi} min). Consider adjusting."
+        )
+    if minutes > hi:
+        return False, (
+            f"WARNING: {minutes:.0f} min is above {archetype} range "
+            f"({lo}-{hi} min). Consider adjusting."
+        )
+    return True, f"{minutes:.0f} min is within {archetype} range ({lo}-{hi} min)."
+
+
 # ---------------------------------------------------------------------------
 # new() (BC-3.1, BC-3.4, BC-3.5, BC-3.6, BC-3.7, BC-3.11)
 # ---------------------------------------------------------------------------
@@ -697,4 +737,29 @@ def main_new() -> None:
 
 
 if __name__ == "__main__":
-    main_new()
+    # BUG-AUDIT-59 / BUG-ST-1: check_duration uses argparse; all other
+    # subcommands (new, preflight, ensure_project, ensure_settings) are
+    # handled by main_new() which parses sys.argv directly. Route
+    # check_duration here; everything else falls through.
+    if len(sys.argv) > 1 and sys.argv[1] == "check_duration":
+        import argparse as _ap
+
+        _parser = _ap.ArgumentParser(
+            description="Debrief duration validation",
+        )
+        _parser.add_argument("command")  # consume "check_duration"
+        _parser.add_argument("--archetype", required=True)
+        _parser.add_argument("--minutes", type=float, required=True)
+        _parser.add_argument("--archetypes-path", type=Path, default=None,
+                             help="Path to archetypes.json (auto-detected if omitted)")
+        _args = _parser.parse_args()
+        _apath = _args.archetypes_path
+        if _apath is None:
+            _apath = Path(os.environ.get(
+                "CLAUDE_PLUGIN_ROOT", ".",
+            )) / "archetypes.json"
+        ok, msg = check_duration(_apath, _args.archetype, _args.minutes)
+        print(msg, file=sys.stderr)
+        sys.exit(0 if ok else 1)
+    else:
+        main_new()

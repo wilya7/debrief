@@ -400,20 +400,19 @@ class TestBugAudit17SlideMakerPrompt:
     def test_slide_maker_body_uses_load_bearing_language(
         self, slide_maker_text: str
     ) -> None:
-        # The section must use imperative language that makes the
-        # instruction non-optional. Accept any of "MUST", "must invoke",
-        # "not optional", or "absolute final action" as markers.
+        # The section must use imperative language. After BUG-AUDIT-59,
+        # slide-maker runs Tier 1 only; "absolute final action" and
+        # "Do NOT return" were removed (they referred to Task dispatch
+        # which is now the consultant's job). Accept "MUST" or "You MUST"
+        # as the minimum load-bearing marker.
         markers = [
             "MUST",
-            "not optional",
-            "absolute final action",
-            "Do NOT return",
         ]
         present = [m for m in markers if m in slide_maker_text]
         assert present, (
-            f"BC-8.4 / BUG-AUDIT-17: slide-maker.md must use load-bearing "
-            f"language for the QA Dispatch instruction. Expected at least "
-            f"one of {markers!r}, got none."
+            f"BC-8.4 / BUG-AUDIT-17 / BUG-AUDIT-59: slide-maker.md must "
+            f"use load-bearing language for the QA Dispatch instruction. "
+            f"Expected at least one of {markers!r}, got none."
         )
 
     def test_slide_maker_body_names_visual_qa_and_task(
