@@ -116,6 +116,21 @@ _KATEX_SLIDE_HTML = """\
 </html>
 """
 
+# BUG-AUDIT-60 / BUG-ST-c-1: katex is no longer in _KNOWN_DIAGRAM_LIBS —
+# it's a math renderer gated by constraints.math_renderer, not a diagram
+# library. Tests that exercise INV-10's "unpermitted library fires"
+# branch must reference a real diagram library. d3 remains in
+# _KNOWN_DIAGRAM_LIBS.
+_D3_SLIDE_HTML = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<script src="vendor/d3.min.js"></script>
+</head>
+<body></body>
+</html>
+"""
+
 
 # ---------------------------------------------------------------------------
 # Helper to write slide HTML to a temp file
@@ -666,13 +681,14 @@ class TestCheckPermittedLibraries:
     def test_returns_qa_failure_when_unpermitted_library_is_referenced(
         self, tmp_path: Path
     ) -> None:
-        # _KATEX_SLIDE_HTML references katex; permitted list only allows mermaid
-        slide = _write_slide(tmp_path, _KATEX_SLIDE_HTML)
+        # BUG-AUDIT-60 / BUG-ST-c-1: katex is not a diagram library.
+        # Use d3 (still in _KNOWN_DIAGRAM_LIBS) as the unpermitted reference.
+        slide = _write_slide(tmp_path, _D3_SLIDE_HTML)
         result = check_permitted_libraries(slide, permitted=["mermaid"])
         assert result is not None
 
     def test_qa_failure_has_invariant_key_inv_10(self, tmp_path: Path) -> None:
-        slide = _write_slide(tmp_path, _KATEX_SLIDE_HTML)
+        slide = _write_slide(tmp_path, _D3_SLIDE_HTML)
         result = check_permitted_libraries(slide, permitted=["mermaid"])
         assert result is not None
         assert result.get("invariant") == "INV-10"
@@ -680,11 +696,25 @@ class TestCheckPermittedLibraries:
     def test_qa_failure_has_description_and_revision_instruction(
         self, tmp_path: Path
     ) -> None:
-        slide = _write_slide(tmp_path, _KATEX_SLIDE_HTML)
+        slide = _write_slide(tmp_path, _D3_SLIDE_HTML)
         result = check_permitted_libraries(slide, permitted=["mermaid"])
         assert result is not None
         assert "description" in result
         assert "revision_instruction" in result
+
+    def test_inv10_does_not_fire_on_katex_slide_bug_audit_60(
+        self, tmp_path: Path
+    ) -> None:
+        """BUG-AUDIT-60 / BUG-ST-c-1 / REQ-QA-INV10-1: katex is a math
+        renderer, not a diagram library. A slide referencing katex.min.js
+        must NOT fail INV-10 even when the permitted_diagram_types list
+        does not include katex. Math-renderer assets are gated by
+        validate_math_renderer_assets via constraints.math_renderer."""
+        slide = _write_slide(tmp_path, _KATEX_SLIDE_HTML)
+        result = check_permitted_libraries(slide, permitted=["mermaid"])
+        assert result is None, (
+            "katex must not trigger INV-10 (BUG-AUDIT-60 regression guard)"
+        )
 
     def test_returns_none_for_slide_with_no_diagram_scripts(
         self, tmp_path: Path

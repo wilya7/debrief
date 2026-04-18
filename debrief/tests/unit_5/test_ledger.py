@@ -569,7 +569,7 @@ class TestAppendLedgerEntry:
             role="consultant",
             content="Hello",
         )
-        ledger = tmp_path / ".debrief" / "ledger.jsonl"
+        ledger = tmp_path / "ledger.jsonl"
         assert ledger.exists()
 
     def test_appended_entry_is_valid_json_line(self, tmp_path: Path) -> None:
@@ -580,7 +580,7 @@ class TestAppendLedgerEntry:
             role="consultant",
             content="First entry",
         )
-        ledger = tmp_path / ".debrief" / "ledger.jsonl"
+        ledger = tmp_path / "ledger.jsonl"
         lines = [line for line in ledger.read_text().splitlines() if line.strip()]
         assert len(lines) == 1
         entry = json.loads(lines[0])
@@ -597,7 +597,7 @@ class TestAppendLedgerEntry:
             slug="intro_slide",
             event="group_start",
         )
-        ledger = tmp_path / ".debrief" / "ledger.jsonl"
+        ledger = tmp_path / "ledger.jsonl"
         lines = [line for line in ledger.read_text().splitlines() if line.strip()]
         entry = json.loads(lines[0])
         assert "timestamp" in entry
@@ -613,7 +613,7 @@ class TestAppendLedgerEntry:
             role="consultant",
             content="Decision made",
         )
-        ledger = tmp_path / ".debrief" / "ledger.jsonl"
+        ledger = tmp_path / "ledger.jsonl"
         lines = [line for line in ledger.read_text().splitlines() if line.strip()]
         entry = json.loads(lines[0])
         assert entry["role"] == "consultant"
@@ -630,7 +630,7 @@ class TestAppendLedgerEntry:
             slug="results_slide",
             event="group_start",
         )
-        ledger = tmp_path / ".debrief" / "ledger.jsonl"
+        ledger = tmp_path / "ledger.jsonl"
         lines = [line for line in ledger.read_text().splitlines() if line.strip()]
         entry = json.loads(lines[0])
         assert entry["metadata"]["group_id"] == "group_02"
@@ -645,7 +645,7 @@ class TestAppendLedgerEntry:
             role="consultant",
             content="No metadata",
         )
-        ledger = tmp_path / ".debrief" / "ledger.jsonl"
+        ledger = tmp_path / "ledger.jsonl"
         lines = [line for line in ledger.read_text().splitlines() if line.strip()]
         entry = json.loads(lines[0])
         assert entry["metadata"]["group_id"] is None
@@ -661,7 +661,7 @@ class TestAppendLedgerEntry:
                 role="consultant",
                 content=f"entry {i}",
             )
-        ledger = tmp_path / ".debrief" / "ledger.jsonl"
+        ledger = tmp_path / "ledger.jsonl"
         lines = [line for line in ledger.read_text().splitlines() if line.strip()]
         assert len(lines) == 5
 
@@ -675,7 +675,7 @@ class TestAppendLedgerEntry:
                 content=f"entry {i}",
             )
         # Each prior entry should still be present
-        ledger = tmp_path / ".debrief" / "ledger.jsonl"
+        ledger = tmp_path / "ledger.jsonl"
         lines = [line for line in ledger.read_text().splitlines() if line.strip()]
         assert len(lines) == 3
         contents = [json.loads(ln)["content"] for ln in lines]
@@ -692,7 +692,7 @@ class TestAppendLedgerEntry:
                 role="consultant",
                 content=msg,
             )
-        ledger = tmp_path / ".debrief" / "ledger.jsonl"
+        ledger = tmp_path / "ledger.jsonl"
         lines = [line for line in ledger.read_text().splitlines() if line.strip()]
         contents = [json.loads(ln)["content"] for ln in lines]
         assert contents == messages
@@ -705,7 +705,7 @@ class TestAppendLedgerEntry:
             role="consultant",
             content="ts check",
         )
-        ledger = tmp_path / ".debrief" / "ledger.jsonl"
+        ledger = tmp_path / "ledger.jsonl"
         lines = [line for line in ledger.read_text().splitlines() if line.strip()]
         entry = json.loads(lines[0])
         assert isinstance(entry["timestamp"], str)
@@ -723,7 +723,7 @@ class TestCompactLedger:
         debrief.mkdir(parents=True)
         _write_ledger_entries(tmp_path, 101)
         compact_ledger(tmp_path)
-        archive = debrief / "ledger_compact_001.jsonl"
+        archive = tmp_path / "ledger_compact_001.jsonl"
         assert archive.exists()
 
     def test_archive_contains_all_original_entries(self, tmp_path: Path) -> None:
@@ -731,7 +731,7 @@ class TestCompactLedger:
         debrief.mkdir(parents=True)
         _write_ledger_entries(tmp_path, 101)
         compact_ledger(tmp_path)
-        archive = debrief / "ledger_compact_001.jsonl"
+        archive = tmp_path / "ledger_compact_001.jsonl"
         lines = [line for line in archive.read_text().splitlines() if line.strip()]
         assert len(lines) == 101
 
@@ -740,7 +740,7 @@ class TestCompactLedger:
         debrief.mkdir(parents=True)
         _write_ledger_entries(tmp_path, 101)
         compact_ledger(tmp_path)
-        ledger = debrief / "ledger.jsonl"
+        ledger = tmp_path / "ledger.jsonl"
         lines = [line for line in ledger.read_text().splitlines() if line.strip()]
         assert len(lines) == 1
 
@@ -749,7 +749,7 @@ class TestCompactLedger:
         debrief.mkdir(parents=True)
         _write_ledger_entries(tmp_path, 101)
         compact_ledger(tmp_path)
-        ledger = debrief / "ledger.jsonl"
+        ledger = tmp_path / "ledger.jsonl"
         lines = [line for line in ledger.read_text().splitlines() if line.strip()]
         summary = json.loads(lines[0])
         assert isinstance(summary, dict)
@@ -760,11 +760,11 @@ class TestCompactLedger:
         # First compaction
         _write_ledger_entries(tmp_path, 101)
         compact_ledger(tmp_path)
-        assert (debrief / "ledger_compact_001.jsonl").exists()
+        assert (tmp_path / "ledger_compact_001.jsonl").exists()
         # Second compaction: write 101 more entries into the new ledger
         _write_ledger_entries(tmp_path, 101)
         compact_ledger(tmp_path)
-        assert (debrief / "ledger_compact_002.jsonl").exists()
+        assert (tmp_path / "ledger_compact_002.jsonl").exists()
 
     def test_second_compaction_produces_only_one_summary_in_ledger(
         self, tmp_path: Path
@@ -776,7 +776,7 @@ class TestCompactLedger:
         # Second round
         _write_ledger_entries(tmp_path, 101)
         compact_ledger(tmp_path)
-        ledger = debrief / "ledger.jsonl"
+        ledger = tmp_path / "ledger.jsonl"
         lines = [line for line in ledger.read_text().splitlines() if line.strip()]
         assert len(lines) == 1
 
@@ -787,26 +787,26 @@ class TestCompactLedger:
         debrief.mkdir(parents=True)
         _write_ledger_entries(tmp_path, 101)
         compact_ledger(tmp_path)
-        archive = debrief / "ledger_compact_001.jsonl"
+        archive = tmp_path / "ledger_compact_001.jsonl"
         assert archive.exists(), "Archive must be named ledger_compact_001.jsonl"
 
     def test_pre_existing_archive_skips_to_next_counter(self, tmp_path: Path) -> None:
         debrief = tmp_path / ".debrief"
         debrief.mkdir(parents=True)
         # Pre-seed an archive to simulate prior compaction
-        (debrief / "ledger_compact_001.jsonl").write_text(
+        (tmp_path / "ledger_compact_001.jsonl").write_text(
             '{"role":"system","content":"old"}\n'
         )
         _write_ledger_entries(tmp_path, 101)
         compact_ledger(tmp_path)
-        assert (debrief / "ledger_compact_002.jsonl").exists()
+        assert (tmp_path / "ledger_compact_002.jsonl").exists()
 
     def test_archive_entries_are_each_valid_json(self, tmp_path: Path) -> None:
         debrief = tmp_path / ".debrief"
         debrief.mkdir(parents=True)
         _write_ledger_entries(tmp_path, 101)
         compact_ledger(tmp_path)
-        archive = debrief / "ledger_compact_001.jsonl"
+        archive = tmp_path / "ledger_compact_001.jsonl"
         for raw_line in archive.read_text().splitlines():
             if raw_line.strip():
                 parsed = json.loads(raw_line)
@@ -819,7 +819,7 @@ class TestCompactLedger:
         debrief.mkdir(parents=True)
         _write_ledger_entries(tmp_path, 101)
         compact_ledger(tmp_path)
-        ledger = debrief / "ledger.jsonl"
+        ledger = tmp_path / "ledger.jsonl"
         lines = [ln for ln in ledger.read_text().splitlines() if ln.strip()]
         summary = json.loads(lines[0])
         assert summary["role"] == "system"
@@ -832,7 +832,7 @@ class TestCompactLedger:
         debrief.mkdir(parents=True)
         _write_ledger_entries(tmp_path, 101)
         compact_ledger(tmp_path)
-        ledger = debrief / "ledger.jsonl"
+        ledger = tmp_path / "ledger.jsonl"
         lines = [ln for ln in ledger.read_text().splitlines() if ln.strip()]
         summary = json.loads(lines[0])
         assert summary.get("metadata", {}).get("event") == "compaction"
@@ -844,15 +844,15 @@ class TestCompactLedger:
         debrief = tmp_path / ".debrief"
         debrief.mkdir(parents=True)
         # Pre-seed two archives so the next index must be 003
-        (debrief / "ledger_compact_001.jsonl").write_text(
+        (tmp_path / "ledger_compact_001.jsonl").write_text(
             '{"role":"system","content":"old1"}\n'
         )
-        (debrief / "ledger_compact_002.jsonl").write_text(
+        (tmp_path / "ledger_compact_002.jsonl").write_text(
             '{"role":"system","content":"old2"}\n'
         )
         _write_ledger_entries(tmp_path, 101)
         compact_ledger(tmp_path)
-        assert (debrief / "ledger_compact_003.jsonl").exists()
+        assert (tmp_path / "ledger_compact_003.jsonl").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -868,7 +868,7 @@ class TestAppendLedgerEntryPrePopulated:
         ledger by an external process before the first call in this session."""
         debrief = tmp_path / ".debrief"
         debrief.mkdir(parents=True)
-        ledger_path = debrief / "ledger.jsonl"
+        ledger_path = tmp_path / "ledger.jsonl"
         prior_entry = {
             "timestamp": "2026-01-01T00:00:00+00:00",
             "role": "system",

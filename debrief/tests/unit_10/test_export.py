@@ -301,7 +301,9 @@ class TestBuildPageListCanonicalOrder:
             assert sep_idx < min(backup_indices)
 
     def test_backup_slides_appear_last_in_page_list(self, project_dir: Path) -> None:
-        """Backup slides (backup=True) are appended after main/closing/separator."""
+        """BC-10.3a (BUG-AUDIT-62): when include_backup=True, backup slides
+        (backup=True) are appended after main/closing/separator. Default
+        build_page_list excludes backup per BUG-ST-a-e1; this test opts in."""
         # Write slide files for both main and backup slugs
         (project_dir / "slides" / "intro.html").write_text(
             "<!DOCTYPE html><html><body>intro</body></html>",
@@ -316,7 +318,7 @@ class TestBuildPageListCanonicalOrder:
             _make_slide("backup1", backup=True),
         ]
         state = _make_deck_state(slides)
-        pages = build_page_list(state, project_dir)
+        pages = build_page_list(state, project_dir, include_backup=True)
         types = [p["type"] for p in pages]
         # Both are "slide" type; check ordering by path content
         assert len(types) == 2
@@ -324,6 +326,26 @@ class TestBuildPageListCanonicalOrder:
         last_path = str(pages[1]["path"])
         assert "intro" in first_path
         assert "backup1" in last_path
+
+    def test_backup_slides_excluded_by_default(self, project_dir: Path) -> None:
+        """BUG-AUDIT-62 / BUG-ST-a-e1 / BC-10.3a: the default build_page_list
+        excludes backup slides, matching /debrief:present + /debrief:view."""
+        (project_dir / "slides" / "intro.html").write_text(
+            "<!DOCTYPE html><html><body>intro</body></html>",
+            encoding="utf-8",
+        )
+        (project_dir / "slides" / "backup1.html").write_text(
+            "<!DOCTYPE html><html><body>backup1</body></html>",
+            encoding="utf-8",
+        )
+        slides = [
+            _make_slide("intro", backup=False),
+            _make_slide("backup1", backup=True),
+        ]
+        state = _make_deck_state(slides)
+        pages = build_page_list(state, project_dir)
+        assert len(pages) == 1, "default must exclude backup slides"
+        assert "intro" in str(pages[0]["path"])
 
     def test_empty_deck_returns_empty_page_list(self, project_dir: Path) -> None:
         """A deck with no approved slides produces an empty page list."""
@@ -345,7 +367,9 @@ class TestBuildPageListCanonicalOrder:
         assert pages == []
 
     def test_full_order_main_closing_separator_backup(self, project_dir: Path) -> None:
-        """Full canonical order: main slides, closing, separator, backup slides."""
+        """BC-10.3 + BC-10.3a: full canonical order — main slides, closing,
+        separator, backup slides. Backup inclusion requires include_backup=True
+        (BUG-AUDIT-62)."""
         for slug in ("s_main", "s_backup"):
             (project_dir / "slides" / f"{slug}.html").write_text(
                 f"<!DOCTYPE html><html><body>{slug}</body></html>",
@@ -363,7 +387,7 @@ class TestBuildPageListCanonicalOrder:
             closing_slide="empty",
             presentations=[presentation],
         )
-        pages = build_page_list(state, project_dir)
+        pages = build_page_list(state, project_dir, include_backup=True)
         types = [p["type"] for p in pages]
         assert types[0] == "slide"  # main
         assert "closing" in types
