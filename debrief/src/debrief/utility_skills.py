@@ -546,7 +546,11 @@ _TRANSITION_SIGNALS = (
 )
 
 _TRANSITION_MARKER_RE = re.compile(
-    r'(?:^|\n|\.\s+|!\s+|\?\s+)\**(?:_)?transition(?:_)?\**\s*:\s*(.+?)(?:\n\s*\n|$)',
+    # Markdown wraps the whole "Transition:" phrase — leading `**`/`*`/`_`
+    # sit BEFORE the label and closing `**`/`*`/`_` sit AFTER the colon
+    # (e.g., `**Transition:**`, `*Transition:*`). Consume both so the
+    # captured group contains only the actual transition text.
+    r'(?:^|\n|\.\s+|!\s+|\?\s+)[*_]*transition[*_]*\s*:[*_]*\s*(.+?)(?:\n\s*\n|$)',
     re.IGNORECASE | re.DOTALL,
 )
 

@@ -86,7 +86,15 @@ def test_explicit_marker_markdown_bold_is_extracted():
     )
     body, trans = utility_skills._extract_transition(content)
     assert trans is not None
+    # Strict: the captured transition text must NOT retain stray markdown
+    # wrap characters from the `**Transition:**` marker.
+    assert trans.lstrip().startswith("This sets up"), (
+        f"Transition text leaked markdown markers; got {trans!r}"
+    )
     assert "cognitive software" in trans
+    assert "*" not in trans.strip().split(" ")[0], (
+        f"Transition's first token contains stray asterisk: {trans!r}"
+    )
     assert "Body paragraph" in body
     assert "Transition" not in body
 
@@ -98,7 +106,14 @@ def test_explicit_marker_italic_is_extracted():
     )
     body, trans = utility_skills._extract_transition(content)
     assert trans is not None
+    # Strict: italic marker must not leak into captured text.
+    assert trans.lstrip().startswith("This sets up"), (
+        f"Transition text leaked markdown markers; got {trans!r}"
+    )
     assert "cognitive software" in trans
+    assert "*" not in trans.strip().split(" ")[0], (
+        f"Transition's first token contains stray asterisk: {trans!r}"
+    )
     assert "Body paragraph" in body
 
 
