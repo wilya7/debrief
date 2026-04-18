@@ -416,27 +416,41 @@ Checks:
 
 ### A14 — State CLI + ledger
 
+**The executor MUST run these four commands in order, verbatim. Do not substitute alternative sub_phase values or event names — the assertions below check for exact strings.**
+
 ```bash
+# Step 1 — advance to finalization/post_export
 python -m debrief.debrief_state update --set sub_phase=finalization/post_export --project-root .
+
+# Step 2 — advance to complete
 python -m debrief.debrief_state update --set sub_phase=complete --project-root .
+
+# Step 3 — log the smoke-test-complete ledger event
 python -m debrief.debrief_state append_ledger --event smoke_test_complete --detail "Profile A A1-A14 passed" --project-root .
+
+# Step 4 — deliberately attempt an invalid sub_phase (MUST be rejected)
+python -m debrief.debrief_state update --set sub_phase=production/backup_decision --project-root .
 ```
 
-Checks:
-- Each command prints confirmation.
-- `debrief_state.json` reflects each update; no hash mismatch warning on second call.
-- `ledger.jsonl` contains `"event": "smoke_test_complete"`.
-- `ledger.jsonl` has many entries from throughout the session (not just quit/restore).
+Checks (in order):
+- Step 1 prints confirmation; after running, `python -c "import json; d=json.load(open('debrief_state.json')); print(d['phase'], d['sub_phase'])"` prints `finalization finalization/post_export`.
+- Step 2 prints confirmation with NO `hash mismatch` warning; after running, the same read prints `complete complete`.
+- Step 3 prints exit 0; `grep '"event": "smoke_test_complete"' ledger.jsonl` returns at least one match.
+- Step 4 (BUG-AUDIT-60 Cluster 1 fix-validation) exits **non-zero**; stderr contains both `sub_phase` and `invalid`; `debrief_state.json` is UNCHANGED (`sub_phase: complete` still, from step 2).
 
-**Cluster 1 fix-validation (BUG-AUDIT-60):** immediately after the three commands above, attempt a DELIBERATELY invalid sub_phase and assert the write fails at write time (not on next read):
+**Phase-derivation check (BUG-ST-a-5):** after step 4, run:
 
 ```bash
-python -m debrief.debrief_state update --set sub_phase=production/backup_decision --project-root .
-# Expected: non-zero exit; stderr contains "sub_phase" and "invalid".
-# debrief_state.json must remain unchanged (`sub_phase: complete` from the prior step).
+python -m debrief.debrief_state update --set sub_phase=production/red_green --project-root .
 ```
 
-Also verify phase derivation: `python -m debrief.debrief_state update --set sub_phase=production/red_green --project-root .` without passing `phase=` should leave `phase: production` in the state file. Log any deviation as BUG-ST-round4-a-N.
+Assert `phase=production` is auto-derived from the `production/` prefix. Then revert:
+
+```bash
+python -m debrief.debrief_state update --set sub_phase=complete --project-root .
+```
+
+The final state at A14 end MUST be `phase=complete, sub_phase=complete`. Log any deviation from these exact values or event names as `BUG-ST-round6-a-N`.
 
 Append Profile A summary to `profile_a.md`. **Do NOT run A15 or A16 yet — they are deferred to Phase 4.**
 
