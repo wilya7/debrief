@@ -195,6 +195,29 @@ def adapt_pptx(reference: Path, project_root: Path) -> None:
                             if fs is not None:
                                 font_sizes.append(fs / 12700)  # EMU -> pt
 
+        # BUG-AUDIT-55 / BUG-ST-4: resolve theme fonts from the PPTX ZIP.
+        # Slide master elements return placeholders (+mj-lt, +mn-lt);
+        # the actual font names live in ppt/theme/theme1.xml.
+        try:
+            import zipfile
+            from lxml import etree as _etree
+
+            _ns = {"a": "http://schemas.openxmlformats.org/drawingml/2006/main"}
+            with zipfile.ZipFile(str(reference)) as zf:
+                for name in zf.namelist():
+                    if "theme" in name and name.endswith(".xml"):
+                        root = _etree.fromstring(zf.read(name))
+                        for major in root.findall(".//a:majorFont/a:latin", _ns):
+                            tf = major.get("typeface")
+                            if tf and tf not in font_names:
+                                font_names.append(tf)
+                        for minor in root.findall(".//a:minorFont/a:latin", _ns):
+                            tf = minor.get("typeface")
+                            if tf and tf not in font_names:
+                                font_names.append(tf)
+        except Exception:
+            pass
+
         metadata["font_families"] = list(dict.fromkeys(font_names))
         metadata["font_sizes"] = sorted(set(font_sizes))
     except Exception:
