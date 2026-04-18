@@ -202,11 +202,13 @@ When writing slides to `deck_state.json`, you MUST use these exact field names. 
 
 **To approve a slide**, set `status: "approved"` and `qa_passed: true`. Do NOT invent fields like `approved: true` or `approved_at` — they will be silently dropped.
 
-## Valid sub_phase Values (BUG-AUDIT-57 / BUG-ST-15)
+## Valid sub_phase Values (BUG-AUDIT-57 / BUG-ST-15 / BUG-AUDIT-60 BUG-ST-a-2)
 
-When writing `debrief_state.json`, the `sub_phase` field MUST be one of these values. Any other value will cause `read_debrief_state` to raise `StateCorruptError`:
+When writing `debrief_state.json`, the `sub_phase` field MUST be one of these 24 values. Any other value will cause both `write_debrief_state` (on write, per BUG-AUDIT-60) and `read_debrief_state` (on read) to raise `StateCorruptError`. This list MUST be set-equal to `SUB_PHASE_VALUES` in `debrief_state.py` (enforced by a regression test per BC-2.15b).
 
-`discovery/greeting`, `discovery/dialog`, `discovery/brief_review`, `discovery/paper_analysis`, `discovery/reference_import`, `style/style_dialog`, `style/style_review`, `style/style_lock`, `production/group_planning`, `production/brief_dispatch`, `production/slide_authoring`, `production/red_green`, `production/slide_review`, `production/oscillation_review`, `production/group_review`, `production/backup_decision`, `production/closing_slide`, `finalization/export_ordering`, `finalization/export_confirm`, `finalization/export_options`, `finalization/post_export`, `finalization/complete`, `complete/done`, `complete/idle`
+`discovery/greeting`, `discovery/dialog`, `discovery/brief_review`, `discovery/paper_analysis`, `discovery/figure_selection`, `discovery/style_analysis`, `style/style_dialog`, `style/style_review`, `style/style_lock`, `production/group_planning`, `production/red_green`, `production/diagnostic`, `production/oscillation_review`, `production/slide_review`, `production/group_review`, `production/more_slides`, `production/deck_ending`, `finalization/export_options`, `finalization/backup_decision`, `finalization/export_confirm`, `finalization/reviewing_for_export`, `finalization/exporting`, `finalization/post_export`, `complete`
+
+**Phase/sub_phase coupling (BUG-AUDIT-60 / BC-2.15a):** when using `python -m debrief.debrief_state update --set sub_phase=...` without also passing `phase=`, the CLI derives `phase` from the `sub_phase` prefix (everything before `/`, or the whole value for `complete`). When both are passed, they must be consistent or the command exits 1. Prefer passing only `sub_phase` unless you intend a cross-phase override.
 
 ## Command Dispatch Menu
 
@@ -234,6 +236,37 @@ During the initial briefing, after the user describes their presentation context
 After the user approves the last main slide (and optionally declines backup slides), present the export question: "All slides are approved. Ready to generate deliverables? Options: `/debrief:export` (deck PDF), `/debrief:handout` (print-ready leave-behind), `/debrief:script` (presenter narration), or continue editing." Do not auto-export — wait for the user's choice.
 
 **Before running `/debrief:script`** (BUG-AUDIT-57 / BUG-ST-14): ensure each approved slide's `content_summary` in `deck_state.json` includes a REAL transition sentence to the next slide. The script generator uses `content_summary` directly — if it contains only a topic label, the generated script will have placeholder transitions ("Lead into the next slide by..."). Write real transitions: "This sets the stage for why code matters — which is exactly what we explore next."
+
+## Tier 2 QA Dispatch (BUG-AUDIT-59 / BUG-ST-5)
+
+The slide-maker **cannot** dispatch visual-qa itself. Claude Code does not surface the `Task` tool to nested subagents (you → slide-maker → visual-qa fails). The slide-maker runs Tier 1 qa_checker via Bash and returns its terminal status. **You** are the canonical Tier 2 dispatcher.
+
+After the slide-maker returns with a Tier 1 result, immediately dispatch visual-qa via Task:
+
+- `subagent_type: "visual-qa"`
+- Prompt: include the slide slug, paths to `slides/<slug>.html` and `output/screenshots/<slug>.png`, and instruct visual-qa to read the latest Tier 1 `qa_log.jsonl` entry, run Tier 2 + veto checks (VETO-01..07, INV-01/02/03/05/09/11/18/21), and append a `tier: "2_merged"` entry.
+
+The red-green gate decision (GREEN/RED) is based on the Tier 2 merged entry. Do not present the gate prompt to the user until Tier 2 completes.
+
+## State Transition CLI (BUG-AUDIT-59 / BUG-ST-15)
+
+To update `debrief_state.json`, use the CLI helper instead of writing the file directly with the Write tool. Direct writes skip hash recomputation and ledger auto-append, causing hash mismatch warnings on next read.
+
+```bash
+python -m debrief.debrief_state update --set phase=production sub_phase=production/group_planning --project-root .
+```
+
+This reads current state, applies the field updates, recomputes `state_hash`, writes atomically, and auto-appends a ledger entry.
+
+## Ledger Entries (BUG-AUDIT-59 / BUG-ST-8)
+
+After every major state transition (briefing complete, style locked, slide approved, export done), append a ledger entry:
+
+```bash
+python -m debrief.debrief_state append_ledger --event briefing_complete --project-root .
+```
+
+Do NOT rely on writing state files to auto-populate the ledger — the auto-append only fires through `write_debrief_state()`, which you may not always use. The ledger is the session's replayable record; without explicit entries it will be empty.
 
 ## Typical Workflow Order
 

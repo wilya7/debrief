@@ -326,18 +326,42 @@ class TestExportVersionDerivedFromFilesystem:
         assert (out_dir / "deck_v004.pdf").is_file()
         assert not (out_dir / "deck_v001.pdf").exists()
 
-    def test_deck_state_not_mutated(self, tmp_path: Path) -> None:
+    def test_deck_state_version_fields_not_mutated(self, tmp_path: Path) -> None:
+        """BUG-AUDIT-23 intent: `export_count` and `folder` MUST NOT change
+        on export. Version numbering is filesystem-derived (BC-10.4), so
+        export has no business bumping counters. Note: BUG-AUDIT-60 /
+        BUG-ST-xp-2 added a narrow refresh to `slide_manifest` so that
+        re-exports reflect the live approved-slug list — that is a
+        manifest refresh, not a version mutation, and is permitted.
+        """
+        import json as _json
+
         _setup_export_project(tmp_path)
         state_path = tmp_path / "deck_state.json"
-        before = state_path.read_bytes()
+        before = _json.loads(state_path.read_text(encoding="utf-8"))
 
         self._run_export_with_mock_playwright(tmp_path)
 
-        after = state_path.read_bytes()
-        assert before == after, (
-            "BUG-AUDIT-23: export must not mutate deck_state.json "
-            "because versioning is filesystem-derived."
-        )
+        after = _json.loads(state_path.read_text(encoding="utf-8"))
+
+        # Version-related fields must be unchanged (BUG-AUDIT-23)
+        for i, (bp, ap) in enumerate(
+            zip(before["presentations"], after["presentations"])
+        ):
+            assert bp["folder"] == ap["folder"], (
+                f"presentation[{i}].folder changed: "
+                f"{bp['folder']!r} → {ap['folder']!r}"
+            )
+            assert bp["export_count"] == ap["export_count"], (
+                f"presentation[{i}].export_count changed: "
+                f"{bp['export_count']} → {ap['export_count']} "
+                "(BUG-AUDIT-23: filesystem-derived versioning)"
+            )
+            assert bp["script_count"] == ap["script_count"]
+            assert bp["handout_count"] == ap["handout_count"]
+
+        # Slides list must not have gained/lost entries
+        assert len(before["slides"]) == len(after["slides"])
 
 
 # ===========================================================================

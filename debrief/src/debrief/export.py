@@ -236,12 +236,44 @@ def main_export(project_root: Path) -> None:
         )
         sys.exit(1)
 
-    # BUG-AUDIT-23: no state mutation. Version is filesystem-derived
-    # (BC-10.4 amendment), so increment_export_count and
-    # write_deck_state are no longer called. The old block was:
-    #   increment_export_count(state, folder)
-    #   write_deck_state(project_root, state)
-    # with a catch-all except that silently swallowed errors.
+    # BUG-AUDIT-23: version is filesystem-derived (BC-10.4); no
+    # increment_export_count. But BUG-AUDIT-60 / BUG-ST-xp-2 adds a
+    # narrow state refresh: `slide_manifest` on the active presentation
+    # record is updated to the current approved non-backup slug list so
+    # subsequent readers see a live manifest instead of the snapshot
+    # frozen at first export.
+    try:
+        from debrief_state import write_deck_state  # type: ignore[import]
+        live_manifest = [
+            s.slug for s in state.slides
+            if s.status == "approved" and not s.backup
+        ]
+        if list(presentation.slide_manifest) != live_manifest:
+            presentation.slide_manifest = live_manifest
+            write_deck_state(project_root, state)
+    except Exception as exc:  # noqa: BLE001 — manifest refresh is best-effort
+        print(
+            f"Note: slide_manifest refresh skipped ({exc!r})",
+            file=sys.stderr,
+        )
+
+    # BUG-AUDIT-60 / BUG-ST-xp-1: re-export should keep presentation.html
+    # in sync with the deck. Generate (without launching a browser) so
+    # the next `/debrief:present` opens a file that matches the v002 PDF.
+    try:
+        from utility_skills import build_presentation_html  # type: ignore[import]
+        build_presentation_html(project_root)
+    except Exception as exc:  # noqa: BLE001 — presentation refresh is best-effort
+        print(
+            f"Note: presentation.html refresh skipped ({exc!r})",
+            file=sys.stderr,
+        )
+
+    # BUG-AUDIT-59 / BUG-ST-9: print success message naming the PDF
+    print(
+        f"Wrote {pdf_path_str} ({slide_count} slides)",
+        file=sys.stderr,
+    )
 
     # BC-10.5: append log AFTER PDF is written
     append_export_log(

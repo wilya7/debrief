@@ -55,10 +55,16 @@ def _utc_now_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
 
 
-def _next_compact_index(debrief_dir: Path) -> int:
-    """Return the next available 1-based archive index (1 if none exist)."""
+def _next_compact_index(directory: Path) -> int:
+    """Return the next available 1-based archive index (1 if none exist).
+
+    Scans `directory` for files matching `_COMPACT_COUNTER_RE` (i.e.
+    `ledger_compact_NNN.jsonl`). Post BUG-AUDIT-60, compaction archives
+    live at project root alongside `ledger.jsonl`; the parameter is named
+    `directory` to reflect that (was `debrief_dir` historically).
+    """
     highest = 0
-    for entry in debrief_dir.iterdir():
+    for entry in directory.iterdir():
         m = _COMPACT_COUNTER_RE.match(entry.name)
         if m:
             idx = int(m.group(1))
@@ -216,7 +222,12 @@ def append_ledger_entry(
         },
     }
 
-    ledger_path = project_root / ".debrief" / _LEDGER_FILENAME
+    # BUG-AUDIT-60 / BUG-ST-c-3: ledger.jsonl lives at the project root per
+    # the spec Section 3 layout tree + CLAUDE.md + BC-11.10 snapshot contract
+    # (save copies `ledger.jsonl` from project_root, not `.debrief/`). Prior
+    # code wrote to `.debrief/ledger.jsonl`, producing a second audit trail
+    # that the rest of the pipeline never read.
+    ledger_path = project_root / _LEDGER_FILENAME
     with open(ledger_path, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
@@ -236,17 +247,18 @@ def compact_ledger(project_root: Path) -> None:
        capturing decisions made, slides approved, style choices locked,
        narrative direction.
     """
-    debrief_dir = project_root / ".debrief"
-    ledger_path = debrief_dir / _LEDGER_FILENAME
+    # BUG-AUDIT-60 / BUG-ST-c-3: primary ledger and compaction archives both
+    # live at project root (see append_ledger_entry rationale).
+    ledger_path = project_root / _LEDGER_FILENAME
 
     # Read all existing entries
     raw_text = ledger_path.read_text(encoding="utf-8")
     lines = [ln for ln in raw_text.splitlines() if ln.strip()]
 
     # Determine archive filename
-    archive_idx = _next_compact_index(debrief_dir)
+    archive_idx = _next_compact_index(project_root)
     archive_name = _COMPACT_PATTERN.format(archive_idx)
-    archive_path = debrief_dir / archive_name
+    archive_path = project_root / archive_name
 
     # Write archive (raw JSONL — preserve original lines)
     with open(archive_path, "w", encoding="utf-8") as fh:

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import shutil
 import sys
 import webbrowser
@@ -284,6 +285,51 @@ def main_view(query: str, project_root: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def build_presentation_html(project_root: Path) -> Optional[Path]:
+    """Write `output/presentation.html` from the current approved slides.
+
+    BUG-AUDIT-60 / BUG-ST-xp-1: split out of `main_present` so that
+    `/debrief:export` can refresh presentation.html after each re-export
+    without opening a browser. Returns the written path on success, or
+    None if preconditions fail (no project, no approved slides, no
+    slide HTML files). Does NOT call sys.exit.
+    """
+    project_root = project_root.resolve()
+    state_path = project_root / "deck_state.json"
+    if not state_path.is_file():
+        return None
+
+    deck_state = read_deck_state(project_root)
+    approved = [
+        s for s in deck_state.slides
+        if s.status == "approved" and not s.backup
+    ]
+    if not approved:
+        return None
+
+    slides_dir = project_root / "slides"
+    slide_sequence: list[Path] = []
+    for slide in approved:
+        slug = slide.slug
+        build_idx = 1
+        while True:
+            build_file = slides_dir / f"{slug}_build_{build_idx}.html"
+            if build_file.is_file():
+                slide_sequence.append(build_file)
+                build_idx += 1
+            else:
+                break
+        final_file = slides_dir / f"{slug}.html"
+        if final_file.is_file():
+            slide_sequence.append(final_file)
+
+    if not slide_sequence:
+        return None
+
+    out_path = _write_presentation_html(project_root, slide_sequence)
+    return out_path
+
+
 def main_present(project_root: Path) -> None:
     """Generate output/presentation.html and open in browser.
 
@@ -345,11 +391,20 @@ def main_present(project_root: Path) -> None:
         )
         sys.exit(2)
 
+    out_path = _write_presentation_html(project_root, slide_sequence)
+    webbrowser.open(out_path.as_uri())
+    print(str(out_path), file=sys.stderr)
+
+
+def _write_presentation_html(project_root: Path, slide_sequence: list[Path]) -> Path:
+    """Shared writer used by `main_present` and `build_presentation_html`.
+    Returns the path written. Kept private — callers should use one of the
+    two public entry points.
+    """
     # Read each slide's body content
     slide_bodies: list[str] = []
     for slide_path in slide_sequence:
         html = slide_path.read_text(encoding="utf-8")
-        # Extract body content — look for <body> tags
         import re as _re
         body_match = _re.search(
             r"<body[^>]*>(.*?)</body>", html, _re.DOTALL | _re.IGNORECASE
@@ -359,13 +414,11 @@ def main_present(project_root: Path) -> None:
         else:
             slide_bodies.append(html)
 
-    # Read the style.css if it exists
     css_path = project_root / "assets" / "style.css"
     css_content = ""
     if css_path.is_file():
         css_content = css_path.read_text(encoding="utf-8")
 
-    # Generate presentation.html
     total = len(slide_bodies)
     slides_html = ""
     for i, body in enumerate(slide_bodies):
@@ -438,9 +491,7 @@ body {{ background: #000; overflow: hidden; }}
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "presentation.html"
     out_path.write_text(presentation_html, encoding="utf-8")
-
-    webbrowser.open(out_path.as_uri())
-    print(str(out_path), file=sys.stderr)
+    return out_path
 
 
 # ---------------------------------------------------------------------------
@@ -448,20 +499,91 @@ body {{ background: #000; overflow: hidden; }}
 # ---------------------------------------------------------------------------
 
 
+def _parse_duration_from_brief(brief_text: str) -> float | None:
+    """Extract total duration in minutes from deck_brief.md text.
+
+    BUG-AUDIT-59 / BUG-ST-13: Looks for common patterns like
+    "duration: 15 min", "20 minutes", "5-minute talk", etc.
+
+    BUG-AUDIT-60 / BUG-ST-a-4: the prior primary regex required
+    `\\s*[:=]\\s*` between the keyword and the digit, which failed on
+    markdown-bold headers like `**Duration:** 5 minutes` because `**` is
+    not whitespace or colon. The fallback regex used `\\b` after
+    `(?:minute|min)`, which does not match between `e` and `s` (both word
+    characters) — so "5 minutes" silently fell through and the fallback
+    picked up "45 min" from an unrelated duration-warning sentence elsewhere
+    in the brief, returning 9× the correct duration. Both are fixed below.
+
+    Returns None if no duration is found.
+    """
+    import re
+    # Primary: explicit "duration"/"time"/"length" keyword, possibly inside
+    # markdown bold/colon/equals punctuation, followed by a number and
+    # "min(ute)(s)?". Gap is capped at 8 characters to avoid matching
+    # across unrelated sentences.
+    m = re.search(
+        r'(?:duration|time|length)[\s:*=\-]{0,8}?(\d+)\s*(?:min|minute)s?\b',
+        brief_text, re.IGNORECASE,
+    )
+    if m:
+        return float(m.group(1))
+    # Fallback: loose "<N> min(ute)(s)?" anywhere in the brief.
+    m = re.search(
+        r'(\d+)\s*[-\s]?\s*(?:minute|min)s?\b', brief_text, re.IGNORECASE,
+    )
+    if m:
+        return float(m.group(1))
+    return None
+
+
+_TRANSITION_SIGNALS = (
+    "next", "which leads", "sets the stage", "explore next",
+    "where we go next", "which brings us", "let's turn to",
+    "this leads", "moving on", "that's why",
+)
+
+
+def _extract_transition(content_summary: str) -> tuple[str, str | None]:
+    """Split content_summary into (talking_points, transition_sentence).
+
+    BUG-AUDIT-59 / BUG-ST-12: If the last sentence of content_summary
+    contains a transition signal word/phrase, extract it as the transition
+    and return the remainder as talking points.
+
+    Returns (talking_points, transition) where transition may be None.
+    """
+    import re
+    sentences = re.split(r'(?<=[.!?])\s+', content_summary.strip())
+    if len(sentences) < 2:
+        return content_summary, None
+    last = sentences[-1]
+    if any(signal in last.lower() for signal in _TRANSITION_SIGNALS):
+        return " ".join(sentences[:-1]), last
+    return content_summary, None
+
+
 def generate_script_content(
     deck_brief_content: str,
     slides: list[Any],
     folder: str,
+    total_duration_minutes: float | None = None,
 ) -> str:
     """Produce script markdown per REQ-SCRIPT-3.
 
     One section per slide with title, key talking points, transitions,
     estimated speaking time.
+
+    BUG-AUDIT-59 / BUG-ST-12: Extracts transition sentences from
+    content_summary instead of using hardcoded placeholders.
+    BUG-AUDIT-59 / BUG-ST-13: Inserts time-pacing checkpoints when
+    total_duration_minutes is known.
     """
     lines: list[str] = []
     lines.append("# Speaker Script")
     lines.append("")
     lines.append(f"**Presentation folder:** `{folder}`")
+    if total_duration_minutes is not None:
+        lines.append(f"**Target duration:** {total_duration_minutes:.0f} minutes")
     lines.append("")
     lines.append("---")
     lines.append("")
@@ -470,32 +592,74 @@ def generate_script_content(
         lines.append("*(No approved slides found.)*")
         return "\n".join(lines)
 
+    n = len(slides)
+    per_slide = (
+        total_duration_minutes / n if total_duration_minutes and n > 0 else None
+    )
+
+    # Precompute checkpoint positions (25%, 50%, 75%)
+    checkpoints: dict[int, str] = {}
+    if total_duration_minutes and n > 1:
+        for pct in (0.25, 0.50, 0.75):
+            target_time = total_duration_minutes * pct
+            slide_idx = int(pct * n)
+            slide_idx = min(slide_idx, n - 1)
+            label = {0.25: "quarter", 0.50: "halfway", 0.75: "three-quarter"}[pct]
+            checkpoints[slide_idx] = (
+                f"TIME CHECK ({label} mark): "
+                f"At ~{target_time:.0f} min you should be on this slide."
+            )
+
     for i, slide in enumerate(slides):
         lines.append(f"## Slide {i + 1}: {slide.title}")
         lines.append("")
         lines.append(f"**Slug:** `{slide.slug}`")
         lines.append("")
+
+        # BUG-ST-13: time checkpoint
+        if i in checkpoints:
+            lines.append(f"> {checkpoints[i]}")
+            lines.append("")
+
         lines.append("### Key talking points")
         lines.append("")
+
+        # BUG-ST-12: extract transition from content_summary
+        transition_text: str | None = getattr(slide, "transition", None)
         if slide.content_summary:
-            lines.append(f"- {slide.content_summary}")
+            talking_points = slide.content_summary
+            if transition_text is None:
+                talking_points, extracted = _extract_transition(
+                    slide.content_summary
+                )
+                if extracted is not None:
+                    transition_text = extracted
+            lines.append(f"- {talking_points}")
         else:
             lines.append("- *(No content summary available.)*")
         lines.append("")
+
         lines.append("### Transition")
         lines.append("")
-        if i < len(slides) - 1:
+        if i < n - 1:
             next_slide = slides[i + 1]
-            lines.append(
-                f"Lead into **{next_slide.title}** by connecting the "
-                f"key findings above."
-            )
+            if transition_text:
+                lines.append(transition_text)
+            else:
+                lines.append(
+                    f"Lead into **{next_slide.title}** by connecting the "
+                    f"key findings above."
+                )
         else:
             lines.append("Conclude and invite questions.")
         lines.append("")
+
         lines.append("### Estimated speaking time")
         lines.append("")
-        lines.append("~1–2 minutes")
+        if per_slide is not None:
+            lines.append(f"~{per_slide:.1f} minutes")
+        else:
+            lines.append("~1–2 minutes")
         lines.append("")
         lines.append("---")
         lines.append("")
@@ -570,7 +734,12 @@ def main_script_generator(project_root: Path) -> None:
     else:
         deck_brief_content = ""
 
-    content = generate_script_content(deck_brief_content, approved, folder)
+    # BUG-AUDIT-59 / BUG-ST-13: parse duration from deck brief
+    total_duration = _parse_duration_from_brief(deck_brief_content)
+
+    content = generate_script_content(
+        deck_brief_content, approved, folder, total_duration
+    )
 
     out_path = out_dir / script_filename
     out_path.write_text(content, encoding="utf-8")
@@ -1100,6 +1269,76 @@ def skill_restore(label: Optional[str], project_root: Path) -> None:
         file=sys.stderr,
     )
 
+    # BC-11.12a / BUG-AUDIT-61 / REQ-RESTORE-WARN-1: orphan-output audit.
+    # Enumerate output/<YYYY_MM_DD_*>/ folders on disk and diff against
+    # presentations[].folder in the restored state. For each folder the
+    # restored state does NOT reference, print a warning + log a ledger
+    # entry. We never delete these files — scope preservation of
+    # BC-11.12 is upheld; warnings are advisory.
+    _emit_orphan_output_warnings(project_root, ledger_path)
+
+
+_DATED_FOLDER_RE = re.compile(r"^\d{4}_\d{2}_\d{2}_")
+
+
+def _emit_orphan_output_warnings(project_root: Path, ledger_path: Path) -> None:
+    """BC-11.12a: warn about output/<YYYY_MM_DD_*>/ folders no longer
+    referenced by the restored deck_state.presentations.
+    """
+    from datetime import datetime, timezone
+    import json as _json
+
+    output_dir = project_root / "output"
+    if not output_dir.is_dir():
+        return
+
+    try:
+        restored = read_deck_state(project_root)
+    except Exception:
+        # Can't read restored state — the restore contract already printed
+        # its confirmation; don't fail the session because the audit can't
+        # run. Treat as "no references known" — emit warnings for every
+        # dated folder on disk.
+        referenced: set[str] = set()
+    else:
+        referenced = {
+            pres.folder for pres in restored.presentations if pres.folder
+        }
+
+    orphans: list[tuple[Path, int]] = []
+    for entry in sorted(output_dir.iterdir()):
+        if not entry.is_dir():
+            continue
+        if not _DATED_FOLDER_RE.match(entry.name):
+            continue
+        if entry.name in referenced:
+            continue
+        file_count = sum(1 for _ in entry.rglob("*") if _.is_file())
+        orphans.append((entry, file_count))
+
+    if not orphans:
+        return
+
+    print(
+        f"Warning: {len(orphans)} orphan output folder(s) remain from "
+        "prior exports and are NOT referenced by the restored deck_state:",
+        file=sys.stderr,
+    )
+    with ledger_path.open("a", encoding="utf-8") as fh:
+        for folder, file_count in orphans:
+            rel = folder.relative_to(project_root)
+            print(
+                f"  - {rel}/  ({file_count} file{'s' if file_count != 1 else ''})",
+                file=sys.stderr,
+            )
+            entry = {
+                "event": "restore_orphan_warning",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "orphan_folder": str(rel),
+                "file_count": file_count,
+            }
+            fh.write(_json.dumps(entry) + "\n")
+
 
 # ---------------------------------------------------------------------------
 # skill_quit (BC-11.13, BC-11.14)
@@ -1179,6 +1418,12 @@ def skill_quit(project_root: Path) -> None:
         if p.is_file():
             p.unlink()
 
+    # BUG-AUDIT-59 / BUG-ST-14: remove state.lock after quit.
+    # write_debrief_state releases the flock but leaves the file on disk.
+    lock_path = project_root / ".debrief" / "state.lock"
+    if lock_path.is_file():
+        lock_path.unlink()
+
     # BUG-AUDIT-24 / REQ-QUIT-1 step 5: summary output.
     approved_count = sum(
         1 for s in deck_state.slides
@@ -1208,11 +1453,14 @@ if __name__ == "__main__":
 
     _parser = argparse.ArgumentParser(description="Debrief utility skills")
     _parser.add_argument("command", choices=[
-        "save", "restore", "quit", "present", "view", "promote_style_draft",
+        "save", "restore", "quit", "present", "view",
+        "promote_style_draft", "handout",
     ])
     _parser.add_argument("--project-root", type=Path, default=Path.cwd())
     _parser.add_argument("--label", default=None)
     _parser.add_argument("--query", default="all")
+    _parser.add_argument("--mode", default="2up",
+                         help="Handout mode (default: 2up)")
     _args = _parser.parse_args()
     _root = _args.project_root.resolve()
 
@@ -1228,3 +1476,5 @@ if __name__ == "__main__":
         main_view(_args.query, _root)
     elif _args.command == "promote_style_draft":
         promote_style_draft(_root)
+    elif _args.command == "handout":
+        main_handout(_args.mode, _root)

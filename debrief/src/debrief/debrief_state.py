@@ -771,6 +771,11 @@ def write_debrief_state(project_root: Path, state: DebriefState) -> None:
         # Serialize to dict
         data = _debrief_state_to_dict(state)
 
+        # BUG-AUDIT-60 / REQ-STATE-ENUM-2: validate before writing. Prior
+        # behavior validated only on read, allowing bad sub_phase/phase/etc.
+        # values to persist and fail the next read with StateCorruptError.
+        validate_debrief_state(data)
+
         # BC-2.4: recompute hash before writing
         content_without_hash = {k: v for k, v in data.items() if k != "state_hash"}
         data["state_hash"] = compute_state_hash(content_without_hash)
@@ -809,3 +814,126 @@ def _auto_append_ledger(project_root: Path, state: "DebriefState") -> None:
     })
     with open(ledger_path, "a", encoding="utf-8") as f:
         f.write(entry + "\n")
+
+
+def append_ledger_entry(
+    project_root: Path, event: str, detail: str = "",
+) -> None:
+    """Append a named event to ledger.jsonl.
+
+    BUG-AUDIT-59 / BUG-ST-8: Gives the consultant a CLI-callable way to
+    record major state transitions (briefing_complete, style_locked,
+    slide_approved, export_done) without relying on write_debrief_state's
+    auto-append.
+    """
+    from datetime import datetime, timezone
+
+    ledger_path = project_root / "ledger.jsonl"
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    entry = json.dumps({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "role": "system",
+        "content": f"Event: {event}" + (f" — {detail}" if detail else ""),
+        "metadata": {
+            "event": event,
+            "detail": detail,
+        },
+    })
+    with open(ledger_path, "a", encoding="utf-8") as f:
+        f.write(entry + "\n")
+
+
+def cli_update_state(project_root: Path, assignments: list[str]) -> None:
+    """Apply key=value updates to debrief_state.json via read/write cycle.
+
+    BUG-AUDIT-59 / BUG-ST-15: Ensures state_hash is recomputed and a
+    ledger entry is auto-appended. The consultant should use this CLI
+    instead of writing debrief_state.json directly with the Write tool.
+    """
+    state = read_debrief_state(project_root)
+    parsed: dict[str, Any] = {}
+    for pair in assignments:
+        if "=" not in pair:
+            print(f"ERROR: invalid assignment '{pair}' — expected key=value",
+                  file=sys.stderr)
+            sys.exit(1)
+        key, value = pair.split("=", 1)
+        if not hasattr(state, key):
+            print(f"ERROR: unknown field '{key}' on DebriefState",
+                  file=sys.stderr)
+            sys.exit(1)
+        current = getattr(state, key)
+        # Coerce to the right type
+        if isinstance(current, bool):
+            value = value.lower() in ("true", "1", "yes")
+        elif isinstance(current, int):
+            value = int(value)
+        elif current is None or isinstance(current, str):
+            pass  # keep as string
+        parsed[key] = value
+
+    # BUG-AUDIT-60 / REQ-STATE-ENUM-3 / BC-2.15a: phase/sub_phase coupling.
+    # Derive phase from sub_phase prefix when only sub_phase is set; reject
+    # inconsistent explicit pair before any write.
+    if "sub_phase" in parsed:
+        new_sub_phase = parsed["sub_phase"]
+        derived_phase = (
+            new_sub_phase.split("/", 1)[0] if "/" in new_sub_phase else new_sub_phase
+        )
+        if "phase" in parsed:
+            if parsed["phase"] != derived_phase:
+                print(
+                    f"ERROR: inconsistent phase/sub_phase: phase={parsed['phase']!r} "
+                    f"but sub_phase={new_sub_phase!r} implies phase={derived_phase!r}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        else:
+            parsed["phase"] = derived_phase
+
+    for key, value in parsed.items():
+        setattr(state, key, value)
+    write_debrief_state(project_root, state)
+    print(
+        f"Updated debrief_state.json: {', '.join(f'{k}={v}' for k, v in parsed.items())}",
+        file=sys.stderr,
+    )
+
+
+# ---------------------------------------------------------------------------
+# CLI dispatcher (__main__)
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    import argparse
+
+    _parser = argparse.ArgumentParser(
+        description="Debrief state management CLI",
+    )
+    _sub = _parser.add_subparsers(dest="command")
+
+    # update subcommand
+    _up = _sub.add_parser("update", help="Update debrief_state.json fields")
+    _up.add_argument(
+        "--set", nargs="+", metavar="KEY=VALUE", required=True,
+        help="Field assignments (e.g., phase=production sub_phase=production/group_planning)",
+    )
+    _up.add_argument("--project-root", type=Path, default=Path.cwd())
+
+    # append_ledger subcommand
+    _al = _sub.add_parser("append_ledger", help="Append a ledger entry")
+    _al.add_argument("--event", required=True, help="Event name")
+    _al.add_argument("--detail", default="", help="Event detail")
+    _al.add_argument("--project-root", type=Path, default=Path.cwd())
+
+    _args = _parser.parse_args()
+
+    if _args.command == "update":
+        cli_update_state(_args.project_root.resolve(), _args.set)
+    elif _args.command == "append_ledger":
+        append_ledger_entry(
+            _args.project_root.resolve(), _args.event, _args.detail,
+        )
+    else:
+        _parser.print_help()
+        sys.exit(1)

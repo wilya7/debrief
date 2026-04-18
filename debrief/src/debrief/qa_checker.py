@@ -171,8 +171,14 @@ def check_no_external_requests(slide_path: Path) -> Optional[QAFailure]:
 # BC-9.4 / INV-10: check_permitted_libraries
 # ---------------------------------------------------------------------------
 
-# Known diagram library filename patterns
-_KNOWN_DIAGRAM_LIBS = ["mermaid", "katex", "rough", "d3", "chart"]
+# Known diagram library filename patterns.
+#
+# BUG-AUDIT-60 / BUG-ST-c-1: `katex` is a math renderer (gated by
+# `constraints.math_renderer`), not a diagram library. Including it here
+# caused every math slide to fail INV-10 unless the user polluted
+# `permitted_diagram_types` with a non-diagram library. Math-renderer asset
+# validation is handled separately by validate_math_renderer_assets().
+_KNOWN_DIAGRAM_LIBS = ["mermaid", "rough", "d3", "chart"]
 
 
 def _normalize_lib_name(name: str) -> str:
@@ -351,14 +357,32 @@ _RAW_SOURCE_PATTERNS = re.compile(
 def check_text_overflow(
     page: "playwright.sync_api.Page",
 ) -> Optional[QAFailure]:
-    """VETO-01: detect text overflowing beyond its container boundary."""
+    """VETO-01: detect text overflowing beyond its container boundary.
+
+    BUG-AUDIT-60 / BUG-ST-c-2: screen-reader-only elements (aria-hidden=true,
+    .katex-mathml accessibility span, .sr-only, .visually-hidden) are
+    intentionally visually hidden via the clip/position pattern but have
+    overflow:hidden + small width/height for a11y support. They trip this
+    check even though they're invisible to sighted users. Skip them — their
+    "overflow" is by design.
+    """
     script = """
     () => {
+        const SR_ONLY_CLASSES = ['katex-mathml', 'sr-only', 'visually-hidden'];
         const els = document.querySelectorAll('*');
         for (const el of els) {
             const s = window.getComputedStyle(el);
             if (s.display === 'none' || s.visibility === 'hidden') continue;
             if (el.tagName === 'HTML' || el.tagName === 'BODY') continue;
+            // A11y screen-reader-only patterns: aria-hidden=true or
+            // well-known SR-only class names. These are intentionally
+            // clipped and have overflow:hidden by design.
+            if (el.getAttribute('aria-hidden') === 'true') continue;
+            let sr_hidden = false;
+            for (const cls of SR_ONLY_CLASSES) {
+                if (el.classList.contains(cls)) { sr_hidden = true; break; }
+            }
+            if (sr_hidden) continue;
             if (el.scrollWidth > el.clientWidth + 2 ||
                 el.scrollHeight > el.clientHeight + 2) {
                 if (s.overflow === 'hidden' || s.overflowX === 'hidden' ||
@@ -687,6 +711,13 @@ def check_images_respect_margins(
 
     Evaluates JS to check each <img> bounding rect against 10% margins
     of the slide width. Returns QAFailure if any image violates.
+
+    BUG-AUDIT-61 / BUG-ST-round4-c-1 / REQ-QA-INV13-1: `<img>` elements
+    marked as full-bleed (class `fullbleed` on the element OR an ancestor
+    with that class, via `.closest('.fullbleed')`) are exempt. Full-bleed
+    is a documented REQ-ASSET-4 placement mode that structurally conflicts
+    with the 10% margin rule; the exemption is DOM-discoverable rather
+    than a 0x0 hidden-image workaround.
     """
     script = """
     () => {
@@ -696,6 +727,11 @@ def check_images_respect_margins(
         const rightMargin = slideWidth * 0.9;
         const violations = [];
         for (const img of imgs) {
+            // Full-bleed exemption: DOM-marked full-bleed images legitimately
+            // fill the slide area. Class is on the <img> or an ancestor.
+            if (img.classList.contains('fullbleed')) continue;
+            if (img.closest('.fullbleed')) continue;
+
             const rect = img.getBoundingClientRect();
             if (rect.width === 0 && rect.height === 0) continue;
             if (rect.left < leftMargin || rect.right > rightMargin) {
@@ -1265,7 +1301,15 @@ def _parse_args() -> tuple:
     )
     limit_parser.add_argument("--slug", required=True)
     limit_parser.add_argument("--project-root", required=True, type=Path)
-    limit_parser.add_argument("--limit", type=int, default=5)
+    limit_parser.add_argument(
+        "--limit",
+        type=int,
+        default=5,
+        help=(
+            "Maximum red-green iterations before the slug is flagged "
+            "as limit-reached. Default: 5. (BUG-AUDIT-60 / BUG-ST-c-4)"
+        ),
+    )
 
     args = parser.parse_args()
 
