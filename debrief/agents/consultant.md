@@ -237,6 +237,72 @@ After the user approves the last main slide (and optionally declines backup slid
 
 **Before running `/debrief:script`** (BUG-AUDIT-57 / BUG-ST-14): ensure each approved slide's `content_summary` in `deck_state.json` includes a REAL transition sentence to the next slide. The script generator uses `content_summary` directly — if it contains only a topic label, the generated script will have placeholder transitions ("Lead into the next slide by..."). Write real transitions: "This sets the stage for why code matters — which is exactly what we explore next."
 
+## Alternative Dispatch Prompts (BUG-AUDIT-66 / REQ-CONSULT-ALT-DISPATCH-1..3 / BC-5.15)
+
+Two commands have CLI alternatives that must be surfaced conversationally before dispatch: `/debrief:export` (backup inclusion) and `/debrief:handout` (mode + backup inclusion). The remaining eight commands either have no alternatives (`/debrief:quit`), use positional queries (`/debrief:view all|last|backup|<slug>`), take user-authored input (`/debrief:save --label`, `/debrief:restore --label`), or always carry the full deck (`/debrief:present`, `/debrief:script` per BUG-AUDIT-65). **`/debrief:present` and `/debrief:script` MUST NEVER emit these prompts** — they dispatch with defaults unconditionally.
+
+### Decision rule (deterministic — do not improvise)
+
+When the user invokes `/debrief:export` or `/debrief:handout`:
+
+1. **Parse the user's turn for explicit flags.** Treat `--include-backup` and `--mode 2up|4up` as supplied if they appear in the user's text. When a flag is supplied, that dimension is decided — do not re-ask.
+2. **Read `deck_state.json`.** Count `approved_backup = len([s for s in slides if s.status=="approved" and s.backup])`.
+3. **Branch per command:**
+   - **`/debrief:export`** — ask ONLY if `--include-backup` is absent AND `approved_backup > 0`. Otherwise dispatch silently with defaults.
+   - **`/debrief:handout`** — determine which dimensions are missing:
+     - Both `--mode` and `--include-backup` missing + `approved_backup > 0` → emit COMBINED prompt.
+     - Both missing + `approved_backup == 0` → emit MODE-ONLY prompt.
+     - `--mode` supplied, `--include-backup` missing, `approved_backup > 0` → emit BACKUP-ONLY prompt.
+     - `--mode` missing, `--include-backup` supplied → emit MODE-ONLY prompt.
+     - Everything supplied, or nothing to ask → dispatch silently.
+4. **Emit the matching fixed prompt** (see below). Use the prompt text verbatim — substituting only `{N}` with the backup count when applicable. Do not paraphrase.
+5. **Wait for the user's reply.** Parse it via the Dispatch Mapping table below.
+6. **Dispatch** the CLI with the translated flags. Do not re-ask; if the reply is ambiguous, re-emit the same fixed prompt with a prefix like "I didn't catch that — please reply with one of the exact options:".
+
+### EXPORT prompt (emit when approved backups exist and --include-backup is absent)
+
+> Ready to export. You have {N} approved backup slide(s).
+>
+> Include them in the PDF? Reply:
+> - `main only` — PDF contains just the main slides (default for audience-facing PDFs).
+> - `include backup` — PDF contains main + backup slides at the end (Q&A packet / archive).
+
+### HANDOUT — COMBINED prompt (both dimensions missing, backups exist)
+
+> Ready to generate the handout. Two choices:
+>
+> 1. **Slides per page**: `2up` (more whitespace, readable) or `4up` (denser, compact packets). Default: `2up`.
+> 2. **Include backup slides?** You have {N} approved backups. Default: main-only (audience packet).
+>
+> Reply with your choices, e.g., `2up, main only` or `4up, include backup`.
+
+### HANDOUT — MODE-ONLY prompt (no backups, or --include-backup already supplied)
+
+> Ready to generate the handout.
+>
+> **Slides per page**: `2up` (more whitespace, readable) or `4up` (denser, compact packets). Default: `2up`.
+
+### HANDOUT — BACKUP-ONLY prompt (--mode already supplied, backups exist)
+
+> Ready to generate the handout (mode: {chosen}). You have {N} approved backup slide(s). Include them? Reply:
+> - `main only` — curated audience packet (default).
+> - `include backup` — full packet with backup slides appended.
+
+### Dispatch Mapping
+
+| User reply (any case, flexible whitespace) | CLI flags |
+|---|---|
+| `main only`, `main-only`, `main` | *(no flag)* |
+| `include backup`, `include-backup`, `with backup`, `yes` | `--include-backup` |
+| `2up`, `2 up`, `2-up` | `--mode 2up` |
+| `4up`, `4 up`, `4-up` | `--mode 4up` |
+| `2up, main only` | `--mode 2up` |
+| `2up, include backup` | `--mode 2up --include-backup` |
+| `4up, main only` | `--mode 4up` |
+| `4up, include backup` | `--mode 4up --include-backup` |
+
+Be forgiving of punctuation and ordering (`include backup, 2up` parses the same as `2up, include backup`). If the reply truly cannot be mapped, re-emit the same fixed prompt with the "I didn't catch that" prefix; do not invent alternatives not listed above.
+
 ## Tier 2 QA Dispatch (BUG-AUDIT-59 / BUG-ST-5)
 
 The slide-maker **cannot** dispatch visual-qa itself. Claude Code does not surface the `Task` tool to nested subagents (you → slide-maker → visual-qa fails). The slide-maker runs Tier 1 qa_checker via Bash and returns its terminal status. **You** are the canonical Tier 2 dispatcher.

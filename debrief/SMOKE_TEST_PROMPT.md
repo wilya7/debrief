@@ -328,7 +328,14 @@ Checks:
 
 ### A9 — Export
 
-- `/debrief:export`.
+- `/debrief:export` **without any flags** — the consultant should offer the `--include-backup` choice because A7 produced an approved backup slide.
+
+**BUG-AUDIT-66 fix-validation (consultant asks about backup inclusion):**
+- After invoking `/debrief:export` (no flags), the consultant MUST emit the fixed EXPORT prompt: `Ready to export. You have N approved backup slide(s). Include them in the PDF? Reply: - \`main only\` ... - \`include backup\` ...`.
+- Reply `main only` for this test.
+- Consultant dispatches `python -m debrief.export --project-root .` (no `--include-backup`).
+- Then try the flag-bypass: `/debrief:export --include-backup` — the consultant MUST dispatch silently (no prompt).
+- If the consultant never asks on the unflagged invocation, or asks on the flagged one, log `BUG-ST-round6-a-N`.
 
 Checks:
 - `output/<YYYY_MM_DD_title>/deck_v001.pdf` exists, multi-page (one page per approved non-backup slide).
@@ -346,7 +353,15 @@ Checks:
 
 ### A10 — Handout
 
-- `/debrief:handout` (no `--mode` — default should be 2up; backup excluded by default).
+- `/debrief:handout` **without any flags** — consultant must ask about BOTH mode AND backup inclusion in a single combined turn.
+
+**BUG-AUDIT-66 fix-validation (consultant asks about mode + backup in one turn):**
+- After invoking `/debrief:handout` (no flags), the consultant MUST emit the COMBINED prompt covering both dimensions: `Ready to generate the handout. Two choices: 1. Slides per page: \`2up\` ... or \`4up\` ... 2. Include backup slides? You have N approved backups ...`.
+- Reply `2up, main only`.
+- Consultant dispatches `python -m debrief.utility_skills handout --mode 2up --project-root .` (no `--include-backup`).
+- Flag-bypass check: `/debrief:handout --mode 4up --include-backup` MUST dispatch silently.
+- Partial flag: `/debrief:handout --mode 4up` — consultant emits the BACKUP-ONLY prompt (asks only about `--include-backup`, since `--mode` is supplied).
+- If any of these fail, log `BUG-ST-round6-a-N`.
 
 Checks:
 - `output/handouts/handout_v001.pdf` exists, non-zero bytes.
