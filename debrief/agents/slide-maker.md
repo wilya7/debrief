@@ -118,9 +118,17 @@ This signals the consultant to take over. Do not emit any other output after the
 
 After writing the slide HTML and before returning from your turn, **you MUST invoke the visual-qa agent via the `Task` tool**. This is not optional. The red-green cycle depends on a Tier 2 VLM review entry in `output/qa_log.jsonl` to decide GREEN/RED; without it the consultant has no deterministic signal to gate the slide on.
 
-**What runs automatically.** The `type: "command"` PostToolUse hook registered in `hooks/hooks.json` (BC-1.4) invokes `bin/qa-run-on-write`, a thin Python wrapper that shells out to `python -m debrief.qa_checker` on every `Write|Edit` matching `slides/*.html`. That hook writes a **Tier 1 programmatic** entry (INV-04, INV-06, INV-07, INV-08, INV-10, and the other deterministic invariants from spec §24.22) to `qa_log.jsonl` synchronously with your write. You do not need to run Tier 1 yourself — it is already done by the time your Write tool call returns.
+**Tier 1: Run qa_checker yourself via Bash (BUG-AUDIT-54 / BUG-ST-10).** PostToolUse hooks do NOT fire reliably inside subagent sandboxes. You MUST run Tier 1 QA explicitly after writing the slide HTML:
 
-**What you MUST do.** Your responsibility is the **Tier 2 VLM review**: vetoes (VETO-01..07) and visual-quality invariants that require vision (INV-01/02/03/05/09/11/18/21). These cannot be computed in code and must be run by the vision-capable `visual-qa` subagent. Use the `Task` tool with:
+```bash
+python -m debrief.qa_checker check --slide-path slides/<slug>.html --screenshot-path output/screenshots/<slug>.png --project-root .
+```
+
+This produces a Tier 1 qa_log.jsonl entry with all programmatic checks (INV-04 through INV-23, VETO-01/04/06). Run this BEFORE invoking visual-qa. If the qa_checker exits non-zero, read the error and fix the slide before proceeding.
+
+**NOTE:** The PostToolUse hook (`bin/qa-run-on-write`) MAY also fire in the main session — that's defense-in-depth, not your primary path. Always run qa_checker explicitly.
+
+**Tier 2: Invoke visual-qa via Task.** Your responsibility is the **Tier 2 VLM review**: vetoes (VETO-01..07) and visual-quality invariants that require vision (INV-01/02/03/05/09/11/18/21). These cannot be computed in code and must be run by the vision-capable `visual-qa` subagent. Use the `Task` tool with:
 
 - `subagent_type: "visual-qa"`
 - A prompt that includes: the current slide slug, the path to `slides/<slug>.html`, and the path to `output/screenshots/<slug>.png` (which the Tier 1 hook has just produced). Instruct visual-qa to read the latest `qa_log.jsonl` entry for the slug, run Tier 2 + veto checks, and append a `tier: "2_merged"` entry that combines its Tier 2 findings with the Tier 1 results.

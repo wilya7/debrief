@@ -780,3 +780,32 @@ def write_debrief_state(project_root: Path, state: DebriefState) -> None:
     finally:
         fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
         lock_fd.close()
+
+    # BUG-AUDIT-54 / BUG-ST-15: auto-append a ledger entry after every
+    # successful debrief_state write. This ensures the ledger is never
+    # empty — every phase transition and gate response is recorded
+    # automatically. Conversational entries are consultant-contributed.
+    try:
+        _auto_append_ledger(project_root, state)
+    except Exception:
+        pass  # Ledger is observability, not load-bearing
+
+
+def _auto_append_ledger(project_root: Path, state: "DebriefState") -> None:
+    """Append a structural event to ledger.jsonl after a state write."""
+    from datetime import datetime, timezone
+
+    ledger_path = project_root / "ledger.jsonl"
+    entry = json.dumps({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "role": "system",
+        "content": f"State transition: phase={state.phase}, sub_phase={state.sub_phase}",
+        "metadata": {
+            "event": "state_transition",
+            "phase": state.phase,
+            "sub_phase": state.sub_phase,
+            "active_agent": state.active_agent,
+        },
+    })
+    with open(ledger_path, "a", encoding="utf-8") as f:
+        f.write(entry + "\n")
