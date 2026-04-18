@@ -365,6 +365,8 @@ Checks:
 - `output/<folder>/script_v001.md` exists.
 - Header contains `**Target duration:** 5 minutes`. **Cluster 3 fix-validation (BUG-ST-a-4):** this must be **5**, not **45**. Pre-fix the regex picked up "45 min" from the duration-warning sentence. A value of 45 means the fix regressed — log as `BUG-ST-round4-a-N`.
 - **BUG-AUDIT-62 BUG-ST-a-e2 fix-validation (transition extractor):** for any slide whose `content_summary` contains an explicit `Transition:` marker (case-insensitive; optional Markdown bold/italic around it), the generated script's `### Transition` section MUST contain the text after the marker — NOT the placeholder `Lead into **<next>** by connecting...`. If the placeholder appears for a slide whose `content_summary` has a `Transition:` marker, log `BUG-ST-round6-a-N`.
+
+**BUG-AUDIT-65 BUG-ST-a-e3-script fix-validation (script includes backup):** if the deck has at least one approved backup slide (from A7), the script MUST contain a `## Backup Slides` section heading after the main slide blocks, followed by one entry per backup slide (marked `(backup)` in its header). TIME CHECK markers MUST count only main slides. If the `## Backup Slides` heading is missing or backup slide content is absent, log `BUG-ST-round6-a-N`.
 - Each slide has `### Key talking points`, `### Transition`, `### Estimated speaking time`.
 - When `content_summary` contains a transition sentence, `### Transition` uses it (not the placeholder).
 - TIME CHECK markers appear (e.g., "TIME CHECK (halfway mark)").
@@ -381,7 +383,8 @@ Checks:
 - Contains keyboard-nav JS (arrow keys, Space, Enter, F for fullscreen).
 - Includes a slide counter.
 - Progressive-disclosure slide: builds appear in sequence (build_1 → build_2 → final).
-- Backup slide excluded.
+
+**BUG-AUDIT-65 BUG-ST-a-e3-present fix-validation (present includes backup):** the approved backup slide from A7 MUST appear in `output/presentation.html`. Between the last main slide and the first backup slide, a **blank separator slide** must be present (a `<div class="slide"><div class="slide-separator-inner" style="...background:<locked-color>...">` marker with no text content). The slide counter MUST reflect main + builds + 1 separator + backup count. If the backup slide is missing, or the separator slide is missing/has text content, log `BUG-ST-round6-a-N`.
 
 ### A13 — View
 

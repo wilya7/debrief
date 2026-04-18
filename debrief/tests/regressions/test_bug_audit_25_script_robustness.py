@@ -133,9 +133,14 @@ class TestScriptApprovedSlidePrecondition:
             utility_skills.main_script_generator(tmp_path)
         assert exc_info.value.code == 2
 
-    def test_backup_slides_excluded_from_script(
+    def test_backup_slides_appear_under_backup_section(
         self, tmp_path: Path,
     ) -> None:
+        """BUG-AUDIT-65 / REQ-SCRIPT-BACKUP-1 / BC-11.6b: script now
+        INCLUDES approved backup slides, under a '## Backup Slides'
+        section heading. Prior to BUG-AUDIT-65 this test asserted
+        exclusion — that behavior was wrong per the Round 5 UX review
+        (presenters need Q&A notes)."""
         _setup_script_project(
             tmp_path,
             slides=[
@@ -146,4 +151,8 @@ class TestScriptApprovedSlidePrecondition:
         utility_skills.main_script_generator(tmp_path)
         script = (tmp_path / "output" / _FOLDER / "script_v001.md").read_text()
         assert "live_1" in script
-        assert "backup_old" not in script
+        # BUG-AUDIT-65: backup slide now INCLUDED, under its own section.
+        assert "backup_old" in script
+        assert "## Backup Slides" in script
+        # Backup slide appears AFTER the main slide block.
+        assert script.index("backup_old") > script.index("live_1")

@@ -285,14 +285,47 @@ def main_view(query: str, project_root: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def build_presentation_html(project_root: Path) -> Optional[Path]:
-    """Write `output/presentation.html` from the current approved slides.
+def _blank_separator_body(project_root: Path) -> str:
+    """Return an HTML body snippet for a blank separator slide.
 
-    BUG-AUDIT-60 / BUG-ST-xp-1: split out of `main_present` so that
-    `/debrief:export` can refresh presentation.html after each re-export
-    without opening a browser. Returns the written path on success, or
-    None if preconditions fail (no project, no approved slides, no
-    slide HTML files). Does NOT call sys.exit.
+    BUG-AUDIT-65 / REQ-PRESENT-BACKUP-1: the separator is inserted
+    between the last main slide and the first backup slide in
+    /debrief:present. It's just the locked background color — no text,
+    no imagery, no heading. Gives the presenter a clean beat before Q&A
+    without signalling anything explicit to the audience.
+    """
+    import json as _json
+    bg = "#ffffff"
+    config_path = project_root / "style_config.json"
+    if config_path.is_file():
+        try:
+            cfg = _json.loads(config_path.read_text(encoding="utf-8"))
+            bg = cfg.get("colors", {}).get("background", bg)
+        except Exception:
+            pass  # keep default white — style config is optional for present
+    # Emit a simple filled frame. The outer .slide class (set by the
+    # caller in its own <div>) already handles sizing; we just nudge
+    # the background so the separator's surface matches the deck.
+    return (
+        f'<div class="slide-separator-inner" '
+        f'style="width:100%;height:100%;background:{bg};"></div>'
+    )
+
+
+def _collect_presentation_sequence(
+    project_root: Path,
+) -> Optional[list]:
+    """Build the ordered list of slide inputs for presentation.html.
+
+    Each item is either a Path (file-backed slide or build) or a str
+    (pre-rendered body HTML, used for the blank separator). Returns
+    None when the project is missing, no approved slides exist, or no
+    slide HTML files exist on disk. Does NOT call sys.exit.
+
+    BUG-AUDIT-65 / REQ-PRESENT-BACKUP-1: presenter surfaces ALWAYS
+    include approved backup slides. When both main and backup exist, a
+    blank separator slide is inserted between them. Main slides carry
+    progressive-disclosure build expansion; backup slides do not.
     """
     project_root = project_root.resolve()
     state_path = project_root / "deck_state.json"
@@ -300,43 +333,87 @@ def build_presentation_html(project_root: Path) -> Optional[Path]:
         return None
 
     deck_state = read_deck_state(project_root)
-    approved = [
+    main_slides = [
         s for s in deck_state.slides
         if s.status == "approved" and not s.backup
     ]
-    if not approved:
+    backup_slides = [
+        s for s in deck_state.slides
+        if s.status == "approved" and s.backup
+    ]
+    if not main_slides:
+        # BC-11.16-equivalent precondition for present: at least one
+        # main approved slide (backup-only decks are meaningless here).
         return None
 
     slides_dir = project_root / "slides"
-    slide_sequence: list[Path] = []
-    for slide in approved:
-        slug = slide.slug
+
+    def _expand_with_builds(slug: str) -> list[Path]:
+        items: list[Path] = []
         build_idx = 1
         while True:
             build_file = slides_dir / f"{slug}_build_{build_idx}.html"
             if build_file.is_file():
-                slide_sequence.append(build_file)
+                items.append(build_file)
                 build_idx += 1
             else:
                 break
         final_file = slides_dir / f"{slug}.html"
         if final_file.is_file():
-            slide_sequence.append(final_file)
+            items.append(final_file)
+        return items
 
-    if not slide_sequence:
+    main_sequence: list = []
+    for slide in main_slides:
+        main_sequence.extend(_expand_with_builds(slide.slug))
+
+    backup_sequence: list = []
+    for slide in backup_slides:
+        # Backup slides have no build expansion per BC-11.18.
+        final_file = slides_dir / f"{slide.slug}.html"
+        if final_file.is_file():
+            backup_sequence.append(final_file)
+
+    sequence: list = list(main_sequence)
+    if backup_sequence:
+        # BC-11.18: blank separator slide between main and backup.
+        sequence.append(_blank_separator_body(project_root))
+        sequence.extend(backup_sequence)
+
+    if not sequence:
         return None
+    return sequence
 
-    out_path = _write_presentation_html(project_root, slide_sequence)
-    return out_path
+
+def build_presentation_html(project_root: Path) -> Optional[Path]:
+    """Write `output/presentation.html` from the current approved slides.
+
+    BUG-AUDIT-60 / BUG-ST-xp-1: split out of `main_present` so that
+    `/debrief:export` can refresh presentation.html after each re-export
+    without opening a browser. Returns the written path on success, or
+    None if preconditions fail (no project, no approved main slides, no
+    slide HTML files). Does NOT call sys.exit.
+
+    BUG-AUDIT-65: backup slides are ALWAYS included at the end of the
+    sequence, preceded by a blank separator slide. See BC-11.18.
+    """
+    sequence = _collect_presentation_sequence(project_root.resolve())
+    if not sequence:
+        return None
+    return _write_presentation_html(project_root.resolve(), sequence)
 
 
 def main_present(project_root: Path) -> None:
     """Generate output/presentation.html and open in browser.
 
     BUG-AUDIT-50: browser-based full-screen presentation mode.
-    Reads approved non-backup slides, detects progressive disclosure
-    builds, generates a self-contained HTML file with keyboard
-    navigation, and opens it in the default browser.
+    BUG-AUDIT-65 / REQ-PRESENT-BACKUP-1: reads every approved slide
+    (both main and backup). Main slides carry progressive-disclosure
+    build expansion; backup slides are appended terminal. When the
+    deck has both main and backup, a blank separator slide (background
+    color only) is inserted between them per BC-11.18. Generates a
+    self-contained HTML file with keyboard navigation and opens it in
+    the default browser.
     """
     project_root = project_root.resolve()
     # Preconditions
@@ -351,11 +428,11 @@ def main_present(project_root: Path) -> None:
         sys.exit(2)
 
     deck_state = read_deck_state(project_root)
-    approved = [
+    main_approved = [
         s for s in deck_state.slides
         if s.status == "approved" and not s.backup
     ]
-    if not approved:
+    if not main_approved:
         print(
             "Cannot present: no approved non-backup slides. "
             "Author slides with '/debrief:slide' and approve at "
@@ -364,55 +441,49 @@ def main_present(project_root: Path) -> None:
         )
         sys.exit(2)
 
-    slides_dir = project_root / "slides"
-
-    # Build the slide sequence including progressive disclosure builds
-    slide_sequence: list[Path] = []
-    for slide in approved:
-        slug = slide.slug
-        # Check for build files: slug_build_1.html, slug_build_2.html, ...
-        build_idx = 1
-        while True:
-            build_file = slides_dir / f"{slug}_build_{build_idx}.html"
-            if build_file.is_file():
-                slide_sequence.append(build_file)
-                build_idx += 1
-            else:
-                break
-        # The final complete slide
-        final_file = slides_dir / f"{slug}.html"
-        if final_file.is_file():
-            slide_sequence.append(final_file)
-
-    if not slide_sequence:
+    sequence = _collect_presentation_sequence(project_root)
+    if not sequence:
         print(
             "Cannot present: no slide HTML files found in slides/.",
             file=sys.stderr,
         )
         sys.exit(2)
 
-    out_path = _write_presentation_html(project_root, slide_sequence)
+    out_path = _write_presentation_html(project_root, sequence)
     webbrowser.open(out_path.as_uri())
     print(str(out_path), file=sys.stderr)
 
 
-def _write_presentation_html(project_root: Path, slide_sequence: list[Path]) -> Path:
+def _write_presentation_html(
+    project_root: Path,
+    slide_sequence: "list[Any]",
+) -> Path:
     """Shared writer used by `main_present` and `build_presentation_html`.
     Returns the path written. Kept private — callers should use one of the
     two public entry points.
+
+    Each item in ``slide_sequence`` is either a ``Path`` to a slide HTML
+    file (the body is extracted) or a ``str`` body snippet already rendered
+    (used for the blank separator per BC-11.18 / BUG-AUDIT-65). Strings are
+    embedded verbatim inside a ``<div class="slide">``.
     """
     # Read each slide's body content
     slide_bodies: list[str] = []
-    for slide_path in slide_sequence:
-        html = slide_path.read_text(encoding="utf-8")
-        import re as _re
-        body_match = _re.search(
-            r"<body[^>]*>(.*?)</body>", html, _re.DOTALL | _re.IGNORECASE
-        )
-        if body_match:
-            slide_bodies.append(body_match.group(1))
+    for item in slide_sequence:
+        if isinstance(item, Path):
+            html = item.read_text(encoding="utf-8")
+            import re as _re
+            body_match = _re.search(
+                r"<body[^>]*>(.*?)</body>", html, _re.DOTALL | _re.IGNORECASE
+            )
+            if body_match:
+                slide_bodies.append(body_match.group(1))
+            else:
+                slide_bodies.append(html)
         else:
-            slide_bodies.append(html)
+            # Pre-rendered body (e.g., blank separator from
+            # _blank_separator_body). Embed verbatim.
+            slide_bodies.append(str(item))
 
     css_path = project_root / "assets" / "style.css"
     css_content = ""
@@ -600,6 +671,7 @@ def generate_script_content(
     slides: list[Any],
     folder: str,
     total_duration_minutes: float | None = None,
+    backup_slides: list[Any] | None = None,
 ) -> str:
     """Produce script markdown per REQ-SCRIPT-3.
 
@@ -610,6 +682,12 @@ def generate_script_content(
     content_summary instead of using hardcoded placeholders.
     BUG-AUDIT-59 / BUG-ST-13: Inserts time-pacing checkpoints when
     total_duration_minutes is known.
+    BUG-AUDIT-65 / REQ-SCRIPT-BACKUP-1 / BC-11.6b: when ``backup_slides``
+    is a non-empty list, a ``## Backup Slides`` section is emitted after
+    the main slide blocks, followed by one block per backup slide using
+    the same per-slide format. Backup slides are NOT counted in the
+    per-slide time computation or the TIME CHECK markers (those apply
+    to the main talk only; backups are for Q&A and are not paced).
     """
     lines: list[str] = []
     lines.append("# Speaker Script")
@@ -643,7 +721,47 @@ def generate_script_content(
                 f"At ~{target_time:.0f} min you should be on this slide."
             )
 
+    def _emit_slide_block(slide: Any, header: str, is_last_main: bool) -> None:
+        lines.append(header)
+        lines.append("")
+        lines.append(f"**Slug:** `{slide.slug}`")
+        lines.append("")
+        lines.append("### Key talking points")
+        lines.append("")
+        transition_text: str | None = getattr(slide, "transition", None)
+        if slide.content_summary:
+            talking_points = slide.content_summary
+            if transition_text is None:
+                talking_points, extracted = _extract_transition(
+                    slide.content_summary
+                )
+                if extracted is not None:
+                    transition_text = extracted
+            lines.append(f"- {talking_points}")
+        else:
+            lines.append("- *(No content summary available.)*")
+        lines.append("")
+        lines.append("### Transition")
+        lines.append("")
+        if transition_text:
+            lines.append(transition_text)
+        elif is_last_main:
+            lines.append("Conclude and invite questions.")
+        else:
+            lines.append("Lead into the next section.")
+        lines.append("")
+        lines.append("### Estimated speaking time")
+        lines.append("")
+        if per_slide is not None:
+            lines.append(f"~{per_slide:.1f} minutes")
+        else:
+            lines.append("~1–2 minutes")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
     for i, slide in enumerate(slides):
+        # Per-slide header (main slide)
         lines.append(f"## Slide {i + 1}: {slide.title}")
         lines.append("")
         lines.append(f"**Slug:** `{slide.slug}`")
@@ -697,6 +815,25 @@ def generate_script_content(
         lines.append("---")
         lines.append("")
 
+    # BUG-AUDIT-65 / BC-11.6b: emit backup slides under a clearly
+    # labelled section. No time pacing (they're Q&A-only, not paced).
+    if backup_slides:
+        lines.append("## Backup Slides")
+        lines.append("")
+        lines.append(
+            "The following slides are available during Q&A. They are NOT "
+            "part of the main talk timing."
+        )
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+        for j, slide in enumerate(backup_slides):
+            _emit_slide_block(
+                slide,
+                header=f"## Slide {n + j + 1} (backup): {slide.title}",
+                is_last_main=False,
+            )
+
     return "\n".join(lines)
 
 
@@ -726,7 +863,11 @@ def main_script_generator(project_root: Path) -> None:
         )
         sys.exit(1)
 
-    # BUG-AUDIT-25: precondition — approved non-backup slides
+    # BUG-AUDIT-25: precondition — approved non-backup slides.
+    # BUG-AUDIT-65 / BC-11.6b: also collect approved backup slides for
+    # inclusion in a trailing "## Backup Slides" section. Precondition
+    # is unchanged (at least one main slide); backup slides are added
+    # to the script but do not satisfy the precondition on their own.
     approved = [
         s for s in deck_state.slides
         if s.status == "approved" and not s.backup
@@ -739,6 +880,11 @@ def main_script_generator(project_root: Path) -> None:
             file=sys.stderr,
         )
         sys.exit(2)
+
+    approved_backup = [
+        s for s in deck_state.slides
+        if s.status == "approved" and s.backup
+    ]
 
     # BC-11.6: use most recent (last) presentation folder
     pres = deck_state.presentations[-1]
@@ -771,7 +917,11 @@ def main_script_generator(project_root: Path) -> None:
     total_duration = _parse_duration_from_brief(deck_brief_content)
 
     content = generate_script_content(
-        deck_brief_content, approved, folder, total_duration
+        deck_brief_content,
+        approved,
+        folder,
+        total_duration,
+        backup_slides=approved_backup or None,
     )
 
     out_path = out_dir / script_filename
