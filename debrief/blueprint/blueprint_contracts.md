@@ -552,7 +552,24 @@ The dispatch branch `elif subcommand == "doctor":` in `main_new()` parses `--pro
 
 Destructive remediation (deleting orphan HTML files or orphan state records) is OUT OF SCOPE for this contract — those decisions require explicit user intent and are outside the mechanical drift detector's role. See REQ-DOCTOR-1 and BUG-AUDIT-75.
 
+**BC-3.17 `list_commands` + commands subcommand (BUG-AUDIT-76 / REQ-CONSULT-CMD-SURFACE-1).** `src/unit_3/launcher.py` MUST provide two public helpers and MUST wire a `commands` subcommand into `main_new()`'s dispatch table:
+
+- `list_commands(plugin_root: Path) -> dict[str, str]` — pure. Scans `<plugin_root>/commands/*.md`, opens each file, locates the first non-blank line (which MUST be a heading of the form `# /debrief:<slug>`; non-matching files are skipped), walks past blank lines to the first non-blank description line, accumulates description text up to the next blank line joining multi-line paragraphs with a single space, and records the result in the returned dict keyed by the slug extracted from the heading. Files with a heading but no description are skipped (not emitted with empty string). Missing `commands/` directory yields `{}`. The function MUST be idempotent and read-only.
+- `main_commands(plugin_root: Path) -> None` — CLI orchestrator. Calls `list_commands` and prints the result as pretty-printed JSON (indented 2 spaces, keys sorted) to stdout. Always exits 0 — enumeration is a read-only operation and any caller is free to consume the result.
+
+The dispatch branch `elif subcommand == "commands":` in `main_new()` parses `--plugin-root` (type=Path, default=the `plugin_root` already derived at the top of `main_new()` from `CLAUDE_PLUGIN_ROOT` or the workspace root) from `sys.argv[2:]` via a local `argparse.ArgumentParser`. The subcommand MUST appear in the usage-line string printed by the catch-all `else` branch so users discover it when they type an unknown subcommand.
+
+Regression tests in `tests/regressions/test_bug_audit_76_command_surface.py` enforce: the helper returns a non-empty dict on the real plugin commands directory; every known command (export, handout, script, slide, style, view, save, restore, quit, present) appears with a non-empty description; each description does NOT contain the heading marker `/debrief:` (so the parser does not confuse heading with description); missing directory returns `{}`; the CLI exits 0 and the stdout JSON round-trips. See REQ-CONSULT-CMD-SURFACE-1 and BUG-AUDIT-76.
+
 **BC-5.17 Slide-record write-through (BUG-AUDIT-75 / REQ-CONSULT-SLIDE-WT-1).** `agents/consultant.md` MUST contain a Responsibilities bullet stating that after every GREEN QA decision from the red-green cycle, the consultant writes the `SlideRecord` to `deck_state.json` in the SAME turn via `python -m debrief.debrief_state update_slide …`. Batching across gates or deferring to end-of-group is forbidden. This parallels BC-5.16's `deck_brief.md` write-through for the same reason: context compaction can fire between a slide-maker dispatch and a later batched state-write turn, leaving the HTML on disk with no matching record.
+
+**BC-5.18 Consultant command-surface awareness (BUG-AUDIT-76 / REQ-CONSULT-CMD-SURFACE-1).** `agents/consultant.md` MUST contain a dedicated section titled `## Command Surface Awareness` placed between `## State Drift Audit` and `## Deck Brief Maintenance` so the three compaction-recovery obligations appear as a trio. The section MUST:
+
+1. **Name the failure mode.** Denying a feature the installed plugin actually ships (e.g., claiming Debrief has no HTML export when `/debrief:present` produces exactly that) erodes user trust every time it happens.
+2. **Cite the live enumeration command.** The consultant-facing invocation MUST be `python -m debrief.launcher commands --plugin-root "${CLAUDE_PLUGIN_ROOT}"`. Alternative invocations (shell-globbing `commands/*.md` directly, reading individual files with Read) are strictly worse and MUST NOT be presented as equivalent.
+3. **List three obligations:** (a) on-session-start invocation right after the drift audit and the brief read; (b) post-compaction re-inject paired with BC-5.16's post-compaction audit; (c) a pre-reply check before any feature denial (*"Debrief does not have X"*) — consult the live enumeration or the cached same-session result first. A reply denying a feature without the check is a protocol violation.
+
+The hand-maintained `## Command Dispatch Menu` table in the agent card is RETAINED — it carries precondition and wrong-context guidance that the live enumeration does not replace — but the new section MUST make clear that the table is a backstop for dispatch, NOT the source of truth about which commands exist. See REQ-CONSULT-CMD-SURFACE-1 and BUG-AUDIT-76.
 
 `agents/consultant.md` MUST also contain a dedicated section titled `## State Drift Audit` codifying three on-session-start / post-compaction obligations:
 

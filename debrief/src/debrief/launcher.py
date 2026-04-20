@@ -934,6 +934,105 @@ def main_doctor(project_root: Path, *, reconstruct: bool = False) -> None:
 
 
 # ---------------------------------------------------------------------------
+# debrief commands — live command-surface enumeration
+# (BUG-AUDIT-76 / BC-3.17 / REQ-CONSULT-CMD-SURFACE-1).
+#
+# Purpose: the consultant needs a machine-readable list of installed
+# plugin commands so its dispatch-related replies stay grounded in the
+# actual surface, not in the hand-maintained table in its agent card.
+# After context compaction, the consultant's in-context memory is
+# lossy; re-invoking this enumeration makes "does Debrief have X?"
+# answerable from the live filesystem instead of recall.
+# ---------------------------------------------------------------------------
+
+
+def list_commands(plugin_root: Path) -> dict[str, str]:
+    """Enumerate installed plugin commands under ``<plugin_root>/commands/``.
+
+    Returns a dict keyed by command slug (file stem) with the
+    one-paragraph description that sits immediately below the
+    ``# /debrief:<slug>`` heading. Parsing rule:
+
+    * Read the file as UTF-8 text.
+    * Locate the first non-blank line. It MUST be a heading of the
+      form ``# /debrief:<slug>``; if not, the file is skipped.
+    * Skip subsequent blank lines.
+    * The first non-blank line after the heading, up to the next
+      blank line, is the description. Multi-line paragraphs are
+      joined with a single space.
+
+    The function is pure and idempotent. An empty or missing
+    ``<plugin_root>/commands/`` directory yields ``{}``.
+
+    See BC-3.17 and BUG-AUDIT-76.
+    """
+    commands_dir = plugin_root / "commands"
+    if not commands_dir.is_dir():
+        return {}
+
+    result: dict[str, str] = {}
+    for path in sorted(commands_dir.iterdir()):
+        if not path.is_file() or path.suffix.lower() != ".md":
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+
+        lines = text.splitlines()
+        # Find the first non-blank line; it must be the heading.
+        idx = 0
+        while idx < len(lines) and not lines[idx].strip():
+            idx += 1
+        if idx >= len(lines):
+            continue
+        heading = lines[idx].strip()
+        if not heading.startswith("# /debrief:"):
+            continue
+        # Extract slug from heading (prefer the heading over file stem
+        # so a future rename of file-vs-heading mismatch is caught by
+        # regression, not silently smoothed).
+        slug_from_heading = heading[len("# /debrief:"):].strip()
+        # Walk past blank lines to the first description line.
+        idx += 1
+        while idx < len(lines) and not lines[idx].strip():
+            idx += 1
+        # Accumulate description until next blank line.
+        desc_parts: list[str] = []
+        while idx < len(lines) and lines[idx].strip():
+            desc_parts.append(lines[idx].strip())
+            idx += 1
+        description = " ".join(desc_parts).strip()
+        if not description:
+            # Heading without a description is a malformed doc; skip
+            # rather than return an empty-value entry.
+            continue
+        # Key by slug from heading (authoritative per the command-file
+        # convention); fall back to file stem if heading slug somehow
+        # empty.
+        slug = slug_from_heading or path.stem
+        result[slug] = description
+    return result
+
+
+def main_commands(plugin_root: Path) -> None:
+    """Entry point for ``python -m debrief.launcher commands
+    [--plugin-root PATH]``.
+
+    Prints a pretty-printed JSON object keyed by command slug with
+    the one-paragraph description as the value. Empty dict if no
+    commands directory exists. Always exits 0 — this is a read-only
+    enumeration that any caller is free to consume.
+
+    See BC-3.17 and BUG-AUDIT-76.
+    """
+    plugin_root = plugin_root.resolve()
+    commands = list_commands(plugin_root)
+    print(json.dumps(commands, indent=2, sort_keys=True))
+    sys.exit(0)
+
+
+# ---------------------------------------------------------------------------
 # Entry point — spec §24.4 steps 8 & 9 dispatch (BC-3.12).
 # ---------------------------------------------------------------------------
 
@@ -978,6 +1077,34 @@ def main_new() -> None:
         # any caller that invoked it directly. New code should call
         # `ensure_project` instead, which is a strict superset.
         ensure_project_settings(project_root, plugin_root)
+    elif subcommand == "commands":
+        # BC-3.17 / BUG-AUDIT-76: live enumeration of installed plugin
+        # commands. Parses --plugin-root; default resolves from the
+        # CLAUDE_PLUGIN_ROOT env var (set by Claude Code at runtime)
+        # falling back to the already-derived `plugin_root` at the top
+        # of main_new().
+        import argparse as _ap
+
+        _parser = _ap.ArgumentParser(
+            prog="debrief.launcher commands",
+            description=(
+                "Enumerate installed plugin commands from "
+                "<plugin_root>/commands/*.md. Prints a JSON object "
+                "keyed by command slug with the one-paragraph "
+                "description as the value."
+            ),
+        )
+        _parser.add_argument(
+            "--plugin-root",
+            type=Path,
+            default=plugin_root,
+            help=(
+                "Plugin root directory (default: CLAUDE_PLUGIN_ROOT "
+                "env var, else the workspace root)."
+            ),
+        )
+        _args = _parser.parse_args(sys.argv[2:])
+        main_commands(_args.plugin_root)
     elif subcommand == "doctor":
         # BC-3.15 / BUG-AUDIT-75: filesystem <-> deck_state drift
         # reconciler. Parses --project-root and --reconstruct via a
@@ -1017,7 +1144,8 @@ def main_new() -> None:
         print(f"Unknown subcommand: {subcommand!r}", file=sys.stderr)
         print(
             "Usage: python -m debrief.launcher [new|preflight|"
-            "ensure_project|ensure_settings|doctor] [project_root]",
+            "ensure_project|ensure_settings|doctor|commands] "
+            "[project_root]",
             file=sys.stderr,
         )
         sys.exit(1)

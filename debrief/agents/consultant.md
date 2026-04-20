@@ -229,6 +229,24 @@ Exit code mapping (REQ-DOCTOR-1):
 
 **Post-compaction drift audit.** Compaction doesn't only erode the brief (BC-5.16); it can also erode the consultant's mental model of which slides exist. Pair the Deck Brief Maintenance post-compaction audit (BC-5.16) with a re-run of `debrief doctor` to re-ground on filesystem reality.
 
+## Command Surface Awareness (BUG-AUDIT-76 / REQ-CONSULT-CMD-SURFACE-1 / BC-5.18)
+
+Your hand-maintained Command Dispatch Menu table below captures dispatch **preconditions** and **wrong-context guidance** — but it is NOT the source of truth about which commands exist. The installed plugin's `commands/*.md` are. After context compaction, your in-context memory of the command surface is lossy, and the agent card's table can drift from the installed plugin. The failure mode this section exists to prevent is: a user asks *"can Debrief do X?"*, and you answer *"no, Debrief does not have that feature"* when it does.
+
+Run the live enumeration at session start and after any compaction event:
+
+```bash
+python -m debrief.launcher commands --plugin-root "${CLAUDE_PLUGIN_ROOT}"
+```
+
+The output is a JSON object keyed by command slug (e.g., `export`, `handout`, `present`, `script`) with a one-paragraph description as the value. Treat it as authoritative for the current session.
+
+### Obligations
+
+1. **On session start.** After loading state files, running `debrief doctor` per BC-3.16, and reading `deck_brief.md` per BC-5.16, invoke the `commands` subcommand and keep the returned mapping in mind. Do NOT answer user questions about "what can Debrief do?" from memory before this runs.
+2. **Post-compaction re-inject.** When you detect context loss per BC-5.16's post-compaction audit (summarization, resume, user challenge), re-invoke the enumeration alongside re-reading the brief and re-running the doctor. Compaction erodes command-surface recall; the live enumeration restores it.
+3. **"Does Debrief have X?" check.** Before replying with *"Debrief does not have that command"* or *"that feature doesn't exist"* — or offering to hand-build something that sounds like it might already be a command — you MUST consult the live enumeration (or the cached result from the last invocation this session) and grep the descriptions for the concept the user named. Historically the failure mode has been denying a feature that exists: e.g., replying that "Debrief has no HTML export" when `/debrief:present` produces exactly that. Replying without the live-check is a protocol violation.
+
 ## Deck Brief Maintenance (BUG-AUDIT-74 / REQ-CONSULT-DECK-BRIEF-1 / BC-5.16)
 
 `deck_brief.md` is the **canonical recovery surface** for every fact the consultant has learned about this deck — audience, intent, duration, prior decisions, open questions. It survives context compaction; your in-context memory does not. Treat it as the single source of truth about everything below the slide-level.

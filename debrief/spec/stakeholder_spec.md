@@ -7351,4 +7351,38 @@ Regression tests cover: `detect_slide_state_drift` on clean / orphan-file / orph
 
 ---
 
+### BUG-AUDIT-76: Consultant loses command-surface awareness after compaction — denies features the installed plugin actually ships
+
+**Symptom (MEDIUM-HIGH, user-trust regression).** In the documented Apr 2026 lab-meeting deck, the user asked *"how do I export the presentation as an HTML file?"* and the consultant replied *"Debrief does not have a built-in HTML export command"* and offered to hand-build a bundler. In fact, `/debrief:present` exists and does exactly this — it generates `output/presentation.html` as a single self-contained file with arrow-key navigation. The user had to remind the consultant that the command existed. Every false-negative-about-features is a direct hit on the product's thesis ("SVP teaches you how to express intent") — the user ends up teaching the tool about itself.
+
+**Root cause.** The consultant's session-start protocol reads state files but does NOT enumerate the commands directory at `${CLAUDE_PLUGIN_ROOT}/commands/`. After context compaction the consultant has only its in-context memory of what commands exist, which is lossy. The agent card (`agents/consultant.md`) carries a hand-maintained `## Command Dispatch Menu` table, but that table captures preconditions and wrong-context guidance — it is not the authoritative list of installed commands, and it can drift from the installed plugin as commands are renamed or added (BUG-AUDIT-9's `debrief_<name>.md` → `<name>.md` rename was the last such drift event).
+
+The failure mode is a compound of two pre-existing conditions that BUG-AUDIT-76 closes together:
+
+1. There is no mechanical helper that returns the live command surface — the consultant would have to list files and read each one to check whether a feature exists, which is N Read calls per question.
+2. There is no discipline rule that says *"before you say 'Debrief does not have X', check the live surface"*. The absence of the rule plus the absence of the helper compound to the surface-amnesia failure.
+
+**Detection method.** Ask the consultant about a feature it has recently been distracted from (easy after compaction): *"does Debrief have an HTML export?"*, *"can I save a snapshot?"*, *"is there a way to generate a handout?"*. If any true feature is denied, the command-surface awareness is absent. Independently, grep `agents/consultant.md` for `python -m debrief.launcher commands` — absence signals the live-enumeration invocation is not wired into the consultant protocol.
+
+**Fix summary.** Mechanical helper + consultant discipline, same shape as BUG-AUDIT-75's doctor + drift-audit pair.
+
+1. **`debrief commands` subcommand** (BC-3.17 / REQ-CONSULT-CMD-SURFACE-1 backs this). New CLI subcommand of `python -m debrief.launcher`. Pure helper `list_commands(plugin_root)` returns a dict mapping command slug to the one-paragraph description immediately below the `# /debrief:<slug>` heading. The CLI entry prints pretty-printed JSON to stdout and exits 0. The consultant reads this JSON as the authoritative list of installed commands for the current session.
+
+2. **Consultant command-surface discipline** (new `## Command Surface Awareness` section in `agents/consultant.md`, placed between `## State Drift Audit` and `## Deck Brief Maintenance` so the three compaction-recovery obligations sit as a trio). Three rules:
+   - **On session start,** run the enumeration right after the drift audit and the brief read.
+   - **Post-compaction re-inject** when context-loss signals fire.
+   - **"Does Debrief have X?" check** — before replying with any denial of a feature, consult the live enumeration (or the cached result from the last invocation this session) and grep for the concept the user named. Denial without the live check is a protocol violation.
+
+The hand-maintained `## Command Dispatch Menu` table in the agent card is RETAINED — it carries precondition guidance that the live enumeration doesn't replace. The new section explicitly states the table is a backstop for dispatch, NOT a source of truth about which commands exist.
+
+Regression tests exercise `list_commands` against real command files, the CLI exit-0 contract, and the agent-card contents.
+
+**Normative requirements:**
+
+- **REQ-CONSULT-CMD-SURFACE-1:** The plugin MUST ship a `commands` subcommand under `python -m debrief.launcher` that enumerates installed commands at `<plugin_root>/commands/*.md` and prints a JSON object keyed by slug with the one-paragraph description as the value. The consultant MUST invoke this subcommand at every session start and after every detected context-compaction event, and MUST consult the result before replying *"Debrief does not have X"* for any feature X. Replying with a feature denial without first consulting the live enumeration is a protocol violation.
+
+**Prior-Art for Rebuild:** "agent in-context memory about the tool it runs inside is lossy by construction." Any agent that sometimes says *"I don't have that capability"* needs a mechanical way to check the live capability surface before the denial is emitted — the denial's cost is a user who stops trusting the tool, which compounds across subsequent denials even when correct. Pair the denial-class reply with a live-surface check, the same way the drift-class reply (BUG-AUDIT-75) is paired with a filesystem-audit check.
+
+---
+
 *End of Debrief Stakeholder Specification v1.1*
