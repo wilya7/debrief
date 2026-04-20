@@ -7262,4 +7262,47 @@ No blueprint change — BC-11.15, BC-11.15a, BC-11.16, BC-11.16a, BC-11.17, and 
 
 ---
 
+### BUG-AUDIT-74: `deck_brief.md` is nominally a living document but lacks canonical structure, machine-readable audience roster, on-session-start read, and post-compaction audit
+
+**Symptom (HIGH, orchestration regression; the cost accrues every long session).** In the documented Apr 2026 lab-meeting deck, the consultant lost audience context after a context-compaction event. Alice had been introduced during the briefing dialog as the lab's engineer in Rome (attending on Teams); several turns later, when she became relevant to a backup slide, the consultant had forgotten her existence and had to re-ask the user. `deck_brief.md` was already the prescribed recovery surface (REQ-CONSULT-2, REQ-CONSULT-4) but four structural gaps made it unreliable:
+
+1. **No canonical section structure** beyond `## Content Signals` (REQ-CONSULT-8). The consultant wrote the brief in whatever shape seemed natural turn-by-turn — facts about audience, intent, and prior decisions ended up scattered or omitted.
+2. **No machine-readable audience roster schema.** When the consultant later wanted to enumerate named attendees, it had to re-parse prose — and LLMs are bad at exhaustive prose enumeration.
+3. **No "on session start" mandate to read `deck_brief.md` in full.** The consultant's session-start protocol (per project `CLAUDE.md` + `agents/consultant.md`) read `deck_state.json` and `debrief_state.json` but did NOT require a full brief read. After compaction, the in-context memory was lossy and the brief was never consulted to repair the gaps.
+4. **No write-through discipline.** The spec implied the brief was produced at the end of discovery; individual facts surfaced mid-dialog were held in conversation memory until a "write the brief" turn. When compaction fired before that turn, those facts were lost.
+
+The combined effect was a spec-blessed living document that lived in name only — it was never the authoritative recovery source in practice because the consultant didn't have the discipline (or the prescribed discipline) to make it one.
+
+**Root cause.** REQ-CONSULT-2 and REQ-CONSULT-4 specified the document's purpose but not its shape, its timing, or its recovery-read protocol. Without a canonical section list, the agent improvised. Without a write-through rule, the agent batched. Without an on-session-start mandate, the agent relied on its fallible in-context memory. Without a post-compaction audit rule, the agent silently proceeded with degraded knowledge until the user caught a hallucination or an omission.
+
+This is the same pattern as BUG-AUDIT-69's filename contract: a naming rule specified agent-side but not code-side is a contract in appearance only. Here a discipline rule specified as "living document" but not with enforceable timing is a discipline in appearance only. The fix is to make each obligation explicit, list the required sections, name the YAML schema for the audience roster, and write the post-compaction audit as a hard rule.
+
+**Detection method.** A long session with multiple rounds of discovery + slide production. At any point after a context-compaction event, ask the consultant to enumerate the named audience members from the briefing. If the answer omits names that were clearly established in the dialog (and that still exist in `deck_brief.md`), the consultant is not consulting its own recovery surface. Independently, grep `agents/consultant.md` for "on session start" plus "deck_brief.md" plus "read in full" — all three phrases must appear in the mandatory-read rule; absence signals the discipline is not wired in.
+
+**Fix summary.** No code change. Fix is spec + blueprint + agent-prompt discipline, mirroring the "orchestration hardening" shape of BUG-AUDIT-73 but for state rather than for a dispatch dialog.
+
+1. **Canonical deck-brief structure** (REQ-CONSULT-DECK-BRIEF-1): fixed section list — `## Audience` (with nested `### Roster` YAML block), `## Room composition`, `## Intent`, `## Duration`, `## Prior decisions`, `## Open questions`, `## Content Signals`. Missing sections during discovery are allowed (they're added as information surfaces); extra sections are forbidden so the file shape is closed.
+2. **Machine-readable audience roster YAML schema** inside `## Audience`: a fenced ` ```yaml ` block with an `audience:` list whose entries have required `name` and `role` keys plus recommended `location`, `attendance`, `notes` keys.
+3. **Write-through rule:** every confirmed fact is appended to the matching section in the SAME turn it is learned — no batching until end-of-discovery.
+4. **On-session-start mandatory read:** after loading `archetypes.json` and `deck_state.json`, the consultant MUST read `deck_brief.md` in full regardless of `sub_phase`.
+5. **Post-compaction audit rule:** when the consultant detects it has lost recent facts (summarization event, resume, inability-to-recall, user challenge), it MUST stop, re-read the brief, diff against in-context memory, and surface the loss to the user explicitly. Silent proceeding with degraded state is forbidden.
+
+The entire fix lives in `agents/consultant.md`'s new `## Deck Brief Maintenance` section (placed before `## Command Dispatch Menu` so it's impossible to miss when scanning). The spec clause (REQ-CONSULT-DECK-BRIEF-1) and the blueprint contract (BC-5.16) codify the rule so future edits that drop any of the five obligations fail a doc regression test.
+
+Regression tests (doc-regression style, mirroring BUG-AUDIT-73): `agents/consultant.md` contains the new section; all seven canonical headings appear in the specified order inside the section's example block; the YAML audience-roster example carries the required keys; the three discipline rules (write-through, on-session-start, post-compaction audit) each appear with specific marker phrasings. Spec contains `REQ-CONSULT-DECK-BRIEF-1` and `BUG-AUDIT-74`. Blueprint contains `BC-5.16`.
+
+**Normative requirements:**
+
+- **REQ-CONSULT-DECK-BRIEF-1:** `deck_brief.md` MUST be produced and maintained by the consultant in the canonical structure defined in `agents/consultant.md`'s Deck Brief Maintenance section. The following obligations MUST be enforced:
+  - The section set is `## Audience` (with `### Roster` YAML sub-block using required keys `name`, `role`), `## Room composition`, `## Intent`, `## Duration`, `## Prior decisions`, `## Open questions`, `## Content Signals`. These are the only permitted top-level sections; they MAY be absent during discovery if their content has not yet been established, but MUST NOT be replaced with alternative headings.
+  - **Write-through:** every confirmed new fact about audience, room, intent, duration, or a decision MUST be appended to the matching section in the same turn it is learned.
+  - **On-session-start:** after loading `archetypes.json` and `deck_state.json`, the consultant MUST read `deck_brief.md` in full if the file exists, regardless of `sub_phase`.
+  - **Post-compaction audit:** when the consultant detects context loss (summarization, resume, failure to recall a fact the user implies should be known), the consultant MUST re-read `deck_brief.md`, diff against in-context memory, surface the loss to the user explicitly, and proceed only from the brief's authoritative contents. Silent proceeding with degraded state is forbidden.
+
+  REQ-CONSULT-4 (compaction handling) continues to hold; REQ-CONSULT-DECK-BRIEF-1's post-compaction audit clause is its operational refinement.
+
+**Prior-Art for Rebuild:** "living document" as a spec phrase is insufficient — it names the lifecycle (updated over time) but not the structure (what goes where), the timing (when updates happen), or the recovery protocol (when the document is re-read). A document whose role is to survive context loss MUST have a section contract tight enough that a recipient can locate any fact deterministically, a write-through rule tight enough that no fact can be "in transit" between conversation memory and disk when compaction fires, and an explicit re-read obligation attached to the events that produce context loss. Any recovery surface specified without all three is a recovery surface in name only.
+
+---
+
 *End of Debrief Stakeholder Specification v1.1*

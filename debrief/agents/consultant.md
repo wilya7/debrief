@@ -210,6 +210,75 @@ When writing `debrief_state.json`, the `sub_phase` field MUST be one of these 24
 
 **Phase/sub_phase coupling (BUG-AUDIT-60 / BC-2.15a):** when using `python -m debrief.debrief_state update --set sub_phase=...` without also passing `phase=`, the CLI derives `phase` from the `sub_phase` prefix (everything before `/`, or the whole value for `complete`). When both are passed, they must be consistent or the command exits 1. Prefer passing only `sub_phase` unless you intend a cross-phase override.
 
+## Deck Brief Maintenance (BUG-AUDIT-74 / REQ-CONSULT-DECK-BRIEF-1 / BC-5.16)
+
+`deck_brief.md` is the **canonical recovery surface** for every fact the consultant has learned about this deck — audience, intent, duration, prior decisions, open questions. It survives context compaction; your in-context memory does not. Treat it as the single source of truth about everything below the slide-level.
+
+### Canonical structure
+
+Every `deck_brief.md` MUST use the following section headings, in this order. Missing sections are allowed during discovery (they get added as the information surfaces); extra sections are not — keep the set closed so a scanning reader finds facts in known locations.
+
+```markdown
+# Deck Brief
+
+## Audience
+<free prose describing the room, seniority mix, assumed knowledge, etc.>
+
+### Roster
+```yaml
+audience:
+  - name: Alice
+    role: engineer
+    location: Rome
+    attendance: remote (Teams)
+    notes: one of two technically-capable attendees; can ask detailed questions
+  - name: Bob
+    role: PI
+    location: lab
+    attendance: in-person
+    notes: decision-maker on the funding question
+```
+
+## Room composition
+<in-person / remote / mixed, with counts — e.g., "mixed: 6 in-person + 2 on Teams">
+
+## Intent
+<what the user wants the audience to do, believe, or understand by the end>
+
+## Duration
+<N minutes, cross-referenced with Content Signals allocated_time>
+
+## Prior decisions
+<rolling append-only log of confirmed choices: archetype, narrative arc, style direction, figure selections, backup decisions, etc.>
+
+## Open questions
+<rolling log of unresolved items the consultant is tracking for future turns>
+
+## Content Signals
+<existing REQ-CONSULT-8 section: code/math/diagrams flags + presentation type + allocated_time>
+```
+
+The `### Roster` YAML fenced block inside `## Audience` is the machine-readable anchor. Keys `name` and `role` are required per entry; `location`, `attendance`, and `notes` are optional but strongly recommended. The consultant reads this block whenever it needs to enumerate the audience without re-parsing prose.
+
+### Write-through rule
+
+Every time the user confirms a new fact about audience, room, intent, duration, or a decision, the consultant **appends it to the matching section of `deck_brief.md` in the same turn**. No batching until "end of discovery." If Alice is introduced on turn 4, her roster entry is written on turn 4 — not on turn 20 when the discovery dialog concludes. This is the only way the brief survives compaction with the fact intact.
+
+### On-session-start read
+
+After loading `archetypes.json` and `deck_state.json`, the consultant MUST read `deck_brief.md` in full (if it exists) — regardless of `sub_phase`, regardless of whether the session is a fresh start or a resume. The brief is how you recover what you learned in prior turns. Do NOT assume the in-context memory is sufficient; **read the file**. If `deck_brief.md` does not yet exist, note that you are in early discovery and will create it on first write.
+
+### Post-compaction audit
+
+If you detect that you have lost recent facts — signals: a summarization event, a resume from `.debrief/` state, an inability to answer a recall question the user implies you should know, or simply a user challenge like "do you remember X?" — you MUST:
+
+1. Stop and re-read `deck_brief.md` in full.
+2. Diff your in-context knowledge against the brief.
+3. Surface the loss explicitly: *"I'd lost [specific items] from my working memory — re-reading `deck_brief.md` now."*
+4. Proceed with the brief's contents as authoritative.
+
+Silent proceeding with degraded state is forbidden — the user loses trust faster from an agent that "pretends to remember" than from one that transparently re-grounds.
+
 ## Command Dispatch Menu
 
 Before dispatching any command, verify its preconditions by reading `deck_state.json`. If a precondition is not met, tell the user what's missing and what command to run first.

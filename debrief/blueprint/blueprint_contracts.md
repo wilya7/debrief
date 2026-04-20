@@ -934,6 +934,20 @@ def validate_slide_brief(brief: dict) -> None:
 
 The agent card MUST also include a dispatch-mapping table translating natural-language replies (`main only`, `include backup`, `2up`, `4up`, `2up, include backup`, etc.) into CLI flag combinations. A regression test parses the agent card and asserts (a) the `## Alternative Dispatch Prompts` section exists, (b) the canonical prompt substrings are present verbatim (drift guard), (c) the decision rule explicitly names the four case branches for handout + the two for export, (d) `/debrief:present` and `/debrief:script` are explicitly excluded from the prompting behavior. Drift from the fixed prompt text is a CRITICAL regression.
 
+**BC-5.16 deck_brief.md canonical structure and consultant discipline (BUG-AUDIT-74 / REQ-CONSULT-DECK-BRIEF-1).** `agents/consultant.md` MUST contain a dedicated section titled exactly `## Deck Brief Maintenance` that codifies five obligations the consultant must enforce on `deck_brief.md`:
+
+1. **Canonical section set.** The brief uses exactly these top-level sections, in this order: `## Audience` (with nested `### Roster` YAML sub-block), `## Room composition`, `## Intent`, `## Duration`, `## Prior decisions`, `## Open questions`, `## Content Signals`. Sections MAY be absent during discovery (they are added as the matching information surfaces) but MUST NOT be replaced with alternative headings. Additional top-level `##` sections not in the canonical set are forbidden — the set is closed so a scanning reader locates any fact deterministically.
+
+2. **Machine-readable audience roster.** Inside `## Audience`, a fenced ```yaml ``` block MUST carry an `audience:` list. Each entry MUST include keys `name` (string) and `role` (string). Recommended keys: `location`, `attendance` (one of `in-person` / `remote` / `remote (Teams)` etc.), `notes`. The roster is the machine-readable anchor; the `## Audience` prose above it is free-form narrative that complements but does not replace the roster.
+
+3. **Write-through.** Every confirmed new fact about audience, room, intent, duration, or a decision MUST be appended to the matching section in the SAME turn it is learned. Batching until "end of discovery" is forbidden — the failure mode BC-5.16 exists to prevent is context-compaction firing before the batched write.
+
+4. **On-session-start mandatory read.** After loading `archetypes.json` and `deck_state.json`, the consultant MUST read `deck_brief.md` in full if the file exists, regardless of `sub_phase`. This makes the brief the recovery source of truth across every session boundary — fresh start, resume, or re-open.
+
+5. **Post-compaction audit.** When the consultant detects context loss (summarization event, resume from `.debrief/` state, user challenge implying recall failure, explicit inability to recall), it MUST stop, re-read `deck_brief.md` in full, diff against in-context memory, surface the loss to the user explicitly (suggested phrasing: *"I'd lost [items] from my working memory — re-reading `deck_brief.md` now."*), and proceed only from the brief's authoritative contents. Silent proceeding with degraded state is a protocol violation.
+
+Regression tests in `tests/regressions/test_bug_audit_74_deck_brief_discipline.py` enforce: the `## Deck Brief Maintenance` section exists; the seven canonical headings appear in the specified order inside an example block; the YAML example includes `name` and `role` keys; the three discipline rules are each documented with marker phrases (write-through, on-session-start, post-compaction audit). See REQ-CONSULT-DECK-BRIEF-1 and BUG-AUDIT-74.
+
 ---
 
 ## Unit 6: Style Compiler
