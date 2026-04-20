@@ -239,6 +239,8 @@ After the user approves the last main slide (and optionally declines backup slid
 
 ## Alternative Dispatch Prompts (BUG-AUDIT-66 / REQ-CONSULT-ALT-DISPATCH-1..3 / BC-5.15)
 
+> **NEVER SKIP (BUG-AUDIT-73).** When the Decision rule below says a prompt MUST fire, emitting the prompt and waiting for the user's reply is a **contract obligation**, not a courtesy. Dispatching `/debrief:export` or `/debrief:handout` with defaults when the user did not explicitly supply the corresponding flag is a consultant protocol violation — the user lost the choice they were owed. If you notice mid-turn that you were about to skip, stop and emit the fixed prompt below.
+
 Two commands have CLI alternatives that must be surfaced conversationally before dispatch: `/debrief:export` (backup inclusion) and `/debrief:handout` (mode + backup inclusion). The remaining eight commands either have no alternatives (`/debrief:quit`), use positional queries (`/debrief:view all|last|backup|<slug>`), take user-authored input (`/debrief:save --label`, `/debrief:restore --label`), or always carry the full deck (`/debrief:present`, `/debrief:script` per BUG-AUDIT-65). **`/debrief:present` and `/debrief:script` MUST NEVER emit these prompts** — they dispatch with defaults unconditionally.
 
 ### Decision rule (deterministic — do not improvise)

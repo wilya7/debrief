@@ -7228,4 +7228,38 @@ Regression tests cover: marker-present → pass; marker-absent → INV-25 failur
 
 ---
 
+### BUG-AUDIT-73: `/debrief:handout` command doc is stale — lists non-existent modes, wrong output path, and omits landed features
+
+**Symptom (MEDIUM, onboarding regression).** The canonical `commands/handout.md` still described the pre-BUG-AUDIT-21 handout surface, even though four subsequent BUG-AUDIT entries had materially changed it. Concrete drift:
+
+- Layout modes advertised as `"2-up, 3-up, notes-only"` — the CLI only ever accepted `2up` and `4up` (REQ-HAND-2; `_VALID_HANDOUT_MODES = {"2up", "4up"}` in `utility_skills.main_handout`). `3-up` and `notes-only` never existed in code.
+- Output path advertised as `exports/handout.pdf` — actual path is `output/handouts/handout_v{NNN}.pdf` with filesystem-derived versioning (BC-11.17 / BUG-AUDIT-21).
+- Parameters section said "No parameters required" — the CLI has `--mode` (required semantically, even when defaulted by the consultant dialog) and `--include-backup` (BC-11.16a / BUG-AUDIT-64).
+- No mention of the `speaker_script.md` notes-source precedence (BC-11.15a / BUG-AUDIT-68).
+- No cross-reference to the consultant's Alternative Dispatch Prompts section (BC-5.15 / BUG-AUDIT-66) where the mode + backup-inclusion choices are surfaced conversationally.
+
+A user reading `/debrief:handout --help` or the in-repo doc before running the command was misled about modes, parameters, and output location.
+
+**Root cause.** Per-command documentation lagged the implementation. BUG-AUDIT-21 rewrote the handout module end-to-end and the blueprint contracts tracked the change, but `commands/handout.md` was not refreshed. Subsequent fixes (BUG-AUDIT-64, BUG-AUDIT-66, BUG-AUDIT-68) landed cleanly in code and spec but the per-command doc continued to describe the pre-BUG-AUDIT-21 world. Same contract-drift pattern as BUG-AUDIT-70's export-doc staleness.
+
+Separately, a protocol-adherence concern: the consultant in at least one documented project session dispatched `/debrief:handout` directly with defaults, skipping the Alternative Dispatch Prompts dialog specified at BC-5.15. The contract was emphatic ("must be surfaced conversationally before dispatch") but the consultant's agent-card did not call out skipping as a contract violation; the failure mode was an implicit "I have defaults, I'll just use them" — acceptable in a fast-path but wrong against the spec.
+
+**Detection method.** Read `src/unit_1/commands/handout.md` — layout modes, output path, and parameters are all wrong. Independently, grep the delivered consultant-dispatched commands in a transcript for handout invocations and check whether the pre-dispatch dialog fired on each; absences are skips.
+
+**Fix summary.** Two parallel doc fixes under the same BUG-AUDIT entry:
+
+1. **`commands/handout.md` full rewrite** describing current reality: fail-fast preconditions (BC-11.16), decoupled output path (BC-11.17), handout.css styling (BC-11.15), speaker-script notes precedence (BC-11.15a / BUG-AUDIT-68), `--mode` and `--include-backup` parameters (REQ-HAND-2, BC-11.16a / BUG-AUDIT-64), consultant-orchestrated dispatch dialog (BC-5.15 / BUG-AUDIT-66). Mirrors the rewrite done for `commands/export.md` under BUG-AUDIT-70.
+
+2. **`agents/consultant.md` Alternative Dispatch Prompts preamble hardened** with an explicit NEVER-SKIP notice: emitting the fixed prompt and waiting for the user's reply is a contract obligation when the Decision rule says it MUST fire. Dispatching with defaults when the user did not explicitly supply the corresponding flag is flagged as a protocol violation. The notice is placed at the top of the section where a consultant scanning the spec cannot miss it.
+
+Regression tests cover: negative checks that the stale terms (`3-up`, `notes-only`, `exports/handout.pdf`) no longer appear in `handout.md`; positive checks that the current terms (`2up`, `4up`, `--include-backup`, `output/handouts/`, `speaker_script.md`, `handout_v`) are present; and a consultant-spec alignment check that the NEVER-SKIP notice appears in the Alternative Dispatch Prompts section.
+
+No blueprint change — BC-11.15, BC-11.15a, BC-11.16, BC-11.16a, BC-11.17, and BC-5.15 are all current. This BUG-AUDIT entry is pure doc tidy plus one sentence of agent-prompt hardening.
+
+**Normative requirements:** none new. This entry closes a doc-sync gap; the code contracts it references are stable under their existing normative requirements (REQ-HAND-1..7, REQ-HAND-NOTES-1/-2, REQ-HAND-BACKUP-1, REQ-CONSULT-ALT-DISPATCH-1..3).
+
+**Prior-Art for Rebuild:** per-command user-facing documentation is a separate surface from blueprint contracts and spec requirements, and it drifts independently. After every BUG-AUDIT that changes CLI flags, output paths, or mode enumerations, sweep `commands/*.md` for references to the changed surface and rewrite the affected doc in the SAME commit. A "docs follow later" pattern produces the exact silent-regression mode BUG-AUDIT-73 and BUG-AUDIT-70 both document.
+
+---
+
 *End of Debrief Stakeholder Specification v1.1*

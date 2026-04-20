@@ -1,61 +1,56 @@
 # /debrief:handout
 
-Generate a versioned, ink-efficient PDF handout from the approved slides.
+Generate a versioned handout PDF combining slide thumbnails with speaker notes.
 
 ## Trigger
 
-Use `/debrief:handout` whenever you want a printable leave-behind of the current deck. The command is **independent of `/debrief:export`** — it runs on any project with at least one approved slide. You do NOT need to have rendered the projected deck first.
+Use `/debrief:handout` once at least one slide has `status: "approved"` and `backup != True`. The consultant agent (per `agents/consultant.md` — **Alternative Dispatch Prompts** section, BC-5.15 / BUG-AUDIT-66) surfaces a conversational pre-dispatch dialog before invoking the handout module:
+
+- When `--mode` is absent, the consultant asks which layout to use (`2up` or `4up`; default `2up`).
+- When `--include-backup` is absent AND one or more approved backup slides exist, the consultant asks whether to include them (default main-only).
+
+The handout is **independent of `/debrief:export`** (BUG-AUDIT-21). It runs on any project with approved slides; no prior export is required.
 
 ## Behavior
 
-- Reads `deck_state.json` and selects every slide whose `status` is `"approved"` AND whose `backup` flag is false. Draft, needs-revision, discarded, and backup slides are excluded.
-- Renders the handout via Playwright (Chromium) using the dedicated `handout.css` stylesheet shipped beside `utility_skills.py` in the plugin. The handout style is ink-efficient, grayscale-leaning, and print-optimized — it does NOT reuse the deck's `assets/style.css` and does NOT require `style_locked: true`.
-- Writes the output to `output/handouts/handout_v{NNN}.pdf` in the current project directory. The version number `NNN` is derived by scanning `output/handouts/` for existing files matching `handout_v*.pdf` and picking `(max + 1)` (or `1` if the directory is empty). The `output/handouts/` directory is created automatically on first invocation.
-- Does NOT mutate `deck_state.json` — versioning is filesystem-derived.
-- Does NOT consume any pending gate. If called at G4.6 (handout review), the gate persists after the command returns.
+- **Preconditions (BC-11.16, fail-fast order):** before any Playwright work the module validates (1) `deck_state.json` exists and is readable, (2) at least one slide has `status == "approved"` AND `backup != True`, (3) `playwright` is importable. On any failure a descriptive message is printed to stderr and the module exits code 2. The Playwright check runs last so a missing-slides run produces the right error, not a spurious environment-corruption report.
+- **Slide selection:** by default, approved non-backup slides in `deck_state.json` array order. When `--include-backup` is passed, approved backup slides are appended after the main slides per BC-11.16a (BUG-AUDIT-64). Semantics match `/debrief:export`'s `--include-backup` exactly — one flag name across commands.
+- **Layout:** `2up` (two slides per page, larger thumbnails, detailed notes) or `4up` (four slides per page in a 2×2 grid, compact notes). Invalid modes exit code 2.
+- **Notes source per slide (BC-11.15a / BUG-AUDIT-68):** deterministic three-level precedence, applied independently per slide:
+  1. `<project_root>/speaker_script.md` section matched by slug (primary, via the `**Slug:** \`<slug>\`` marker) or title (fallback, via the `## Slide N: <title>` header). Origin-agnostic — may be user-authored or a user-promoted copy of a generated `script_v{NNN}.md`. Generated scripts under `output/<folder>/script_v{NNN}.md` are NOT read by the handout.
+  2. `SlideRecord.content_summary` from `deck_state.json`.
+  3. Explicit placeholder `"(no notes available)"` — silent empty cells are forbidden.
+- **Styling (BC-11.15 / BUG-AUDIT-21):** the handout uses its own first-class stylesheet, `handout.css`, shipped beside the handout module (workspace: `src/unit_11/handout.css`; delivered: `src/debrief/handout.css`). The stylesheet is optimized for print density and ink efficiency and is NOT derived from `style_config.json` or `assets/style.css`. Style lock is NOT required.
+- **Rendering:** Playwright launches one `sync_playwright()` session per invocation and closes it in a `finally` block (BC-11.7).
 
 ## Parameters
 
-One positional argument: the layout mode. Supported modes:
+- `--mode {2up|4up}` (required): slides-per-page layout. Default `2up` when invoked via consultant dispatch without an explicit mode.
+- `--include-backup` (optional): append approved backup slides after the main slides. Default is main-only, matching `/debrief:export` (BC-11.16a / BUG-AUDIT-64).
+- `--project-root <path>` (optional): defaults to the current working directory.
 
-- `2up` — two slides per page with detailed notes (default if omitted).
-- `4up` — four slides per page with condensed notes.
-
-Example invocations:
-
-```
-/debrief:handout
-/debrief:handout 2up
-/debrief:handout 4up
-```
-
-Modes other than `2up` or `4up` are rejected with an error listing the valid values.
-
-## Preconditions and error messages
-
-`main_handout` validates the following before launching Chromium. Each failure exits code 2 with a descriptive message identifying exactly which prerequisite is missing:
-
-1. **`deck_state.json` exists.** If no project is found in the current directory, the command prints an explanatory message pointing at `debrief new` and exits.
-2. **At least one approved non-backup slide.** If the project exists but has no slides, only drafts, or only backup slides, the command prints a message telling you to author and approve at least one slide first.
-3. **Playwright is importable.** Checked last so that missing-project / missing-slides errors are not shadowed by a misleading environment-corruption warning. If this check fails, the message points at `debrief --rebuild-env`.
+The consultant surfaces `--mode` and `--include-backup` conversationally before dispatch per the Dispatch Mapping table in `agents/consultant.md`. The CLI MAY be invoked directly with explicit flags; any flag supplied on the command line short-circuits the corresponding dialog.
 
 ## Output location
 
 ```
-output/handouts/handout_v001.pdf
-output/handouts/handout_v002.pdf
-...
+<project_root>/output/handouts/handout_v{NNN}.pdf
 ```
 
-The handout directory is a peer of (not a child of) `output/<presentation_folder>/` — handouts are NOT bundled into the projected deck's presentation folder. If you want the two PDFs side by side, move or copy them manually.
-
-## Relationship to /debrief:export
-
-None. The two commands are independent. Run `/debrief:handout` whenever you want a leave-behind, whether or not you have ever run `/debrief:export`. Run `/debrief:export` when you want the projected deck PDF. You can run either one first, in any order, as often as you like.
+- `NNN` is a zero-padded three-digit version number derived filesystem-side (BC-11.17): the module scans `output/handouts/` for existing `handout_v*.pdf` files and picks `(max + 1)`, or `1` if the directory is empty.
+- `output/handouts/` is created on first invocation via `mkdir(parents=True, exist_ok=True)`.
+- The handout path is DECOUPLED from `deck_state.presentations` (BUG-AUDIT-21). The handout module does NOT consult `presentations` and does NOT mutate `deck_state.json`.
 
 ## See also
 
-- `commands/export.md` — generate the projected deck PDF.
-- Spec `stakeholder_spec.md` REQ-HAND-4, REQ-HAND-5, REQ-HAND-6.
-- Blueprint `blueprint_contracts.md` BC-11.7, BC-11.8, BC-11.15, BC-11.16, BC-11.17.
-- Bug Catalog entry BUG-AUDIT-21 for the rationale behind the decoupled and fail-fast design.
+- Spec REQ-HAND-1..7 — handout contract (REQ-HAND-3 rewritten under BUG-AUDIT-68).
+- Spec REQ-HAND-NOTES-1/-2 — speaker-script notes precedence.
+- Spec REQ-HAND-BACKUP-1 — `--include-backup` flag.
+- Blueprint BC-11.7, BC-11.8 — Playwright lifecycle and gate non-consumption.
+- Blueprint BC-11.15 — handout.css.
+- Blueprint BC-11.15a — notes source precedence.
+- Blueprint BC-11.16 — fail-fast preconditions.
+- Blueprint BC-11.16a — `--include-backup` flag.
+- Blueprint BC-11.17 — decoupled output path.
+- `agents/consultant.md` **Alternative Dispatch Prompts** (BC-5.15 / BUG-AUDIT-66) — consultant-side pre-dispatch dialog grammar.
+- BUG-AUDIT-21 (decoupling + dedicated stylesheet), BUG-AUDIT-64 (backup flag), BUG-AUDIT-66 (dispatch dialog), BUG-AUDIT-68 (speaker-script merge), BUG-AUDIT-73 (this doc tidy).
