@@ -7305,4 +7305,50 @@ Regression tests (doc-regression style, mirroring BUG-AUDIT-73): `agents/consult
 
 ---
 
+### BUG-AUDIT-75: `deck_state.json` and `slides/*.html` can desync silently — `debrief doctor` reconciler + consultant drift-audit discipline + slide-record write-through
+
+**Symptom (HIGH, silent until export; worst-possible timing).** In the documented Apr 2026 lab-meeting deck, after a context-compaction event the project ended with 14 approved slide HTMLs on disk, a complete `speaker_script.md`, `style_locked: true` — but `deck_state.json` still showed `"slides": []` and `"presentations": []`, and `debrief_state.json` still showed `"sub_phase": "discovery/greeting"`. Running `/debrief:export` against this state would have exported zero slides (the export module filters on `status == "approved"` against the empty array). The drift was invisible until export time — the hash-validated state machine does not notice, because an empty state is internally consistent; it just doesn't match disk.
+
+This is the silent-until-critical-moment pattern at its worst: the user only discovers the desync seconds before a presentation, when the export produces an empty PDF.
+
+**Root cause.** Two reinforcing gaps:
+
+1. **No reconciler.** There was no `debrief doctor` (or equivalent) CLI to compare `slides/*.html` against `deck_state.slides[*].slug` and flag drift. The consultant had no mechanical check to run at session start; the first notice of drift was the export module silently producing an empty PDF.
+
+2. **No slide-record write-through discipline.** After a slide-maker dispatch returned GREEN QA, the consultant was supposed to write the `SlideRecord` to `deck_state.json` — but the spec didn't pin down the timing. In long sessions the consultant deferred the write across multiple gates or batched at "end of group," and compaction could fire between the dispatch and the deferred write. The HTML file existed, the record did not, and nothing surfaced the drift.
+
+The fix combines a mechanical reconciler with an explicit discipline rule, mirroring the BUG-AUDIT-74 shape but for slide records rather than for the brief.
+
+**Detection method.** Run `python -m debrief.launcher doctor --project-root <path>` on any project. If the JSON output has `drift_detected: true`, `orphan_files`, or `orphan_records`, state is out of sync with the filesystem. In the Apr 2026 project, the doctor would have reported 14 orphan files immediately on first export attempt (or, better, on session start under the new consultant protocol).
+
+**Fix summary.** Three parallel additions.
+
+1. **`debrief doctor` CLI** (BC-3.16 / REQ-DOCTOR-1). New subcommand of `python -m debrief.launcher`. Pure-function helpers `detect_slide_state_drift(project_root)` and `reconstruct_slide_records_from_files(project_root, slugs)` live in `src/unit_3/launcher.py` (co-located with the existing subcommand dispatcher). The orchestrator `main_doctor(project_root, *, reconstruct=False)` prints a JSON report to stdout and a human-readable summary to stderr. Exit codes: 0 no drift or successful reconstruction, 1 drift detected in report-only mode, 2 reconstruction failure.
+
+   `--reconstruct` appends minimal draft `SlideRecord` entries (status=`"draft"`, qa_passed=False, empty optional fields, last_modified=now) for every orphan HTML file. Each reconstructed slide MUST be re-vetted through the normal red-green cycle — the reconstruction does NOT assume approval. Orphan STATE records (slugs with no matching HTML) are reported but NOT auto-fixed — the appropriate remediation depends on whether the user wants to re-author the slide or delete the record, and the consultant decides with user confirmation.
+
+2. **Consultant drift-audit discipline** (new `## State Drift Audit` section in `agents/consultant.md`, placed immediately before the `## Deck Brief Maintenance` section so both recovery protocols sit together). Three obligations:
+
+   - **On session start (before any dispatch):** run `debrief doctor` immediately after loading state files.
+   - **Surface drift to the user explicitly** before proceeding — report the counts, ask before auto-remediating.
+   - **Re-run the doctor after context compaction,** paired with the Deck Brief Maintenance post-compaction audit (BC-5.16). Compaction can erode the consultant's mental model of which slides exist; re-grounding on filesystem reality complements re-grounding on the brief.
+
+3. **Slide-record write-through rule** (new Responsibilities bullet in `agents/consultant.md` + BC-5.17). After every GREEN QA decision, the consultant writes the `SlideRecord` to `deck_state.json` in the SAME turn. No batching across gates. Parallel to BC-5.16's brief write-through, for the same reason: context compaction can fire between the dispatch and a later batched write.
+
+No change to slide-maker or qa_checker — they already correctly decline to write state (BUG-AUDIT-62 / BC-5.7 / BUG-AUDIT-63 enforcement hook). The failure mode is entirely on the consultant's side and the fix is consultant-side discipline plus a mechanical drift-detection tool the consultant invokes.
+
+Regression tests cover: `detect_slide_state_drift` on clean / orphan-file / orphan-record / bidirectional / missing-state / missing-dir projects; `reconstruct_slide_records_from_files` minimal-record shape, default values, idempotence; `main_doctor` CLI exit codes (0 / 1 / with `--reconstruct` returning to 0); doc regressions that `consultant.md` contains the `## State Drift Audit` section, the `debrief.launcher doctor` invocation, and the slide-record write-through obligation.
+
+**Normative requirements:**
+
+- **REQ-DOCTOR-1:** The plugin MUST ship a `doctor` subcommand under `python -m debrief.launcher` that compares `slides/*.html` against `deck_state.slides[*].slug` and prints a JSON drift report to stdout. The report MUST include the boolean `drift_detected` field plus the lists `orphan_files` (HTML stems with no matching record) and `orphan_records` (state slugs with no matching file) and the integer `matched_count`. The subcommand MUST accept an optional `--reconstruct` flag that, when passed, appends a minimal draft `SlideRecord` per orphan HTML file (status=`"draft"`, qa_passed=False, empty optional fields, last_modified=current UTC ISO-8601) via `write_deck_state`; reconstruction MUST be idempotent (slugs already present are skipped). Exit codes: 0 no drift or successful reconstruction; 1 drift detected in report-only mode; 2 reconstruction failure. The subcommand MUST NOT auto-delete orphan HTML files or orphan state records — destructive remediation requires explicit user confirmation and is outside this contract.
+
+- **REQ-CONSULT-DOCTOR-1:** The consultant MUST invoke `python -m debrief.launcher doctor --project-root .` at every session start after loading state files and MUST surface any drift to the user explicitly before the next dispatch. The consultant MUST also re-run the doctor after every context-compaction event detected per REQ-CONSULT-DECK-BRIEF-1's post-compaction audit clause. Silent proceeding when drift is detected is a protocol violation.
+
+- **REQ-CONSULT-SLIDE-WT-1:** After every GREEN QA decision from the red-green cycle, the consultant MUST write the `SlideRecord` to `deck_state.json` in the SAME turn via `python -m debrief.debrief_state update_slide …`. Batching the write across gates or deferring to end-of-group is forbidden — the write-through rule exists because context compaction can fire between the dispatch and a later write, leaving the HTML on disk with no matching record (REQ-DOCTOR-1 backstops this failure mode but cannot recover the `content_summary` / `visual_approach` / `design_choices` fields that live only in the in-flight conversation).
+
+**Prior-Art for Rebuild:** "the hash-validated state machine does not notice because the empty state is internally consistent" — structural integrity is not truth. A state machine that checks its own hash is checking that its own history is consistent, not that it matches the world. When the state is supposed to mirror an external filesystem, the integrity check MUST extend to the filesystem — either via a reconciler that runs at every boundary the state might drift (session start, compaction, resume) OR via a write-through discipline tight enough that drift cannot open. Debrief uses both belt-and-suspenders: the doctor catches post-hoc drift; the write-through rule closes the window in which new drift can form.
+
+---
+
 *End of Debrief Stakeholder Specification v1.1*

@@ -30,6 +30,7 @@ At the start of every session, you read `${CLAUDE_PLUGIN_ROOT}/archetypes.json` 
 - Conduct backup-slide Socratic sparring sessions.
 - Manage progressive disclosure negotiation and build ordering.
 - Enforce asset sourcing and citation standards on every slide.
+- **Slide-record write-through (BUG-AUDIT-75 / BC-5.17).** After every GREEN QA decision from the red-green cycle, write the `SlideRecord` to `deck_state.json` in the SAME turn — no batching across gates, no deferring to end-of-group. Context compaction can fire between a slide-maker dispatch and a later state-write turn, leaving the HTML on disk with no matching record. Parallel to BC-5.16's `deck_brief.md` write-through, for the same reason. Use `python -m debrief.debrief_state update_slide …` via Bash; never Write-tool directly per BC-5.7.
 
 ## Constraints
 
@@ -209,6 +210,24 @@ When writing `debrief_state.json`, the `sub_phase` field MUST be one of these 24
 `discovery/greeting`, `discovery/dialog`, `discovery/brief_review`, `discovery/paper_analysis`, `discovery/figure_selection`, `discovery/style_analysis`, `style/style_dialog`, `style/style_review`, `style/style_lock`, `production/group_planning`, `production/red_green`, `production/diagnostic`, `production/oscillation_review`, `production/slide_review`, `production/group_review`, `production/more_slides`, `production/deck_ending`, `finalization/export_options`, `finalization/backup_decision`, `finalization/export_confirm`, `finalization/reviewing_for_export`, `finalization/exporting`, `finalization/post_export`, `complete`
 
 **Phase/sub_phase coupling (BUG-AUDIT-60 / BC-2.15a):** when using `python -m debrief.debrief_state update --set sub_phase=...` without also passing `phase=`, the CLI derives `phase` from the `sub_phase` prefix (everything before `/`, or the whole value for `complete`). When both are passed, they must be consistent or the command exits 1. Prefer passing only `sub_phase` unless you intend a cross-phase override.
+
+## State Drift Audit (BUG-AUDIT-75 / REQ-DOCTOR-1 / BC-3.16)
+
+After loading `deck_state.json` and `debrief_state.json` on every session start — BEFORE reading the deck brief (BC-5.16) and before any dispatch — run the filesystem/state reconciler:
+
+```bash
+python -m debrief.launcher doctor --project-root .
+```
+
+Exit code mapping (REQ-DOCTOR-1):
+
+* **0** — no drift; proceed normally.
+* **1** — drift detected in report-only mode. Read the JSON output on stdout (`orphan_files`, `orphan_records`, `matched_count`) and surface the loss to the user explicitly before the next dispatch. Suggested phrasing: *"State drift detected: N HTML file(s) under `slides/` have no matching slide record. M record(s) reference missing files. Would you like me to run `debrief doctor --reconstruct` to add minimal draft `SlideRecord` entries for the orphan files, or to investigate first?"*
+* **2** — reconstruction failure (only under `--reconstruct`). Report the error and stop.
+
+**`--reconstruct` semantics.** Running the doctor with `--reconstruct` appends a minimal draft `SlideRecord` per orphan file (status=`"draft"`, `qa_passed=False`, empty optional fields, `last_modified=now`). Each reconstructed slide MUST be re-vetted through the normal red-green cycle — the reconstruction does NOT assume approval. Orphan state records (slugs with no matching HTML) are reported but NOT auto-fixed; the consultant should confirm with the user whether to re-author the missing slide or delete the state entry.
+
+**Post-compaction drift audit.** Compaction doesn't only erode the brief (BC-5.16); it can also erode the consultant's mental model of which slides exist. Pair the Deck Brief Maintenance post-compaction audit (BC-5.16) with a re-run of `debrief doctor` to re-ground on filesystem reality.
 
 ## Deck Brief Maintenance (BUG-AUDIT-74 / REQ-CONSULT-DECK-BRIEF-1 / BC-5.16)
 

@@ -15,6 +15,7 @@ import json
 import os
 import shutil
 import sys
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -683,6 +684,256 @@ def discover_soffice(project_root: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# debrief doctor — filesystem/state reconciler (BUG-AUDIT-75 / BC-3.15 /
+# REQ-DOCTOR-1).
+#
+# Purpose: detect drift between on-disk slide HTML files and the SlideRecord
+# entries in deck_state.json. Drift is silent until export/handout time —
+# this check surfaces it at session start (via the consultant's dispatch)
+# or on demand from the CLI.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class DriftReport:
+    """Structured report of filesystem <-> deck_state drift.
+
+    ``orphan_files``: slug stems of ``slides/*.html`` files with no
+        matching ``SlideRecord`` in ``deck_state.json``. Produced by a
+        slide-maker turn whose state-write was dropped (e.g., context
+        compaction before the consultant wrote the record).
+
+    ``orphan_records``: slugs in ``deck_state.slides`` with no matching
+        ``slides/<slug>.html`` file. Produced by a state write that
+        preceded — or survived the deletion of — its slide file.
+
+    ``matched_count``: slugs present in both file and state.
+
+    ``drift_detected`` is True when either orphan list is non-empty.
+    """
+
+    drift_detected: bool
+    orphan_files: list[str] = field(default_factory=list)
+    orphan_records: list[str] = field(default_factory=list)
+    matched_count: int = 0
+
+
+def _list_slide_file_stems(project_root: Path) -> list[str]:
+    """Return sorted slug stems of all ``slides/*.html`` files under
+    ``project_root``. Non-HTML files are ignored. Missing ``slides/`` dir
+    yields an empty list (not an error — a brand-new project has none).
+    """
+    slides_dir = project_root / "slides"
+    if not slides_dir.is_dir():
+        return []
+    stems: list[str] = []
+    for p in slides_dir.iterdir():
+        if p.is_file() and p.suffix.lower() == ".html":
+            stems.append(p.stem)
+    return sorted(stems)
+
+
+def _list_state_slugs(project_root: Path) -> list[str]:
+    """Return slugs recorded in ``deck_state.json``'s ``slides`` array,
+    in the order they appear. Missing or malformed state file yields an
+    empty list so the doctor can still report filesystem orphans — the
+    caller decides whether an absent state is itself a problem.
+    """
+    state_path = project_root / "deck_state.json"
+    if not state_path.is_file():
+        return []
+    try:
+        raw = state_path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except (OSError, json.JSONDecodeError):
+        return []
+    slides = data.get("slides") if isinstance(data, dict) else None
+    if not isinstance(slides, list):
+        return []
+    result: list[str] = []
+    for entry in slides:
+        if not isinstance(entry, dict):
+            continue
+        slug = entry.get("slug")
+        if isinstance(slug, str) and slug:
+            result.append(slug)
+    return result
+
+
+def detect_slide_state_drift(project_root: Path) -> DriftReport:
+    """Scan ``slides/*.html`` against ``deck_state.slides[*].slug`` and
+    return a structured drift report.
+
+    The comparison is pure and idempotent. The helper does NOT modify
+    any file; remediation happens in ``reconstruct_slide_records_from_files``.
+
+    See BC-3.15 and BUG-AUDIT-75.
+    """
+    file_stems = set(_list_slide_file_stems(project_root))
+    state_slugs = set(_list_state_slugs(project_root))
+
+    orphan_files = sorted(file_stems - state_slugs)
+    orphan_records = sorted(state_slugs - file_stems)
+    matched_count = len(file_stems & state_slugs)
+    drift = bool(orphan_files or orphan_records)
+
+    return DriftReport(
+        drift_detected=drift,
+        orphan_files=orphan_files,
+        orphan_records=orphan_records,
+        matched_count=matched_count,
+    )
+
+
+def reconstruct_slide_records_from_files(
+    project_root: Path,
+    slugs: list[str],
+) -> int:
+    """Append a minimal ``SlideRecord`` to ``deck_state.json`` for every
+    slug in ``slugs`` that is not already recorded.
+
+    Written records carry ``status="draft"``, ``qa_passed=False``,
+    ``accepted_violations=[]``, and empty optional fields so the
+    consultant is forced to re-vet each reconstructed slide through
+    the normal red-green cycle. ``last_modified`` is the current UTC
+    timestamp; ``title`` defaults to the slug.
+
+    Idempotent: slugs already present in state are skipped; the
+    function returns the count of records actually written.
+
+    Writes atomically via ``write_deck_state``. Raises the underlying
+    IO/JSON error if the state file is malformed — callers detect this
+    earlier via ``detect_slide_state_drift`` (which tolerates missing
+    state but this writer does not reconstruct from scratch).
+
+    See BC-3.15 and BUG-AUDIT-75.
+    """
+    # Import locally — the delivered layout has these in the same
+    # package as launcher.py; the workspace layout needs the sibling
+    # dir on sys.path (handled by conftest in test contexts and by
+    # pip install -e in production).
+    try:
+        from debrief_state import (  # type: ignore[import]
+            read_deck_state,
+            write_deck_state,
+            SlideRecord,
+        )
+    except ImportError:
+        # Fallback for delivered-as-package layouts where imports are
+        # rooted differently.
+        from debrief.debrief_state import (  # type: ignore[import]
+            read_deck_state,
+            write_deck_state,
+            SlideRecord,
+        )
+
+    state = read_deck_state(project_root)
+    existing = {s.slug for s in state.slides}
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    written = 0
+    for slug in slugs:
+        if slug in existing:
+            continue
+        state.slides.append(
+            SlideRecord(
+                slug=slug,
+                title=slug,
+                status="draft",
+                backup=False,
+                content_summary=None,
+                visual_approach=None,
+                design_choices=None,
+                forks_not_taken=None,
+                user_recommendations=None,
+                qa_passed=False,
+                accepted_violations=[],
+                last_modified=now,
+                group_id=None,
+                user_assets=[],
+                has_math=False,
+            )
+        )
+        existing.add(slug)
+        written += 1
+
+    if written > 0:
+        write_deck_state(project_root, state)
+    return written
+
+
+def main_doctor(project_root: Path, *, reconstruct: bool = False) -> None:
+    """Entry point for ``python -m debrief.launcher doctor
+    --project-root <path> [--reconstruct]``.
+
+    Prints a JSON report to stdout and a human-readable summary to
+    stderr.
+
+    Exit codes (REQ-DOCTOR-1):
+    * 0 — no drift detected, OR drift was remediated successfully under
+      ``--reconstruct``.
+    * 1 — drift detected in report-only mode (scripts can key off this).
+    * 2 — remediation attempted under ``--reconstruct`` but failed.
+
+    See BC-3.15 and BUG-AUDIT-75.
+    """
+    project_root = project_root.resolve()
+    report = detect_slide_state_drift(project_root)
+
+    if reconstruct and report.orphan_files:
+        try:
+            written = reconstruct_slide_records_from_files(
+                project_root, report.orphan_files
+            )
+        except Exception as exc:  # noqa: BLE001 — surface the error
+            print(
+                f"debrief doctor: reconstruction failed: {exc}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        # Re-scan after the write so the final report reflects the fix.
+        report = detect_slide_state_drift(project_root)
+        print(
+            f"debrief doctor: reconstructed {written} SlideRecord entries "
+            f"with status=\"draft\"; re-vet each slide via the normal "
+            f"red-green cycle.",
+            file=sys.stderr,
+        )
+
+    summary = {
+        "drift_detected": report.drift_detected,
+        "orphan_files": report.orphan_files,
+        "orphan_records": report.orphan_records,
+        "matched_count": report.matched_count,
+    }
+    print(json.dumps(summary, indent=2))
+
+    if report.drift_detected:
+        file_count = len(report.orphan_files)
+        rec_count = len(report.orphan_records)
+        print(
+            f"debrief doctor: DRIFT — "
+            f"{file_count} orphan HTML file(s), "
+            f"{rec_count} orphan SlideRecord(s), "
+            f"{report.matched_count} matched.",
+            file=sys.stderr,
+        )
+        if not reconstruct:
+            print(
+                "Run with --reconstruct to add minimal draft SlideRecord "
+                "entries for orphan files.",
+                file=sys.stderr,
+            )
+        sys.exit(1)
+
+    print(
+        f"debrief doctor: OK — {report.matched_count} slide(s) in sync.",
+        file=sys.stderr,
+    )
+    sys.exit(0)
+
+
+# ---------------------------------------------------------------------------
 # Entry point — spec §24.4 steps 8 & 9 dispatch (BC-3.12).
 # ---------------------------------------------------------------------------
 
@@ -727,10 +978,46 @@ def main_new() -> None:
         # any caller that invoked it directly. New code should call
         # `ensure_project` instead, which is a strict superset.
         ensure_project_settings(project_root, plugin_root)
+    elif subcommand == "doctor":
+        # BC-3.15 / BUG-AUDIT-75: filesystem <-> deck_state drift
+        # reconciler. Parses --project-root and --reconstruct via a
+        # local argparse pass (sys.argv has already been consumed for
+        # subcommand+positional project_root in main_new; we re-parse
+        # from sys.argv[2:] so flags work either ordering). Exit codes
+        # per REQ-DOCTOR-1.
+        import argparse as _ap
+
+        _parser = _ap.ArgumentParser(
+            prog="debrief.launcher doctor",
+            description=(
+                "Detect drift between slides/*.html and "
+                "deck_state.slides[*].slug; optionally reconstruct "
+                "missing SlideRecord entries with --reconstruct."
+            ),
+        )
+        _parser.add_argument(
+            "--project-root", type=Path, default=Path.cwd()
+        )
+        _parser.add_argument(
+            "--reconstruct",
+            action="store_true",
+            help=(
+                "Append minimal draft SlideRecord entries for orphan "
+                "HTML files. Each reconstructed slide gets "
+                "status=\"draft\" so the consultant re-vets it through "
+                "the normal red-green cycle."
+            ),
+        )
+        _args = _parser.parse_args(sys.argv[2:])
+        main_doctor(
+            _args.project_root,
+            reconstruct=_args.reconstruct,
+        )
     else:
         print(f"Unknown subcommand: {subcommand!r}", file=sys.stderr)
         print(
-            "Usage: python -m debrief.launcher [new|preflight|ensure_project|ensure_settings] [project_root]",
+            "Usage: python -m debrief.launcher [new|preflight|"
+            "ensure_project|ensure_settings|doctor] [project_root]",
             file=sys.stderr,
         )
         sys.exit(1)
