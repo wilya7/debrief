@@ -1373,6 +1373,17 @@ A regression test at `tests/regressions/test_bug_audit_17_qa_dispatch.py` assert
 
 **BC-8.9 rhetorical_role visual treatment.** The Slide Maker must read the `rhetorical_role` field from the slide brief and apply the visual treatment specified in `style_guide.md`'s "Rhetorical Role Styling" section. Hook slides must use large typography and minimal text. Logos slides must prioritize data exhibits. Pathos slides must prioritize photographs or emotional imagery. Ethos slides must emphasize citations and methodology callouts.
 
+**BC-8.10 Viewport-fit script in every slide (BUG-AUDIT-72 / REQ-SLIDE-VIEWPORT-FIT-1).** The Slide Maker MUST include in every `slides/<slug>.html` a single inline `<script>` element whose opening tag carries the attribute `data-debrief-viewport-fit="v1"`. The canonical script block lives verbatim in `agents/slide-maker.md`'s Constraints section as the authoritative specimen. The script MUST:
+
+- On `DOMContentLoaded` (or immediately, if the document is already interactive) compute `scale = min(window.innerWidth / 1920, window.innerHeight / 1080)` and translation offsets `tx = (innerWidth - 1920*scale) / 2`, `ty = (innerHeight - 1080*scale) / 2`.
+- When `scale === 1 && tx === 0 && ty === 0`, early-return after clearing `transform` and `transformOrigin` on the `.slide` element — guarantees no stacking-context / transform side-effect on the 1920×1080 Playwright viewport used by screenshot and export pipelines.
+- Otherwise, apply `transformOrigin: '0 0'` and `transform: translate(<tx>px, <ty>px) scale(<scale>)` to the first `.slide` element.
+- Re-run on `window.resize`.
+
+The script MUST be inline (no `src=` attribute) so INV-07 (no external URL references) continues to hold. The marker attribute on the opening tag is the contract primitive; the script body may evolve without breaking detection. Version suffix (`v1`) lets future revisions of the contract (`v2`, `v3`) be detected unambiguously. See BC-9.3b (INV-25 enforcement) and BUG-AUDIT-72.
+
+**BC-9.3b Viewport-fit invariant (BUG-AUDIT-72 / REQ-SLIDE-VIEWPORT-FIT-1 / INV-25).** `qa_checker.run_programmatic_checks` MUST run a new invariant `INV-25` whose implementation is `check_viewport_fit_script(slide_path)`. The check reads the slide HTML and searches for a `<script>` opening tag carrying the attribute `data-debrief-viewport-fit="v1"`. Detection is marker-based (case-insensitive, tolerates single or double quotes around the attribute value, tolerates arbitrary whitespace and other attributes around the marker); the script body is NOT checked. On marker absence, INV-25 emits a `QAFailure` whose `revision_instruction` points the slide-maker at `agents/slide-maker.md`'s canonical block. INV-25 is a SOFT blocker — it participates in the red-green cycle like any Tier-1 invariant and MUST NOT flip the `veto` flag. INV-25 MUST appear in the `checks_run` enumeration emitted by `main_qa_checker`. See REQ-SLIDE-VIEWPORT-FIT-1 and BUG-AUDIT-72.
+
 ---
 
 ## Unit 9: QA System

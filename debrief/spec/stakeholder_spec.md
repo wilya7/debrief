@@ -7201,4 +7201,31 @@ Regression tests cover: allowlist extraction (template config → `["inter", "fi
 
 ---
 
+### BUG-AUDIT-72: Slide HTML clips below the fold in sub-1920×1080 browsers — Tier-1 invariant `INV-25` enforces a viewport-fit IIFE in every slide
+
+**Symptom (MEDIUM, author UX regression; silent under automated QA).** Compiled slide templates hardcode `html, body { width: 1920px; height: 1080px; overflow: hidden }`. When the browser viewport is smaller than 1920×1080 — which is the typical laptop case (macOS menu bar + browser chrome consumes a dozen vertical pixels; a 1920×1080 physical display + any browser chrome produces an inner viewport of ~1920×1000) — the bottom and right edges of the slide are clipped without scrollbars. Authors opening `slides/<slug>.html` directly, running `/debrief:view` against a file:// URL, or previewing `/debrief:present` in a sub-1920×1080 window see missing content below the fold. PNG and PDF exports are correct only because the Playwright-based screenshot and export pipelines force a 1920×1080 `viewport_size`; the discrepancy hides the defect from automated visual QA. Every author hits this on their first direct-browser view of a slide; the deck-local workaround is a hand-authored `assets/fit.js` that applies a viewport-fit transform to the `.slide` element and is included by every slide via a `<script src>` tag.
+
+**Root cause.** No contract — neither agent-side nor code-side — requires a viewport-fit script in authored slide HTML. The slide-maker agent writes `slides/<slug>.html` with the canonical 1920×1080 body shell (correct for the screenshot pipeline) but omits the browser-side fitter that would scale the slide to the actual viewport when displayed directly. No Tier-1 or Tier-2 QA check detects the omission. The screenshot pipeline's forced viewport masks the defect at every automated checkpoint. The only surface where the defect appears is the author's direct-browser view, which is not part of the red-green QA cycle.
+
+**Detection method.** Open any authored `slides/<slug>.html` in a browser whose window is smaller than 1920×1080 (e.g., a 1920×1080 monitor with native chrome). Content in the bottom-right ~80–120 pixels is clipped with no scrollbar. Independently, `grep -l 'data-debrief-viewport-fit' slides/*.html` returns zero matches on any legacy project.
+
+**Fix summary.** Canonical viewport-fit IIFE included inline in every slide, enforced by new Tier-1 invariant `INV-25`. Design choices:
+
+- **Inline, not external file.** A bundled `assets/fit.js` would require a plugin-to-project copy step (via `debrief new` / `ensure_project`) and would add a build-time contract; inline script is self-contained per slide, survives deck copies, and adds ~400 bytes per slide (negligible).
+- **Marker-based detection.** The opening `<script>` tag MUST carry the attribute `data-debrief-viewport-fit="v1"`. INV-25 detects the marker via regex; it does NOT require byte-equality of the script body. Script body is free to evolve without breaking the contract — only the marker is load-bearing. Version suffix `v1` lets us rev the contract (`v2`, `v3`) without losing detection specificity.
+- **No-op at 1920×1080.** The script early-returns (clearing any `style.transform`) when `scale === 1 && tx === 0 && ty === 0`, so the Playwright-driven screenshot and export pipelines see an identity transform — no stacking-context side-effect, no pixel drift, no regression on the PNG/PDF output.
+- **Soft blocker, not VETO.** INV-25 red-gates slides missing the marker and surfaces a `revision_instruction` pointing at `agents/slide-maker.md`'s canonical block; the red-green cycle rewrites the slide and moves on. A VETO would be disproportionate to the failure mode (authoring UX, not output correctness).
+
+The canonical script block is placed verbatim in `agents/slide-maker.md` (Constraints section) as the authoritative specimen. A regression test asserts the agent-spec still contains the marker attribute so the specimen and the enforcement stay aligned.
+
+Regression tests cover: marker-present → pass; marker-absent → INV-25 failure; wrong version (`v2`) → INV-25 failure (so future rev-ups are detected); single/double quote tolerance in the attribute syntax; end-to-end wire-in via `run_programmatic_checks`; and a spec-alignment test that the canonical script block in `slide-maker.md` carries the marker.
+
+**Normative requirements:**
+
+- **REQ-SLIDE-VIEWPORT-FIT-1:** Every authored `slides/<slug>.html` MUST include exactly one `<script>` tag whose opening tag carries the attribute `data-debrief-viewport-fit="v1"`. The script's body MUST implement the viewport-fit behavior specified in `agents/slide-maker.md`'s canonical block — functionally: compute `scale = min(innerWidth/1920, innerHeight/1080)`, apply `transform: translate(tx, ty) scale(scale)` to the `.slide` element, re-apply on `window.resize`, and early-return (clearing any prior transform) when `scale === 1 && tx === 0 && ty === 0` so the 1920×1080 screenshot pipeline sees an identity transform. Tier-1 invariant `INV-25` enforces the marker presence; the invariant detects marker drift, not body drift, so the script body may evolve without breaking the contract. Slides missing the marker MUST red-gate on their first QA run. INV-25 is a soft blocker (NOT a VETO).
+
+**Prior-Art for Rebuild:** "automated QA that forces the canonical viewport masks every viewport-dependent defect." Any rendering behavior that depends on the runtime viewport (scale, overflow, media queries, container queries) MUST be exercised at at least two viewports — one canonical (the export viewport), one author-realistic (a sub-canonical laptop viewport) — or the regression will land in every release and be discovered first by the author, worst. INV-25 closes the specific case of fixed-dimension slide bodies, but the same pattern applies to future viewport-dependent features: pair the feature with a non-canonical-viewport check.
+
+---
+
 *End of Debrief Stakeholder Specification v1.1*

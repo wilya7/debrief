@@ -1081,6 +1081,70 @@ def check_filename_consistency(
 
 
 # ---------------------------------------------------------------------------
+# INV-25: viewport-fit script presence (BUG-AUDIT-72 / REQ-SLIDE-VIEWPORT-FIT-1)
+# ---------------------------------------------------------------------------
+
+
+# Case-insensitive regex that matches a ``<script ...
+# data-debrief-viewport-fit="v1" ...>`` opening tag. Attribute value may
+# be in single or double quotes; any whitespace / other attributes are
+# permitted around the marker attribute. Only the OPENING tag is
+# required — the script body is free to evolve.
+_VIEWPORT_FIT_MARKER_RE = re.compile(
+    r"<script\b[^>]*\bdata-debrief-viewport-fit\s*=\s*['\"]v1['\"][^>]*>",
+    re.IGNORECASE,
+)
+
+
+_INV25_CANONICAL_REVISION = (
+    "Add the canonical viewport-fit IIFE to the slide's <head>. The "
+    "script is marked by the attribute data-debrief-viewport-fit=\"v1\" "
+    "so the QA check can detect it. See agents/slide-maker.md for the "
+    "verbatim script block. The script is a guaranteed no-op at the "
+    "1920x1080 Playwright viewport used by screenshot / export pipelines."
+)
+
+
+def check_viewport_fit_script(slide_path: Path) -> Optional[QAFailure]:
+    """INV-25: every slide HTML MUST contain a viewport-fit IIFE
+    marked by the attribute ``data-debrief-viewport-fit="v1"`` on its
+    opening ``<script>`` tag.
+
+    Detection is marker-based (not byte-equality), so the script body
+    is free to evolve. The marker is the contract; the body is
+    implementation detail.
+
+    Returns a ``QAFailure`` on absence, or ``None`` if the marker is
+    present.
+
+    See BC-9.3b and BUG-AUDIT-72.
+    """
+    try:
+        html = slide_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        # Missing or unreadable slide HTML — don't fail with INV-25
+        # (a different check / the Playwright navigation step will
+        # surface the file error with a clearer message).
+        _ = exc
+        return None
+
+    if _VIEWPORT_FIT_MARKER_RE.search(html) is not None:
+        return None
+
+    return {
+        "invariant": "INV-25",
+        "description": (
+            "Slide HTML is missing the viewport-fit script. No <script> "
+            "tag carrying the attribute data-debrief-viewport-fit=\"v1\" "
+            "was found. Slides without the fitter clip to 1920x1080 in "
+            "author-viewport browsers, producing invisible clipping "
+            "below the fold."
+        ),
+        "revision_instruction": _INV25_CANONICAL_REVISION,
+    }
+
+
+# ---------------------------------------------------------------------------
 # run_programmatic_checks
 # ---------------------------------------------------------------------------
 
@@ -1196,6 +1260,11 @@ def run_programmatic_checks(
     if result is not None:
         failures.append(result)
 
+    # INV-25: viewport-fit script presence (BUG-AUDIT-72)
+    result = check_viewport_fit_script(slide_path)
+    if result is not None:
+        failures.append(result)
+
     # --- BUG-AUDIT-37: VETO checks (hard blockers) ---
 
     result = check_text_overflow(page)
@@ -1298,7 +1367,7 @@ def main_qa_checker(
             "INV-04", "INV-06", "INV-07", "INV-08", "INV-10",
             "INV-12", "INV-13", "INV-14", "INV-15", "INV-16",
             "INV-17", "INV-19", "INV-20", "INV-22", "INV-23",
-            "INV-24",
+            "INV-24", "INV-25",
             "VETO-01", "VETO-04", "VETO-06",
         ]
         passed = len(failures) == 0

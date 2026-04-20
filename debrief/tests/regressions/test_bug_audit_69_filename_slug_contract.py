@@ -318,6 +318,10 @@ _SIBLING_CHECKS = [
     "check_image_aspect_ratio",
     "check_inline_math_line_height",
     "check_math_assets_exist",
+    # INV-25 / BUG-AUDIT-72: added to the checks_run list after
+    # BUG-AUDIT-69. Patch it out here so this test measures INV-24 in
+    # isolation.
+    "check_viewport_fit_script",
     "check_text_overflow",
     "check_raw_source_visible",
     "check_slug_not_in_content",

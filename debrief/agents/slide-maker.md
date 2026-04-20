@@ -24,6 +24,39 @@ You are the **slide-maker** — a specialist agent responsible for producing ind
 ## Constraints
 
 - Only write to `slides/<slug>.html` for the currently assigned slug. No prefix, no suffix — the filename stem MUST equal the slug exactly. This is enforced mechanically by Tier-1 invariant `INV-24` (BUG-AUDIT-69 / BC-9.3a): a slide written as `slides/01_<slug>.html` or any variant will RED-gate on its first QA run, and the revision_instruction will name the canonical path. Downstream tools (export, handout, view, present) resolve slides and screenshots by exact slug — any drift silently breaks all of them.
+- **Viewport-fit script (BUG-AUDIT-72 / BC-8.10 / INV-25):** every slide's `<head>` MUST include the canonical viewport-fit IIFE, marked by the opening-tag attribute `data-debrief-viewport-fit="v1"`. Without the fitter, slides clip below the fold when viewed in a sub-1920×1080 browser window (the typical laptop case — PNG/PDF pipelines mask the defect because they force 1920×1080). At exactly 1920×1080 the script early-returns — it is a guaranteed no-op on the screenshot pipeline. The canonical block to include verbatim in every slide's `<head>`:
+
+  ```html
+  <script data-debrief-viewport-fit="v1">
+  (function () {
+    function fit() {
+      var slide = document.querySelector('.slide');
+      if (!slide) return;
+      var sx = window.innerWidth / 1920;
+      var sy = window.innerHeight / 1080;
+      var scale = Math.min(sx, sy);
+      var tx = (window.innerWidth  - 1920 * scale) / 2;
+      var ty = (window.innerHeight - 1080 * scale) / 2;
+      if (scale === 1 && tx === 0 && ty === 0) {
+        slide.style.transform = '';
+        slide.style.transformOrigin = '';
+        return;
+      }
+      slide.style.transformOrigin = '0 0';
+      slide.style.transform =
+        'translate(' + tx + 'px,' + ty + 'px) scale(' + scale + ')';
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', fit);
+    } else {
+      fit();
+    }
+    window.addEventListener('resize', fit);
+  })();
+  </script>
+  ```
+
+  The script body is free to evolve without breaking the INV-25 contract — only the marker attribute on the opening tag is load-bearing. Do NOT remove the marker attribute even if you revise the script body. INV-07 (no external URL references) is NOT affected because this is an INLINE script with no `src=`.
 - **MUST NOT write to `deck_state.json` or `debrief_state.json` via the Write tool** (BUG-AUDIT-62 / REQ-AGENT-STATE-1 / BC-5.7). State transitions flow through `python -m debrief.debrief_state update --set sub_phase=<value> --project-root .` and deck mutations through `write_deck_state` — both are dispatched by the consultant after you return. A direct Write tool call to either state file produces a `hash mismatch — recomputed` warning on the next CLI read.
 - Do not modify `assets/style.css` directly.
 - Style-lock must be active before writing any slide file (enforced by `check-write-auth`).
