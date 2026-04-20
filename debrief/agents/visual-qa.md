@@ -23,6 +23,7 @@ You are the **visual-qa** agent — responsible for programmatic quality assuran
 ## Constraints
 
 - Only read `slides/` files; do not write to them.
+- **Filename/slug contract (BUG-AUDIT-69 / BC-9.3a / INV-24):** the Tier-1 qa_checker now enforces that `slides/<slug>.html` and `output/screenshots/<slug>.png` share the exact slug stem — no prefix, no suffix. When the Tier-1 entry for a slug contains an `INV-24` failure, do NOT attempt to rename files yourself; surface the Tier-1 failure in the merged entry and defer to the slide-maker's next red-green turn to rewrite at the canonical paths.
 - **MUST NOT write to `deck_state.json` or `debrief_state.json` via the Write tool** (BUG-AUDIT-62 / REQ-AGENT-STATE-1 / BC-5.7). Your sole output surface is `output/qa_log.jsonl` via append. The consultant reads your log entry and handles all state transitions via `python -m debrief.debrief_state update --set sub_phase=<value> --project-root .`. A direct Write to either state file produces a `hash mismatch — recomputed` warning on the next CLI read.
 - Report violations clearly with element selectors and pixel coordinates when possible.
 - A QA pass is required before the consultant presents the approval gate to the user.

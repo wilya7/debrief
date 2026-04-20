@@ -977,6 +977,110 @@ def check_inline_math_line_height(
 
 
 # ---------------------------------------------------------------------------
+# INV-24: filename/slug consistency (BUG-AUDIT-69 / REQ-QA-FILENAME-CONTRACT-1)
+# ---------------------------------------------------------------------------
+
+
+_INV24_CANONICAL_REVISION = (
+    "Rename the slide HTML to `slides/<slug>.html` and the screenshot to "
+    "`output/screenshots/<slug>.png` (no numeric or other prefix). The "
+    "slug is the authoritative identifier for every downstream tool "
+    "(export, handout, view, present) — filename drift silently breaks "
+    "all of them. See BC-9.3a."
+)
+
+
+def check_filename_consistency(
+    slide_path: Path,
+    screenshot_path: Path,
+    project_root: Path,
+) -> Optional[QAFailure]:
+    """INV-24: slide/screenshot filename must equal ``<slug>.html`` /
+    ``<slug>.png`` where ``<slug>`` is the authoritative slide
+    identifier.
+
+    Two sub-rules (BC-9.3a):
+
+    * Rule A (always run): ``slide_path.stem == screenshot_path.stem``.
+      A mismatch means either the slide or its screenshot will be
+      unreachable by downstream tools (export, handout, view, present)
+      regardless of whether the state file is authoritative.
+
+    * Rule B (run when ``<project_root>/deck_state.json`` is readable
+      AND its ``slides`` list is non-empty): ``slide_path.stem`` MUST
+      equal ``SlideRecord.slug`` for some slide in that list. A
+      mismatch means the filesystem artifact carries a name that no
+      downstream consumer will ever lookup (they all resolve by the
+      state-recorded slug). Rule B is skipped silently when state is
+      absent or empty — the consultant may not have written the slide
+      record yet; we do not want to false-positive on first-author
+      QA runs.
+
+    Returns a single ``QAFailure`` on the first violating rule, or
+    ``None`` if both rules hold (or Rule B is skipped).
+
+    See BUG-AUDIT-69 and REQ-QA-FILENAME-CONTRACT-1.
+    """
+    # --- Rule A ---
+    slide_stem = slide_path.stem
+    shot_stem = screenshot_path.stem
+    if slide_stem != shot_stem:
+        return {
+            "invariant": "INV-24",
+            "description": (
+                f"Slide filename stem {slide_stem!r} does not match "
+                f"screenshot filename stem {shot_stem!r}. The two files "
+                f"must share the same slug for downstream tools "
+                f"(handout, view, export) to resolve them together."
+            ),
+            "revision_instruction": _INV24_CANONICAL_REVISION,
+        }
+
+    # --- Rule B (best-effort) ---
+    deck_state_path = project_root / "deck_state.json"
+    if not deck_state_path.is_file():
+        return None
+    try:
+        raw = deck_state_path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    slides = data.get("slides") if isinstance(data, dict) else None
+    if not isinstance(slides, list) or not slides:
+        return None
+
+    known_slugs: list[str] = []
+    for entry in slides:
+        if not isinstance(entry, dict):
+            continue
+        slug_value = entry.get("slug")
+        if isinstance(slug_value, str) and slug_value:
+            known_slugs.append(slug_value)
+
+    if not known_slugs:
+        return None
+
+    if slide_stem in known_slugs:
+        return None
+
+    # Slide filename does not match any recorded slug.
+    preview_slugs = ", ".join(known_slugs[:5])
+    if len(known_slugs) > 5:
+        preview_slugs += f", … ({len(known_slugs)} total)"
+    return {
+        "invariant": "INV-24",
+        "description": (
+            f"Slide filename stem {slide_stem!r} does not match any "
+            f"slug recorded in deck_state.json. Known slugs: "
+            f"[{preview_slugs}]. The slide was written at a path that "
+            f"downstream tools will never resolve."
+        ),
+        "revision_instruction": _INV24_CANONICAL_REVISION,
+    }
+
+
+# ---------------------------------------------------------------------------
 # run_programmatic_checks
 # ---------------------------------------------------------------------------
 
@@ -1085,6 +1189,13 @@ def run_programmatic_checks(
     if result is not None:
         failures.append(result)
 
+    # INV-24: filename/slug consistency (BUG-AUDIT-69)
+    result = check_filename_consistency(
+        slide_path, screenshot_path, project_root
+    )
+    if result is not None:
+        failures.append(result)
+
     # --- BUG-AUDIT-37: VETO checks (hard blockers) ---
 
     result = check_text_overflow(page)
@@ -1187,6 +1298,7 @@ def main_qa_checker(
             "INV-04", "INV-06", "INV-07", "INV-08", "INV-10",
             "INV-12", "INV-13", "INV-14", "INV-15", "INV-16",
             "INV-17", "INV-19", "INV-20", "INV-22", "INV-23",
+            "INV-24",
             "VETO-01", "VETO-04", "VETO-06",
         ]
         passed = len(failures) == 0
