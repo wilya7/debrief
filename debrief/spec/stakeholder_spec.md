@@ -7385,4 +7385,42 @@ Regression tests exercise `list_commands` against real command files, the CLI ex
 
 ---
 
+### BUG-AUDIT-77: No canonical table of generator output paths — contract documentation gap; `speaker_script.md` non-write invariant uncodified
+
+**Symptom (LOW-MEDIUM, contract-drift risk).** The bug report that motivated the BUG-AUDIT-68/-70/-73/-77 series asserted that `/debrief:script` silently overwrote a user-authored `speaker_script.md`. Code inspection falsifies the concrete claim — `main_script_generator` writes to `output/<presentation_folder>/script_v{NNN}.md` with filesystem-derived versioning (BC-11.6 / BUG-AUDIT-25) and never touches `speaker_script.md` at project root. Similarly, `/debrief:handout` writes to `output/handouts/handout_v{NNN}.pdf` (BC-11.17 / BUG-AUDIT-21) and `/debrief:export` writes to `output/<folder>/deck_v{NNN}.pdf` (BC-10.4). The current generators are correct.
+
+The residual legitimate concern: **no canonical place in spec or blueprint lists every generator's output path and declares which paths are versioned (non-destructive) vs. fixed (intentionally overwritten on re-run).** A future generator — or a refactor of an existing one — could silently write to `speaker_script.md` and break the canonical notes-source contract BUG-AUDIT-68 established for the handout (BC-11.15a). Without a codified non-write invariant on `speaker_script.md`, such a regression would not be caught by any existing test.
+
+This is a contract-documentation gap, not a present-tense bug. BUG-AUDIT-77 closes it by (a) publishing a canonical table of generator output paths in this spec, (b) codifying the `speaker_script.md` non-write invariant in BC-11.19, and (c) adding a regression test that AST-scans the generator modules for any write expression targeting `speaker_script.md`.
+
+**Root cause.** Generators shipped incrementally (BUG-AUDIT-21 handout, BUG-AUDIT-25 script, BUG-AUDIT-60 view/present, BUG-AUDIT-70 export) and each BUG-AUDIT specified its OWN output path per BC, but no rolling register summarized the output contract across generators. The lack of a cross-generator overview is exactly how the false-overwrite concern arose: a reader scanning spec for "where does the script go?" had no single authoritative answer and had to read multiple BCs to compose one.
+
+**Detection method.** Try to answer "which generator writes where?" from the spec alone without reading any BC. The answer is not present in any single location. Independently, try to grep the source for writes to `speaker_script.md`: `grep 'speaker_script' src/unit_*/` — every hit is a READ (via `_load_speaker_script`) per BUG-AUDIT-68. The invariant holds in code but is not asserted anywhere.
+
+**Fix summary.** Contract documentation + mechanical assertion — no code change.
+
+1. **Generator Output Paths table** (in section 14 or as a dedicated sub-section referenced from the generator REQs). Four rows for the current generators:
+
+   | Command | Output path | Versioning | Destructive? | Citation |
+   |---|---|---|---|---|
+   | `/debrief:export` | `output/<presentation_folder>/deck_v{NNN}.pdf` | `NNN` derived from `output/<folder>/deck_v*.pdf` (max + 1) | No — new version per invocation | BC-10.4, REQ-EXPORT-3 |
+   | `/debrief:script` | `output/<presentation_folder>/script_v{NNN}.md` | `NNN` derived from `output/<folder>/script_v*.md` (max + 1) | No — new version per invocation | BC-11.6, REQ-SCRIPT-2 |
+   | `/debrief:handout` | `output/handouts/handout_v{NNN}.pdf` | `NNN` derived from `output/handouts/handout_v*.pdf` (max + 1) | No — new version per invocation | BC-11.17, REQ-HAND-6 |
+   | `/debrief:view` | `output/view.html` | None — fixed filename | **Yes** — overwritten on each invocation per BC-11.4 (intentional; file is ephemeral) | BC-11.4, REQ-VIEW |
+   | `/debrief:present` | `output/presentation.html` | None — fixed filename | **Yes** — regenerated on each invocation | BC-11.18, BC-11.18a |
+
+   The `/debrief:save` command writes to `output/snapshots/<label>/` and is NOT listed here — it is a user-authored artifact collector, not a deliverable generator. Analogously `/debrief:restore` is a state operator, not a generator.
+
+2. **Non-write invariant on `speaker_script.md`.** No generator module (`src/unit_10/export.py`, `src/unit_11/utility_skills.py`, and any future generator added to the plugin) writes to `<project_root>/speaker_script.md`. The file is the canonical notes source per BC-11.15a / BUG-AUDIT-68 and is user-managed: the user copies a chosen `script_v{NNN}.md` into it (optionally with edits) to activate the BUG-AUDIT-68 handout-merge path, or authors it from scratch. Generators are strictly READ-ONLY against it — enforced by the regression test at `tests/regressions/test_bug_audit_77_generator_output_paths.py` via AST scan of the generator modules for write-expressions targeting `speaker_script.md`.
+
+3. **No confirmation prompts for `/debrief:view` and `/debrief:present`.** Both overwrite fixed filenames by design — the files are ephemeral render products, not user-authored documents. Per-command contracts (BC-11.4, BC-11.18) are explicit about this and BUG-AUDIT-77 affirms them rather than tightening them.
+
+**Normative requirements:**
+
+- **REQ-GEN-PATHS-1:** Every generator command listed in the Generator Output Paths table MUST write only to the path(s) shown in that table. The plugin MUST NOT add a new generator whose output path shadows a user-managed file at project root — specifically `speaker_script.md`, `deck_brief.md`, `style_guide.md`, `style_config.json`, `deck_state.json`, `debrief_state.json`, `ledger.jsonl`, `CLAUDE.md`. If a new generator is added, its output path MUST be appended to the table and a matching behavioral contract added to the blueprint. The non-write invariant on `speaker_script.md` is enforced by a source-AST regression test that parses each generator module and asserts no write expression targets that filename at project root.
+
+**Prior-Art for Rebuild:** "contract drift accumulates in the gaps between BCs." When multiple features add output surfaces incrementally, each documented in its own behavioral contract, the implicit cross-surface invariants (this generator does NOT write where that generator does; this file is exclusively user-managed) live nowhere and can break silently the next time a surface is added. Publish a rolling register — a single table with every output path, destructive/non-destructive status, and citation back to the per-surface BC — every time a new generator lands, and pin the cross-surface invariants (non-write-to-user-managed-files) with source-AST regressions that actively test for regressions rather than just documenting the intent.
+
+---
+
 *End of Debrief Stakeholder Specification v1.1*
