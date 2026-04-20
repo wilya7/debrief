@@ -114,16 +114,20 @@ def main_export(project_root: Path, include_backup: bool = False) -> None:
     # export), create one with a deterministic folder name. The old routing
     # loop created this; in the consultant-orchestrated model, export
     # self-bootstraps on first run.
+    #
+    # BUG-AUDIT-70 / REQ-EXPORT-BOOTSTRAP-1 / BC-10.9: folder-name
+    # computation moved to debrief_state.compute_presentation_folder_name
+    # so the date-prefix detection rule (project_name already carries a
+    # date → do NOT prepend today's date; avoid double-dating) is shared
+    # across callers and covered by regression tests.
     if not state.presentations:
         from datetime import date
         from debrief_state import (  # type: ignore[import]
-            sanitize_identifier,
+            compute_presentation_folder_name,
             write_deck_state,
         )
 
-        today = date.today().strftime("%Y_%m_%d")
-        title_part = sanitize_identifier(state.project_name, max_length=40)
-        folder_name = f"{today}_{title_part}"
+        folder_name = compute_presentation_folder_name(state.project_name)
 
         new_pres = type(state.presentations)()  # empty list of same type
         # Build a minimal PresentationRecord-compatible dict and let

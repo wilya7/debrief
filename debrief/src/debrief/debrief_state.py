@@ -276,6 +276,75 @@ def parse_css_int(value: Any, default: int = 0) -> int:
     return default
 
 
+def compute_presentation_folder_name(
+    project_name: str,
+    today: Optional["date"] = None,
+) -> str:
+    """Compute the canonical presentation folder name for ``/debrief:export``.
+
+    Rule (BC-10.9 / REQ-EXPORT-BOOTSTRAP-1 / BUG-AUDIT-70):
+
+    * If ``project_name`` begins with a date shape (``YYYYMMDD``,
+      ``YYYY_MM_DD``, or ``YYYY-MM-DD``) followed by a separator
+      (``_``, ``-``, space) or end-of-string, the leading date is
+      normalized to ``YYYY_MM_DD`` form and the remainder is passed
+      through ``sanitize_identifier`` (max_length=40) as the title
+      part. Today's date is NOT prepended — the user has already
+      named the talk date in the project name, so we honor it.
+    * Otherwise, ``today.strftime("%Y_%m_%d")`` is prepended and the
+      whole ``project_name`` is sanitized as the title part.
+
+    Replaces the deleted ``routing.propose_presentation_folder_name``
+    (removed in BUG-AUDIT-31). The logic previously lived in ``routing.py``
+    and is now hosted next to ``sanitize_identifier`` in ``debrief_state.py``
+    because (a) ``routing.py`` is a gutted shell and (b) the two functions
+    share the same identifier-sanitization rules.
+
+    Args:
+        project_name: The ``DeckState.project_name`` value (or any string).
+        today: Optional date used when prepending today's date. Defaults
+            to ``date.today()`` when not provided. Exposed for
+            deterministic testing.
+
+    Returns:
+        A folder name string of the form ``YYYY_MM_DD_<title>``.
+
+    Examples::
+
+        compute_presentation_folder_name("20260420_Lab_meeting")
+        # "2026_04_20_lab_meeting" — date detected, today NOT prepended
+
+        compute_presentation_folder_name("lab_meeting", today=date(2026,4,20))
+        # "2026_04_20_lab_meeting" — no date detected, today prepended
+
+        compute_presentation_folder_name("2024_annual_report")
+        # "{today}_annual_report" — year-only prefix is NOT a full date,
+        # so today IS prepended
+    """
+    from datetime import date as _date
+
+    raw = project_name or ""
+    # Date-shape match: YYYYMMDD / YYYY_MM_DD / YYYY-MM-DD followed
+    # by a separator or end-of-string. Separators on each boundary are
+    # optional individually but the TRAILING boundary (separator or
+    # end-of-string) is required to avoid capturing bare 4-digit years.
+    m = re.match(
+        r"^\s*(\d{4})([-_]?)(\d{2})([-_]?)(\d{2})(?:[_\- ]+(.*)|$)",
+        raw,
+    )
+    if m is not None:
+        yyyy, mm, dd = m.group(1), m.group(3), m.group(5)
+        rest = m.group(6) or ""
+        date_part = f"{yyyy}_{mm}_{dd}"
+        title_part = sanitize_identifier(rest, max_length=40) if rest else "untitled"
+        return f"{date_part}_{title_part}"
+
+    today_val = today if today is not None else _date.today()
+    date_part = today_val.strftime("%Y_%m_%d")
+    title_part = sanitize_identifier(raw, max_length=40)
+    return f"{date_part}_{title_part}"
+
+
 def sanitize_identifier(text: str, max_length: int = 40) -> str:
     """Apply the Debrief Identifier Sanitization Algorithm (Section 24.10.1).
 
