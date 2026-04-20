@@ -1015,6 +1015,124 @@ def _load_handout_css() -> str:
     return _HANDOUT_CSS_PATH.read_text(encoding="utf-8")
 
 
+_HANDOUT_NOTES_PLACEHOLDER = "(no notes available)"
+
+
+def _load_speaker_script(project_root: Path) -> Optional[dict[str, str]]:
+    r"""Parse ``<project_root>/speaker_script.md`` into per-slide notes bodies.
+
+    Returns a mapping keyed by BOTH slug (primary, from the
+    ``**Slug:** `<slug>` `` marker) and title (fallback, from the
+    ``## Slide N: <title>`` header). Sections under ``## Backup Slides``
+    are parsed with the same grammar; the ``(backup)`` qualifier is
+    stripped before title matching.
+
+    The body text for each section is everything between the per-slide
+    `## Slide` header and the next `## Slide` header (or
+    `## Backup Slides`, or end of file), minus the header line, with
+    leading/trailing whitespace stripped.
+
+    Returns None if the file does not exist, is empty, or produces
+    zero sections. Best-effort parse — malformed files do not raise.
+
+    See BC-11.15a and BUG-AUDIT-68.
+    """
+    script_path = project_root / "speaker_script.md"
+    if not script_path.is_file():
+        return None
+    try:
+        text = script_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if not text.strip():
+        return None
+
+    mapping: dict[str, str] = {}
+    # Split on lines beginning with "## Slide " or "## Backup Slides".
+    # We walk line-by-line, delimiting a section at each header.
+    lines = text.splitlines()
+    header_indices: list[int] = []
+    for i, line in enumerate(lines):
+        stripped = line.lstrip()
+        if stripped.startswith("## Slide ") or stripped.startswith(
+            "## Backup Slides"
+        ):
+            header_indices.append(i)
+
+    # Append a sentinel so the last section has an end index.
+    header_indices.append(len(lines))
+
+    # Regexes for header and slug marker.
+    # Header captures: slide number (unused), optional " (backup)"
+    # qualifier, and title.
+    _header_re = re.compile(
+        r"^##\s+Slide\s+\d+\s*(?:\(backup\))?\s*:\s*(.+?)\s*$"
+    )
+    _slug_re = re.compile(r"^\*\*Slug:\*\*\s*`([^`]+)`\s*$")
+
+    for idx in range(len(header_indices) - 1):
+        start = header_indices[idx]
+        end = header_indices[idx + 1]
+        if start >= len(lines):
+            continue
+        header_line = lines[start].lstrip()
+        # Skip the "## Backup Slides" section heading itself — it is
+        # a divider, not a slide section. Its child blocks are the
+        # subsequent "## Slide N (backup): <title>" entries, which are
+        # picked up by their own header indices.
+        if header_line.startswith("## Backup Slides"):
+            continue
+
+        m_header = _header_re.match(header_line)
+        if m_header is None:
+            continue
+        title = m_header.group(1).strip()
+
+        body_lines = lines[start + 1 : end]
+        # Locate slug marker within the body, if present.
+        slug: Optional[str] = None
+        for bline in body_lines:
+            m_slug = _slug_re.match(bline.strip())
+            if m_slug is not None:
+                slug = m_slug.group(1).strip()
+                break
+
+        body = "\n".join(body_lines).strip()
+        if not body:
+            continue
+        if slug:
+            mapping[slug] = body
+        if title and title not in mapping:
+            mapping[title] = body
+
+    return mapping if mapping else None
+
+
+def _resolve_handout_notes(
+    slide: Any,
+    script_notes: Optional[dict[str, str]],
+) -> str:
+    """Resolve the notes text for one slide per BC-11.15a precedence.
+
+    (1) speaker_script.md section matched by slug or title.
+    (2) slide.content_summary.
+    (3) placeholder string.
+    """
+    if script_notes:
+        by_slug = script_notes.get(slide.slug)
+        if by_slug and by_slug.strip():
+            return by_slug
+        by_title = script_notes.get(slide.title)
+        if by_title and by_title.strip():
+            return by_title
+
+    summary = getattr(slide, "content_summary", None) or ""
+    if summary.strip():
+        return summary
+
+    return _HANDOUT_NOTES_PLACEHOLDER
+
+
 def generate_layout_html(
     mode: str,
     slides: list[Any],
@@ -1024,7 +1142,12 @@ def generate_layout_html(
 
     Mode '2up': two slides per page, detailed notes.
     Mode '4up': four slides per page, condensed notes.
-    Notes are read from each slide's content_summary field.
+
+    BC-11.15a / BUG-AUDIT-68: per-slide notes text follows a
+    three-level precedence — speaker_script.md section, then
+    SlideRecord.content_summary, then the explicit placeholder
+    "(no notes available)". speaker_script.md is loaded once per
+    invocation via _load_speaker_script().
 
     BC-11.15 / BUG-AUDIT-21: all visual styling lives in handout.css
     and is referenced via CSS classes; this function emits class-based
@@ -1037,6 +1160,8 @@ def generate_layout_html(
     per_page = 2 if is_2up else 4
     cell_class = "cell cell-2up" if is_2up else "cell cell-4up"
     notes_class = "notes notes-2up" if is_2up else "notes notes-4up"
+
+    script_notes = _load_speaker_script(project_root)
 
     def _img_b64(slug: str) -> Optional[str]:
         for ext in ("png", "jpg", "jpeg", "webp"):
@@ -1061,7 +1186,7 @@ def generate_layout_html(
             else:
                 img_tag = '<div class="no-shot">[no screenshot]</div>'
 
-            notes = slide.content_summary or ""
+            notes = _resolve_handout_notes(slide, script_notes)
             cell = (
                 f'<div class="{cell_class}">'
                 f"{img_tag}"
