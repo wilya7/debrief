@@ -57,6 +57,58 @@ CSS_PROPERTY_MAP: dict[str, str] = {
 # Top-level config keys excluded from CSS output (structural metadata only).
 _EXCLUDED_KEYS: frozenset[str] = frozenset({"constraints", "provenance"})
 
+
+# ---------------------------------------------------------------------------
+# Google Fonts allowlist (BUG-AUDIT-71 / BC-6.14 / REQ-STYLE-FONT-LOADER-1)
+#
+# Map canonical lowercased family name → Google Fonts CSS2 family-fragment.
+# A "family-fragment" is the substring following `family=` in the Google Fonts
+# CSS2 URL: ``family=Inter:wght@400;600;700`` — includes the human-cased
+# family name, a ``:`` weight axis spec, and any weight list. The compiler
+# emits one ``@import url('https://fonts.googleapis.com/css2?family=...&display=swap');``
+# at the top of the compiled stylesheet containing every allowlist-matched
+# family discovered in ``typography.*_font_family`` fields.
+#
+# Non-allowlist families (``Georgia``, ``Arial``, generic families like
+# ``sans-serif`` / ``serif`` / ``monospace``) are system fonts — the browser
+# resolves them locally, no loader needed.
+#
+# Weight lists are chosen conservatively to cover heading and body use:
+# body weight 400, heading weight 600-700. Monospace families get 400 and
+# 500 (typical for code). Entries can be tuned over time without breaking
+# the contract — only the allowlist KEYS are semantically load-bearing.
+# ---------------------------------------------------------------------------
+
+
+_GOOGLE_FONTS_ALLOWLIST: dict[str, str] = {
+    "inter": "Inter:wght@400;600;700",
+    "ibm plex sans": "IBM+Plex+Sans:wght@400;600;700",
+    "ibm plex serif": "IBM+Plex+Serif:wght@400;600;700",
+    "ibm plex mono": "IBM+Plex+Mono:wght@400;500",
+    "roboto": "Roboto:wght@400;500;700",
+    "roboto mono": "Roboto+Mono:wght@400;500",
+    "roboto slab": "Roboto+Slab:wght@400;600;700",
+    "open sans": "Open+Sans:wght@400;600;700",
+    "fira sans": "Fira+Sans:wght@400;600;700",
+    "fira code": "Fira+Code:wght@400;500",
+    "jetbrains mono": "JetBrains+Mono:wght@400;500",
+    "lato": "Lato:wght@400;700",
+    "merriweather": "Merriweather:wght@400;700",
+    "source sans 3": "Source+Sans+3:wght@400;600;700",
+    "source serif 4": "Source+Serif+4:wght@400;600;700",
+    "source code pro": "Source+Code+Pro:wght@400;500",
+    "work sans": "Work+Sans:wght@400;600;700",
+    "space grotesk": "Space+Grotesk:wght@400;500;700",
+    "space mono": "Space+Mono:wght@400;700",
+    "noto sans": "Noto+Sans:wght@400;600;700",
+    "noto serif": "Noto+Serif:wght@400;600;700",
+    "poppins": "Poppins:wght@400;600;700",
+    "montserrat": "Montserrat:wght@400;600;700",
+}
+
+
+_GOOGLE_FONTS_URL_BASE = "https://fonts.googleapis.com/css2"
+
 # All seven keys required at the top level of style_config.json.
 _REQUIRED_KEYS: list[str] = [
     "colors",
@@ -165,6 +217,90 @@ def generate_css_root_block(config: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _normalize_family(raw: str) -> str:
+    """Normalize a comma-separated font stack's first family to its
+    lookup key: strip whitespace and surrounding quotes, then lowercase.
+
+    Used by ``extract_font_families`` to match against
+    ``_GOOGLE_FONTS_ALLOWLIST`` (which is keyed by lowercased family name).
+    """
+    # First family is before the first comma; ignore fallbacks.
+    first = raw.split(",", 1)[0].strip()
+    # Strip matched surrounding quotes (single or double).
+    if len(first) >= 2 and first[0] == first[-1] and first[0] in ("'", '"'):
+        first = first[1:-1].strip()
+    return first.lower()
+
+
+def extract_font_families(config: dict[str, Any]) -> list[str]:
+    """Return the deduped, stable-ordered list of Google Fonts allowlist
+    keys referenced in the config's typography section.
+
+    Scans ``typography.heading_font_family``, ``typography.body_font_family``,
+    and ``typography.code_font_family`` — only the first family in each
+    comma-separated stack is considered (fallbacks like ``sans-serif`` or
+    ``Helvetica`` are browser-resolved and need no loader).
+
+    Families not in ``_GOOGLE_FONTS_ALLOWLIST`` are filtered out silently.
+    The order of the returned list is the discovery order across the three
+    typography slots (heading → body → code), with later duplicates removed.
+
+    Args:
+        config: A parsed ``style_config.json`` dict.
+
+    Returns:
+        A list of allowlist keys (lowercased family names).
+
+    See BC-6.14 and BUG-AUDIT-71.
+    """
+    typography = config.get("typography", {}) if isinstance(config, dict) else {}
+    if not isinstance(typography, dict):
+        return []
+
+    # Discovery order matters: heading first, body second, code third —
+    # so the emitted URL lists headings before body fonts.
+    slots = (
+        "heading_font_family",
+        "body_font_family",
+        "code_font_family",
+    )
+    seen: list[str] = []
+    for slot in slots:
+        value = typography.get(slot)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        canonical = _normalize_family(value)
+        if canonical in _GOOGLE_FONTS_ALLOWLIST and canonical not in seen:
+            seen.append(canonical)
+    return seen
+
+
+def generate_font_import_statement(families: list[str]) -> str:
+    """Build the single ``@import`` line that loads every allowlist-matched
+    family from Google Fonts CSS2, or return ``""`` when the list is empty.
+
+    The resulting URL has one ``family=<fragment>`` parameter per family,
+    in the order received, plus ``&display=swap`` as the final parameter
+    so text renders in the system fallback while the web font downloads.
+
+    Example::
+
+        generate_font_import_statement(["inter", "fira code"])
+        # "@import url('https://fonts.googleapis.com/css2"
+        # "?family=Inter:wght@400;600;700"
+        # "&family=Fira+Code:wght@400;500"
+        # "&display=swap');"
+
+    See BC-6.14 and BUG-AUDIT-71.
+    """
+    if not families:
+        return ""
+    fragments = [_GOOGLE_FONTS_ALLOWLIST[f] for f in families]
+    query = "&".join(f"family={frag}" for frag in fragments)
+    url = f"{_GOOGLE_FONTS_URL_BASE}?{query}&display=swap"
+    return f"@import url('{url}');"
+
+
 def parse_style_config(config_path: Path) -> dict[str, Any]:
     """Read and parse ``config_path`` as JSON.
 
@@ -218,7 +354,15 @@ def compile_style(
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    css_content = generate_css_root_block(config)
+    # BUG-AUDIT-71 / BC-6.14 / REQ-STYLE-FONT-LOADER-1: prepend a single
+    # @import line to load every allowlist-matched Google Fonts family
+    # named in the typography section. When none are named (all system
+    # fonts), the import statement is empty and the compiled CSS is
+    # byte-identical to the pre-BUG-AUDIT-71 output for that input.
+    families = extract_font_families(config)
+    import_line = generate_font_import_statement(families)
+    root_block = generate_css_root_block(config)
+    css_content = f"{import_line}\n{root_block}" if import_line else root_block
 
     try:
         output_css_path.parent.mkdir(parents=True, exist_ok=True)
