@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Carlo Fusco and Leonardo Restivo
-"""Regression tests for BUG-AUDIT-68.
+"""Regression tests for BUG-AUDIT-68 — amended by BUG-AUDIT-84 Sub-cycle C.
 
 BUG-AUDIT-68 closes a design gap in `/debrief:handout`: the handout
 module never read `speaker_script.md`, so the speaker's actual words
@@ -8,24 +8,36 @@ never reached the handout's notes cells. Slides fell back to
 `SlideRecord.content_summary` (often a terse label) or rendered
 visually empty.
 
-The fix introduces a deterministic three-level precedence per
-BC-11.15a: (1) `speaker_script.md` section matched by slug or title,
-(2) `content_summary`, (3) explicit `(no notes available)`
-placeholder. Silent empty cells are forbidden.
+The original fix introduced a deterministic three-level precedence
+per BC-11.15a: (1) `speaker_script.md` section, (2) `content_summary`,
+(3) explicit `(no notes available)` placeholder.
+
+**BUG-AUDIT-84 Sub-cycle C / BC-11.15b** collapses the precedence to
+two levels: (1) `speaker_script.md` section matched by slug or title,
+(2) explicit `(no notes available)` placeholder. The
+`content_summary` fallback is RETIRED — every successful
+`/debrief:script` run produces a presenter-ready `speaker_script.md`,
+and `/debrief:handout`'s precondition (BC-11.16 amendment) requires
+the script to exist before the handout is rendered.
 
 TEST CLASSES:
 
 1. TestSpeakerScriptLoader — unit tests for `_load_speaker_script`.
-2. TestHandoutNotesPrecedence — end-to-end via `generate_layout_html`.
-3. TestPlaceholderEmitted — placeholder is used when both sources
-   are empty.
+2. TestHandoutNotesPrecedence — end-to-end via `generate_layout_html`,
+   asserting the BC-11.15b two-level precedence.
+3. TestPlaceholderEmitted — placeholder is used whenever the script
+   has no matching section (regardless of any `content_summary`).
+4. TestHandoutIgnoresVersionedScript — handout reads the canonical
+   `<project_root>/speaker_script.md` only, never legacy
+   `output/<folder>/script_v{NNN}.md`.
 
 All tests run unconditionally in both workspace and delivered layouts
 via the sibling-discovery path pattern established in
 `test_bug_audit_21_handout_robustness.py`; zero skips.
 
-See `spec/stakeholder_spec.md` Bug Catalog entry BUG-AUDIT-68 and
-blueprint contract BC-11.15a.
+See `spec/stakeholder_spec.md` Bug Catalog entries BUG-AUDIT-68 and
+BUG-AUDIT-84, and blueprint contracts BC-11.15a (legacy) and
+BC-11.15b (current).
 """
 
 from __future__ import annotations
@@ -218,14 +230,20 @@ class TestSpeakerScriptLoader:
 
 
 class TestHandoutNotesPrecedence:
-    def test_no_script_uses_content_summary(self, tmp_path: Path) -> None:
+    def test_no_script_emits_placeholder(self, tmp_path: Path) -> None:
+        """BC-11.15b: when no speaker_script.md exists, the handout
+        cell shows the placeholder. The legacy content_summary
+        fallback (BC-11.15a source #2) is RETIRED."""
         slide = _make_slide(
             "intro", content_summary="Terse internal label."
         )
         html = utility_skills.generate_layout_html(
             "2up", [slide], tmp_path
         )
-        assert "Terse internal label." in html
+        assert utility_skills._HANDOUT_NOTES_PLACEHOLDER in html
+        # The content_summary MUST NOT leak into the handout under
+        # BC-11.15b — placeholder is the only fallback.
+        assert "Terse internal label." not in html
 
     def test_script_section_matched_by_slug_wins_over_summary(
         self, tmp_path: Path
@@ -279,11 +297,12 @@ class TestHandoutNotesPrecedence:
         assert "Title-matched prose body." in html
         assert "Fallback summary." not in html
 
-    def test_unmatched_slide_falls_back_to_content_summary(
+    def test_unmatched_slide_falls_back_to_placeholder(
         self, tmp_path: Path
     ) -> None:
-        # Script covers only some slides; unmatched slides must use
-        # their content_summary.
+        """BC-11.15b: a slide not present in speaker_script.md gets
+        the placeholder. The legacy content_summary fallback
+        (BC-11.15a source #2) is RETIRED."""
         _write_script(
             tmp_path,
             [
@@ -309,9 +328,10 @@ class TestHandoutNotesPrecedence:
             "2up", [matched, unmatched], tmp_path
         )
         assert "Script prose for matched." in html
-        assert "summary-for-unmatched" in html
-        # The matched slide's content_summary MUST be overridden by the
-        # script section, so the summary text MUST NOT appear for it.
+        # Unmatched slide gets the placeholder, NOT its content_summary.
+        assert utility_skills._HANDOUT_NOTES_PLACEHOLDER in html
+        assert "summary-for-unmatched" not in html
+        # The matched slide's content_summary is also overridden.
         assert "summary-for-matched" not in html
 
 
@@ -330,9 +350,12 @@ class TestPlaceholderEmitted:
         )
         assert utility_skills._HANDOUT_NOTES_PLACEHOLDER in html
 
-    def test_empty_script_file_treated_as_absent(
+    def test_empty_script_file_emits_placeholder(
         self, tmp_path: Path
     ) -> None:
+        """BC-11.15b: an empty speaker_script.md is treated as absent;
+        the handout cell falls through to the placeholder. The legacy
+        content_summary fallback is RETIRED."""
         (tmp_path / "speaker_script.md").write_text(
             "", encoding="utf-8"
         )
@@ -342,10 +365,9 @@ class TestPlaceholderEmitted:
         html = utility_skills.generate_layout_html(
             "2up", [slide], tmp_path
         )
-        assert "Summary survives." in html
-        assert (
-            utility_skills._HANDOUT_NOTES_PLACEHOLDER not in html
-        )
+        # content_summary MUST NOT leak under BC-11.15b.
+        assert "Summary survives." not in html
+        assert utility_skills._HANDOUT_NOTES_PLACEHOLDER in html
 
     def test_whitespace_only_summary_triggers_placeholder(
         self, tmp_path: Path
@@ -357,8 +379,8 @@ class TestPlaceholderEmitted:
         assert utility_skills._HANDOUT_NOTES_PLACEHOLDER in html
 
     def test_placeholder_contract_value(self) -> None:
-        # BC-11.15a mandates the exact placeholder string. Any drift
-        # in this literal is a contract violation detectable here.
+        # BC-11.15a / BC-11.15b mandate the same placeholder string.
+        # Any drift in this literal is a contract violation.
         assert (
             utility_skills._HANDOUT_NOTES_PLACEHOLDER
             == "(no notes available)"
@@ -374,10 +396,15 @@ class TestHandoutIgnoresVersionedScript:
     def test_versioned_script_in_output_folder_not_used(
         self, tmp_path: Path
     ) -> None:
-        # A generated script exists under output/<folder>/, but there
-        # is no speaker_script.md at the project root. The handout
-        # MUST NOT read the versioned file — it falls back to
-        # content_summary.
+        """BC-11.15b: a legacy versioned script under output/<folder>/
+        must NOT be read by the handout. Without a canonical
+        speaker_script.md at the project root, the handout cell shows
+        the placeholder (the content_summary fallback is RETIRED).
+
+        Note: the legacy versioned-output path itself is retired by
+        REQ-SCRIPT-WRITER-1, but we keep this test to enforce the
+        invariant in case a stale file from a pre-BUG-AUDIT-84
+        project is still on disk."""
         folder = tmp_path / "output" / "2026_04_20_lab_meeting"
         folder.mkdir(parents=True, exist_ok=True)
         (folder / "script_v001.md").write_text(
@@ -401,7 +428,10 @@ class TestHandoutIgnoresVersionedScript:
             "Versioned-only prose that MUST NOT appear in handout."
             not in html
         )
-        assert "fallback-summary-text" in html
+        # No canonical speaker_script.md → placeholder. content_summary
+        # MUST NOT leak under BC-11.15b.
+        assert "fallback-summary-text" not in html
+        assert utility_skills._HANDOUT_NOTES_PLACEHOLDER in html
 
 
 if __name__ == "__main__":

@@ -153,11 +153,42 @@ def _slide_dict(
     }
 
 
+def _seed_speaker_script(project_root: Path, slides: list[dict[str, Any]]) -> None:
+    """Seed a minimal speaker_script.md so main_handout's BC-11.16
+    amendment (BUG-AUDIT-84 Sub-cycle C) precondition is satisfied
+    without invoking the script-writer agent. One section per
+    non-backup approved slide using the canonical structure parsed
+    by ``_load_speaker_script``."""
+    sections: list[str] = ["# Speaker Script\n", "**Target duration:** 10 minutes\n"]
+    idx = 0
+    for s in slides:
+        if s.get("status") != "approved" or s.get("backup"):
+            continue
+        idx += 1
+        slug = s["slug"]
+        title = s.get("title") or f"Title of {slug}"
+        sections.append(
+            f"\n## Slide {idx}: {title}\n\n"
+            f"**Slug:** `{slug}`\n\n"
+            f"### Key talking points\n\n"
+            f"Talking points for {slug}.\n\n"
+            f"### Transition\n\n"
+            f"Lead into the next slide.\n\n"
+            f"### Estimated speaking time\n\n"
+            f"~1 minute\n\n"
+            f"---\n"
+        )
+    (project_root / "speaker_script.md").write_text(
+        "\n".join(sections), encoding="utf-8"
+    )
+
+
 def _write_minimal_deck_state(
     project_root: Path,
     slides: list[dict[str, Any]],
     *,
     presentations: Optional[list[dict[str, Any]]] = None,
+    seed_speaker_script: bool = True,
 ) -> None:
     data = {
         "project_name": "bug_audit_21_test",
@@ -171,6 +202,12 @@ def _write_minimal_deck_state(
     (project_root / "deck_state.json").write_text(
         json.dumps(data), encoding="utf-8"
     )
+    # BUG-AUDIT-84 Sub-cycle C / BC-11.16 amendment: main_handout
+    # requires speaker_script.md. Seed a minimal one by default so
+    # tests that exercise the post-precondition handout pipeline can
+    # run without invoking the script-writer agent.
+    if seed_speaker_script:
+        _seed_speaker_script(project_root, slides)
 
 
 # ---------------------------------------------------------------------------

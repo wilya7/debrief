@@ -311,6 +311,16 @@ class TestHandoutEmitsHandoutDone:
         (tmp_path / "deck_state.json").write_text(
             json.dumps(data), encoding="utf-8"
         )
+        # BUG-AUDIT-84 Sub-cycle C / BC-11.16 amendment: main_handout
+        # requires speaker_script.md. Seed a minimal one.
+        (tmp_path / "speaker_script.md").write_text(
+            "# Speaker Script\n\n## Slide 1: Intro\n\n"
+            "**Slug:** `intro`\n\n"
+            "### Key talking points\n\nPoints.\n\n"
+            "### Transition\n\nNext.\n\n"
+            "### Estimated speaking time\n\n~1 minute\n\n---\n",
+            encoding="utf-8",
+        )
 
     def test_handout_emits_handout_done(self, tmp_path: Path) -> None:
         self._seed_minimal_project(tmp_path)

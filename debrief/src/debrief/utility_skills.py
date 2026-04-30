@@ -1158,11 +1158,20 @@ def _resolve_handout_notes(
     slide: Any,
     script_notes: Optional[dict[str, str]],
 ) -> str:
-    """Resolve the notes text for one slide per BC-11.15a precedence.
+    """Resolve the notes text for one slide per BC-11.15b precedence.
+
+    BUG-AUDIT-84 Sub-cycle C collapses the legacy three-level
+    precedence (BC-11.15a) to two levels:
 
     (1) speaker_script.md section matched by slug or title.
-    (2) slide.content_summary.
-    (3) placeholder string.
+    (2) placeholder string ``"(no notes available)"``.
+
+    The ``slide.content_summary`` fallback is RETIRED. Every successful
+    ``/debrief:script`` run now produces a presenter-ready
+    ``speaker_script.md`` per REQ-SCRIPT-WRITER-1, and
+    ``/debrief:handout``'s precondition (BC-11.16 amendment) requires
+    the script to exist before the handout is rendered. The handout
+    no longer needs a fallback to terse internal labels.
     """
     if script_notes:
         by_slug = script_notes.get(slide.slug)
@@ -1171,10 +1180,6 @@ def _resolve_handout_notes(
         by_title = script_notes.get(slide.title)
         if by_title and by_title.strip():
             return by_title
-
-    summary = getattr(slide, "content_summary", None) or ""
-    if summary.strip():
-        return summary
 
     return _HANDOUT_NOTES_PLACEHOLDER
 
@@ -1189,11 +1194,14 @@ def generate_layout_html(
     Mode '2up': two slides per page, detailed notes.
     Mode '4up': four slides per page, condensed notes.
 
-    BC-11.15a / BUG-AUDIT-68: per-slide notes text follows a
-    three-level precedence — speaker_script.md section, then
-    SlideRecord.content_summary, then the explicit placeholder
-    "(no notes available)". speaker_script.md is loaded once per
-    invocation via _load_speaker_script().
+    BC-11.15b / BUG-AUDIT-84 Sub-cycle C: per-slide notes text follows
+    a two-level precedence — speaker_script.md section, then the
+    explicit placeholder "(no notes available)". The legacy
+    ``content_summary`` fallback (BC-11.15a) is RETIRED.
+    ``speaker_script.md`` is loaded once per invocation via
+    ``_load_speaker_script()``; the script's existence is guaranteed
+    by ``main_handout``'s precondition + auto-cascade per BC-11.16
+    amendment.
 
     BC-11.15 / BUG-AUDIT-21: all visual styling lives in handout.css
     and is referenced via CSS classes; this function emits class-based
@@ -1355,6 +1363,46 @@ def main_handout(
             if s.status == "approved" and s.backup
         ]
         approved = approved + approved_backup
+
+    # BC-11.16 amendment (BUG-AUDIT-84 Sub-cycle C): speaker_script.md
+    # MUST exist. If absent, auto-cascade /debrief:script first, then
+    # re-check. The cascade NEVER blocks (script-writer always exits 0
+    # per REQ-SCRIPT-WRITER-2); if the script is still absent after
+    # the cascade (e.g. API outage logged to script_errors.jsonl), the
+    # handout is skipped with a stderr message — exit 0, do not block.
+    script_path = project_root / "speaker_script.md"
+    if not script_path.is_file():
+        print(
+            "speaker_script.md is missing — running /debrief:script first.",
+            file=sys.stderr,
+        )
+        try:
+            from launcher import main_script_writer  # type: ignore[import]
+
+            try:
+                main_script_writer(
+                    project_root, trigger="/debrief:handout-cascade"
+                )
+            except SystemExit:
+                # main_script_writer exits 0 always; absorb so the
+                # cascade is transparent to the handout caller.
+                pass
+        except ImportError as exc:
+            print(
+                f"Cannot auto-cascade /debrief:script: {exc}. "
+                "Run '/debrief:script' manually before '/debrief:handout'.",
+                file=sys.stderr,
+            )
+            sys.exit(0)
+
+        if not script_path.is_file():
+            print(
+                "speaker_script.md still missing after auto-cascade — "
+                "handout skipped. See .debrief/script_errors.jsonl for "
+                "the script-writer failure.",
+                file=sys.stderr,
+            )
+            sys.exit(0)
 
     # BC-11.16 step (3) / BC-11.7: environment check.
     if importlib.util.find_spec("playwright") is None:

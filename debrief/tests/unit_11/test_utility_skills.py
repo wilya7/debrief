@@ -192,6 +192,18 @@ def _make_debrief_state(
 # ---------------------------------------------------------------------------
 
 
+def _seed_minimal_speaker_script(project_root: Path) -> None:
+    """BUG-AUDIT-84 Sub-cycle C / BC-11.16 amendment: tests that
+    invoke ``main_handout`` post-precondition need a
+    ``speaker_script.md`` to satisfy the new precondition. Empty
+    body is fine — the precondition only checks file existence,
+    and per-slide notes resolve to the placeholder when the script
+    has no matching section."""
+    (project_root / "speaker_script.md").write_text(
+        "# Speaker Script\n", encoding="utf-8"
+    )
+
+
 def _write_deck_state(
     project_root: Path,
     slides: Optional[list[dict]] = None,
@@ -900,6 +912,7 @@ class TestMainHandoutPlaywrightEnvCheck:
             presentations=[],
         )
         _write_debrief_state(tmp_path)
+        _seed_minimal_speaker_script(tmp_path)
 
         # BUG-AUDIT-21 note: capture the real find_spec BEFORE patching
         # so non-playwright lookups pass through to the real
@@ -935,6 +948,7 @@ class TestMainHandoutPlaywrightEnvCheck:
             presentations=[],
         )
         _write_debrief_state(tmp_path)
+        _seed_minimal_speaker_script(tmp_path)
 
         _real_find_spec = importlib.util.find_spec
 
@@ -1018,16 +1032,26 @@ class TestGenerateLayoutHtml:
         for slide in four_slides:
             assert slide.slug in result
 
-    def test_generate_layout_html_2up_includes_content_summary_notes(
+    def test_generate_layout_html_2up_emits_placeholder_when_no_script(
         self,
         four_slides: list[SimpleNamespace],
         project_root: Path,
     ) -> None:
-        """2up mode uses detailed notes from content_summary fields."""
+        """BUG-AUDIT-84 Sub-cycle C / BC-11.15b: with no
+        speaker_script.md, the handout emits the placeholder for
+        every slide. content_summary is no longer a fallback.
+
+        (Predecessor test asserted content_summary appeared in 2up
+        notes; that contract was retired by BC-11.15b.)
+        """
+        from utility_skills import _HANDOUT_NOTES_PLACEHOLDER
         result = generate_layout_html("2up", four_slides, project_root)
+        # Placeholder appears in every cell.
+        assert result.count(_HANDOUT_NOTES_PLACEHOLDER) == len(four_slides)
+        # content_summary text MUST NOT leak through.
         for slide in four_slides:
             if slide.content_summary:
-                assert slide.content_summary in result
+                assert slide.content_summary not in result
 
     def test_generate_layout_html_4up_includes_slide_content(
         self,
@@ -1547,6 +1571,8 @@ class TestMainHandoutDoesNotConsumePendingGate:
             sub_phase="finalization/post_export",
             pending_gate=pending_gate,
         )
+        # BUG-AUDIT-84 Sub-cycle C: handout requires speaker_script.md.
+        _seed_minimal_speaker_script(tmp_path)
 
     def test_handout_preserves_pending_gate_g4_6(
         self,

@@ -386,9 +386,21 @@ During the initial briefing, after the user describes their presentation context
 
 ## Export Transition
 
-After the user approves the last main slide (and optionally declines backup slides), present the export question: "All slides are approved. Ready to generate deliverables? Options: `/debrief:export` (deck PDF), `/debrief:handout` (print-ready leave-behind), `/debrief:script` (presenter narration), or continue editing." Do not auto-export — wait for the user's choice.
+After the user approves the last main slide (and optionally declines backup slides), present the **finalization milestone** prompt (BUG-AUDIT-84 / REQ-SCRIPT-WRITER-4):
 
-**Before running `/debrief:script`** (BUG-AUDIT-57 / BUG-ST-14): ensure each approved slide's `content_summary` in `deck_state.json` includes a REAL transition sentence to the next slide. The script generator uses `content_summary` directly — if it contains only a topic label, the generated script will have placeholder transitions ("Lead into the next slide by..."). Write real transitions: "This sets the stage for why code matters — which is exactly what we explore next."
+> *"All slides approved. Ready to finalize? I'll run, in order: (1) `/debrief:refresh-brief` to ensure the brief reflects everything we've discussed, (2) `/debrief:script` to generate the speaker script, (3) `/debrief:export` for the deck PDF, (4) `/debrief:handout` for the leave-behind. You can also pick individual deliverables if you prefer."*
+
+Do not auto-finalize — wait for the user's reply. Three valid responses:
+
+1. **Accept the four-step sequence.** Run the four slash commands in order via Bash. Each step has its own failure recovery: the script-writer exits 0 always (failures logged to `.debrief/script_errors.jsonl`); the handout has its own auto-cascade per BC-11.16 amendment if `speaker_script.md` is missing post-script. A failure in step N does NOT abort step N+1 — the consultant runs the full sequence and then summarizes any logged failures for the user.
+
+2. **Pick a subset.** The user may name a subset (e.g., *"just the script and the export"*) — dispatch only those, in dependency order (refresh-brief always first if requested; script before handout if both requested; export is independent).
+
+3. **Continue editing.** If the user declines, return control without dispatching anything.
+
+**No new `/debrief:finalize` slash command.** Orchestration stays here, in the consultant, where conversational context lives. The four individual slash commands remain manually invocable for users who want partial regeneration.
+
+**On the script-writer's authority** (BUG-AUDIT-84): `/debrief:script` is now agent-authored — the script-writer agent (BC-5.21) reads the full memory surface (brief + audience.yaml + timeline + dialog + slides + co-writer baseline) and produces presenter-ready prose with six guardrails. Per-slide `content_summary` in `deck_state.json` is no longer the script's narration source — it remains the slide-maker's internal label. **Do NOT** prompt the user to hand-edit `content_summary` before invoking `/debrief:script`; that workflow (formerly BUG-AUDIT-57 / BUG-ST-14) is retired.
 
 ## Alternative Dispatch Prompts (BUG-AUDIT-66 / REQ-CONSULT-ALT-DISPATCH-1..3 / BC-5.15)
 
