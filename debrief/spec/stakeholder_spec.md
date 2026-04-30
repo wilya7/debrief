@@ -7467,4 +7467,26 @@ This is a contract-documentation gap, not a present-tense bug. BUG-AUDIT-77 clos
 
 ---
 
+### BUG-AUDIT-79: Memory architecture Cycle 2 Phase 1 — dialog archive append API + recall CLI
+
+**Status:** Cycle 2 Phase 1 of `spec/memory_architecture_rfc.md` §13. The PreCompact hook wiring (Phase 4), the rewrite agent (Phase 2), the event timeline emitters (Phase 3), and the migration tooling (Phase 5) are NOT shipped in this BUG-AUDIT — they will follow in BUG-AUDIT-80..83. This entry covers Phase 1 only.
+
+**Scope.** Implements BC-2.17 (dialog archive schema + watermark) and BC-3.19 (recall subcommand) per BUG-AUDIT-78's Cycle 1 contracts. Concretely:
+
+- `append_dialog_turn(project_root, *, role, responding_agent, content, metadata)` — atomic per-turn append API in `src/unit_3/launcher.py`. Computes the next turn number from the watermark, writes a JSONL line conforming to BC-2.17, advances the watermark in `.debrief/rewrite_metadata.json` atomically. Returns the assigned turn number.
+- `read_dialog_archive(project_root)` and `read_event_timeline(project_root)` — read helpers tolerant of missing files / malformed lines.
+- `recall(project_root, query)` — pure search function. Greps both archives via case-insensitive recursive substring match across all string-valued fields (including nested metadata and payload). Returns `RecallHit` records with ±2 entries of context per match, source-labeled.
+- `main_recall(project_root, query)` — CLI orchestrator wired to `python -m debrief.launcher recall <query> [--project-root PATH]`. Pretty-printed table output when `sys.stdout.isatty()`; JSON list output otherwise. Exits 0 (matches found OR no-matches but archives readable) per BC-3.19.
+- `recall` dispatch branch in `main_new()`; usage-line extended.
+
+**Decoupling from PreCompact.** The append API is the per-turn primitive that Phase 4 will wrap with a Claude-Code-transcript parser inside the PreCompact hook. Phase 1 ships the primitive standalone — the regression test seeds the archive via direct API calls, exercising the contract without depending on the hook.
+
+**Detection method (forward-looking).** A user querying the recall CLI on a freshly-installed plugin should see no matches because no append has happened yet (`append_dialog_turn` has no caller in code). After Phase 4 wires the hook, the recall starts surfacing real content. In Phase 1, the value is in having the storage and search primitives ready and tested.
+
+**Normative requirements:** none new. BUG-AUDIT-78 / Cycle 1 already established `REQ-MEMORY-DIALOG-1` and `REQ-MEMORY-RECALL-1`. Phase 1 implements them.
+
+**Prior-Art for Rebuild:** sub-cycle phases that ship standalone primitives BEFORE the integration that uses them tend to ship cleanly — the per-turn append + the recall CLI are testable in isolation, and a regression failure here is unambiguous (the primitive is broken, not the integration). The opposite pattern (ship the hook + agent + primitives all together) tangles the failure modes: a regression could be in the hook, the agent prompt, or the storage layer, and bisection becomes harder. BUG-AUDIT-79 ships the bottom of the stack first by design.
+
+---
+
 *End of Debrief Stakeholder Specification v1.1*

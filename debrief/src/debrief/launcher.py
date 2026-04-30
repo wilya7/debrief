@@ -684,6 +684,341 @@ def discover_soffice(project_root: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Memory architecture — dialog archive + recall (BUG-AUDIT-79 Cycle 2 Phase 1
+# / BC-2.17 / BC-3.19 / REQ-MEMORY-DIALOG-1 / REQ-MEMORY-RECALL-1).
+#
+# Phase 1 ships the per-turn capture API + the recall CLI. The PreCompact
+# hook wiring (Phase 4) and the rewrite agent (Phase 2) are NOT here —
+# tests synthesize archives via append_dialog_turn() and exercise recall.
+# ---------------------------------------------------------------------------
+
+
+_DIALOG_ARCHIVE_REL = ".debrief/dialog.jsonl"
+_REWRITE_METADATA_REL = ".debrief/rewrite_metadata.json"
+_TIMELINE_REL = "output/timeline.jsonl"
+
+
+def _read_rewrite_metadata(project_root: Path) -> dict:
+    """Read the watermark file; return defaults on missing/malformed."""
+    path = project_root / _REWRITE_METADATA_REL
+    if not path.is_file():
+        return {
+            "last_archived_turn": 0,
+            "last_rewrite_timestamp": None,
+            "agent_version": None,
+            "model": None,
+            "bootstrap_complete": False,
+        }
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {
+            "last_archived_turn": 0,
+            "last_rewrite_timestamp": None,
+            "agent_version": None,
+            "model": None,
+            "bootstrap_complete": False,
+        }
+
+
+def _write_rewrite_metadata(project_root: Path, data: dict) -> None:
+    """Atomically write the watermark file."""
+    path = project_root / _REWRITE_METADATA_REL
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+    fd = os.open(str(tmp_path), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.rename(tmp_path, path)
+
+
+def append_dialog_turn(
+    project_root: Path,
+    *,
+    role: str,
+    responding_agent: str,
+    content: str,
+    metadata: Optional[dict] = None,
+) -> int:
+    """Append one turn to ``.debrief/dialog.jsonl`` and advance the
+    ``last_archived_turn`` watermark in ``.debrief/rewrite_metadata.json``.
+
+    Per BC-2.17 / REQ-MEMORY-DIALOG-1, callers MUST honor the capture
+    rule (every user turn + only consultant replies; subagent replies
+    excluded). This function does NOT enforce the capture rule — it
+    is the per-turn append primitive that callers (the PreCompact
+    hook in Phase 4, regression tests in Phase 1) wrap.
+
+    The function is atomic on a single archive: it computes the next
+    turn number from the watermark, writes the JSONL line via append,
+    then advances the watermark. The watermark file is itself written
+    atomically (.tmp + fsync + rename).
+
+    Args:
+        project_root: Project root directory.
+        role: One of ``"user"`` | ``"consultant"`` (the schema requires
+            this; callers pass other values at their own risk —
+            validation is light-touch in Phase 1).
+        responding_agent: Which agent the user was addressing
+            (``"consultant"`` | ``"stylist"`` | ``"slide-maker"`` |
+            ``"visual-qa"`` | ``"bug-diagnostic"`` | etc.).
+        content: Verbatim turn body.
+        metadata: Optional metadata object; MUST contain ``phase`` and
+            ``sub_phase`` per BC-2.17, but the function does not
+            enforce. Defaults to an empty dict if None.
+
+    Returns:
+        The turn number assigned to this entry (monotonic from the
+        prior watermark).
+
+    See BC-2.17 and BUG-AUDIT-79.
+    """
+    project_root = project_root.resolve()
+    metadata_obj = dict(metadata) if metadata else {}
+
+    meta = _read_rewrite_metadata(project_root)
+    next_turn = int(meta.get("last_archived_turn", 0)) + 1
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    entry = {
+        "turn": next_turn,
+        "timestamp": timestamp,
+        "role": role,
+        "responding_agent": responding_agent,
+        "content": content,
+        "metadata": metadata_obj,
+    }
+
+    archive_path = project_root / _DIALOG_ARCHIVE_REL
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    with archive_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    # Advance the watermark. Other fields preserved.
+    meta["last_archived_turn"] = next_turn
+    _write_rewrite_metadata(project_root, meta)
+
+    return next_turn
+
+
+def read_dialog_archive(project_root: Path) -> list[dict]:
+    """Return all dialog entries in archive order. Empty list when
+    the archive is missing or unreadable.
+    """
+    path = (project_root / _DIALOG_ARCHIVE_REL).resolve()
+    if not path.is_file():
+        return []
+    entries: list[dict] = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    except OSError:
+        return []
+    return entries
+
+
+def read_event_timeline(project_root: Path) -> list[dict]:
+    """Return all timeline entries in archive order. Empty list when
+    the file is missing or unreadable. Phase 3 will populate; Phase 1
+    only reads.
+    """
+    path = (project_root / _TIMELINE_REL).resolve()
+    if not path.is_file():
+        return []
+    entries: list[dict] = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    except OSError:
+        return []
+    return entries
+
+
+@dataclass
+class RecallHit:
+    """One match from a recall search.
+
+    ``source`` is ``"dialog"`` | ``"timeline"`` indicating which
+    archive the match came from.
+    ``match`` is the full entry that matched.
+    ``context_before`` and ``context_after`` are up to 2 entries each
+    from the same archive, immediately adjacent to the match.
+    """
+
+    source: str
+    match: dict
+    context_before: list[dict] = field(default_factory=list)
+    context_after: list[dict] = field(default_factory=list)
+
+
+def _entry_matches_query(entry: dict, query_lower: str) -> bool:
+    """Return True if any string-valued field in the entry contains
+    the query (case-insensitive). Recursively descends into nested
+    dicts/lists so payload fields (timeline) and metadata (dialog)
+    are searched too.
+    """
+    def _walk(node: object) -> bool:
+        if isinstance(node, str):
+            return query_lower in node.lower()
+        if isinstance(node, dict):
+            return any(_walk(v) for v in node.values())
+        if isinstance(node, list):
+            return any(_walk(v) for v in node)
+        return False
+
+    return _walk(entry)
+
+
+def _collect_context(
+    entries: list[dict], match_index: int, n: int = 2
+) -> tuple[list[dict], list[dict]]:
+    """Return up to ``n`` entries before and after the match index."""
+    before = entries[max(0, match_index - n): match_index]
+    after = entries[match_index + 1: match_index + 1 + n]
+    return list(before), list(after)
+
+
+def recall(project_root: Path, query: str) -> list[RecallHit]:
+    """Search both dialog and timeline archives for ``query``.
+
+    Returns a list of ``RecallHit`` records, dialog hits first then
+    timeline hits, each in archive order.
+
+    Match rule: case-insensitive literal substring against any string-
+    valued field in the entry (recursively). Each match contributes
+    one hit with ±2 entries of context from the same archive.
+
+    See BC-3.19 and BUG-AUDIT-79.
+    """
+    if not query:
+        return []
+    q = query.lower()
+    hits: list[RecallHit] = []
+
+    dialog = read_dialog_archive(project_root)
+    for i, entry in enumerate(dialog):
+        if _entry_matches_query(entry, q):
+            before, after = _collect_context(dialog, i, n=2)
+            hits.append(
+                RecallHit(
+                    source="dialog",
+                    match=entry,
+                    context_before=before,
+                    context_after=after,
+                )
+            )
+
+    timeline = read_event_timeline(project_root)
+    for i, entry in enumerate(timeline):
+        if _entry_matches_query(entry, q):
+            before, after = _collect_context(timeline, i, n=2)
+            hits.append(
+                RecallHit(
+                    source="timeline",
+                    match=entry,
+                    context_before=before,
+                    context_after=after,
+                )
+            )
+
+    return hits
+
+
+def _hit_to_dict(hit: RecallHit) -> dict:
+    return {
+        "source": hit.source,
+        "match": hit.match,
+        "context_before": hit.context_before,
+        "context_after": hit.context_after,
+    }
+
+
+def main_recall(project_root: Path, query: str) -> None:
+    """Entry point for ``python -m debrief.launcher recall <query>
+    [--project-root PATH]``.
+
+    Output format:
+
+    * When stdout is a TTY: pretty-printed table with one section per
+      hit, source-labeled, showing match + context entries.
+    * When stdout is not a TTY (piped, redirected): JSON list of
+      hits per the BC-3.19 schema.
+
+    Exit codes (BC-3.19):
+
+    * 0 — search ran (matches OR no matches).
+    * 1 — a project file is missing or malformed AND we cannot fall
+      back gracefully. Phase 1's read helpers tolerate missing files
+      so this exit code is reserved for future strictness; in Phase
+      1 it is effectively unreachable.
+    * 3 — usage error. Argparse handles via SystemExit(2) on bad
+      args; we promote that to 3 for consistency with the BC.
+
+    See BC-3.19 and BUG-AUDIT-79.
+    """
+    project_root = project_root.resolve()
+    hits = recall(project_root, query)
+
+    if sys.stdout.isatty():
+        # Pretty-printed table for humans.
+        if not hits:
+            print(f"No matches for: {query!r}")
+            sys.exit(0)
+        for hit in hits:
+            print(f"--- [{hit.source}] match ---")
+            for before in hit.context_before:
+                _print_recall_context_line(before, hit.source, marker=" ")
+            _print_recall_context_line(hit.match, hit.source, marker=">")
+            for after in hit.context_after:
+                _print_recall_context_line(after, hit.source, marker=" ")
+            print()
+    else:
+        # JSON for programmatic consumers.
+        payload = [_hit_to_dict(h) for h in hits]
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+    sys.exit(0)
+
+
+def _print_recall_context_line(
+    entry: dict, source: str, *, marker: str
+) -> None:
+    """Render one entry as a single line for the human-friendly
+    pretty-printed recall output. Defensive against missing fields.
+    """
+    if source == "dialog":
+        turn = entry.get("turn", "?")
+        role = entry.get("role", "?")
+        content = entry.get("content", "")
+        # Trim long content for the table view; full content is in JSON
+        # when piped.
+        snippet = content[:120] + ("…" if len(content) > 120 else "")
+        print(f"{marker} T#{turn} {role}: {snippet}")
+    elif source == "timeline":
+        evt = entry.get("event", "?")
+        ts = entry.get("timestamp", "?")
+        payload = entry.get("payload", {})
+        print(f"{marker} [{ts}] {evt}: {payload}")
+    else:
+        print(f"{marker} {entry}")
+
+
+# ---------------------------------------------------------------------------
 # debrief doctor — filesystem/state reconciler (BUG-AUDIT-75 / BC-3.15 /
 # REQ-DOCTOR-1).
 #
@@ -1105,6 +1440,29 @@ def main_new() -> None:
         )
         _args = _parser.parse_args(sys.argv[2:])
         main_commands(_args.plugin_root)
+    elif subcommand == "recall":
+        # BC-3.19 / BUG-AUDIT-79 (Cycle 2 Phase 1) / REQ-MEMORY-RECALL-1.
+        # Greps both .debrief/dialog.jsonl and output/timeline.jsonl for
+        # the query string. Source-labeled output; pretty-table for TTYs,
+        # JSON for piped consumers.
+        import argparse as _ap
+
+        _parser = _ap.ArgumentParser(
+            prog="debrief.launcher recall",
+            description=(
+                "Search the dialog archive and event timeline for a "
+                "query. Returns matches with +/-2 entries of context, "
+                "source-labeled."
+            ),
+        )
+        _parser.add_argument("query", help="Substring to search for.")
+        _parser.add_argument(
+            "--project-root",
+            type=Path,
+            default=Path.cwd(),
+        )
+        _args = _parser.parse_args(sys.argv[2:])
+        main_recall(_args.project_root, _args.query)
     elif subcommand == "doctor":
         # BC-3.15 / BUG-AUDIT-75: filesystem <-> deck_state drift
         # reconciler. Parses --project-root and --reconstruct via a
@@ -1144,7 +1502,7 @@ def main_new() -> None:
         print(f"Unknown subcommand: {subcommand!r}", file=sys.stderr)
         print(
             "Usage: python -m debrief.launcher [new|preflight|"
-            "ensure_project|ensure_settings|doctor|commands] "
+            "ensure_project|ensure_settings|doctor|commands|recall] "
             "[project_root]",
             file=sys.stderr,
         )
