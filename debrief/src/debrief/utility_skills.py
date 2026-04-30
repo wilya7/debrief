@@ -982,6 +982,28 @@ def main_script_generator(project_root: Path) -> None:
 
     print(str(out_path), file=sys.stderr)
 
+    # BC-2.18 / BUG-AUDIT-81 (Cycle 2 Phase 3): emit `script_done` to
+    # output/timeline.jsonl. Best-effort — a timeline failure MUST NOT
+    # mask the script's success.
+    try:
+        from launcher import append_timeline_event  # type: ignore[import]
+
+        append_timeline_event(
+            project_root,
+            event="script_done",
+            payload={
+                "presentation_folder": folder,
+                "version": version,
+                "slide_count": len(approved),
+                "backup_slide_count": len(approved_backup),
+                "script_path": str(out_path.relative_to(project_root))
+                if out_path.is_relative_to(project_root)
+                else str(out_path),
+            },
+        )
+    except Exception:  # noqa: BLE001 — best-effort timeline emission
+        pass
+
 
 # ---------------------------------------------------------------------------
 # generate_layout_html (BC-11.6, REQ-HAND-4)
@@ -1357,6 +1379,28 @@ def main_handout(
     # is not mutated by a handout run.
 
     print(str(out_path), file=sys.stderr)
+
+    # BC-2.18 / BUG-AUDIT-81 (Cycle 2 Phase 3): emit `handout_done` to
+    # output/timeline.jsonl. Best-effort — a timeline failure MUST NOT
+    # mask the handout's success.
+    try:
+        from launcher import append_timeline_event  # type: ignore[import]
+
+        append_timeline_event(
+            project_root,
+            event="handout_done",
+            payload={
+                "mode": mode,
+                "include_backup": include_backup,
+                "version": next_version,
+                "slide_count": len(approved),
+                "handout_path": str(out_path.relative_to(project_root))
+                if out_path.is_relative_to(project_root)
+                else str(out_path),
+            },
+        )
+    except Exception:  # noqa: BLE001 — best-effort timeline emission
+        pass
 
 
 # ---------------------------------------------------------------------------

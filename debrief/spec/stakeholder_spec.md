@@ -7527,4 +7527,30 @@ This is a contract-documentation gap, not a present-tense bug. BUG-AUDIT-77 clos
 
 ---
 
+### BUG-AUDIT-81: Memory architecture Cycle 2 Phase 3 — event timeline helper + first three deterministic emitters
+
+**Status:** Cycle 2 Phase 3 of `spec/memory_architecture_rfc.md` §13. Builds on BUG-AUDIT-79 (Phase 1: dialog archive + recall) and BUG-AUDIT-80 (Phase 2: rewrite agent + CLI). Phase 4 (PreCompact hook + consultant amendments + remaining emitters) follows.
+
+**Scope.** Implements BC-2.18 (timeline.jsonl schema) and the deterministic code-path emitters: `export_done`, `handout_done`, `script_done`. The state-machine and consultant-discipline emitters (`briefing_complete`, `style_locked`, `slide_approved`, `slide_discarded`, `paper_attached`, `figure_selected`, `backup_session_started`) require state-machine code or consultant-card amendments — that's Phase 4 work.
+
+**What ships:**
+
+- **`append_timeline_event(project_root, *, event, payload, turn=None)`** in `src/unit_3/launcher.py`. Atomic single-line JSONL append to `output/timeline.jsonl`. Schema per BC-2.18: required `event` (string), `timestamp` (UTC ISO 8601 with `Z` suffix, written by the helper), `payload` (object passed through verbatim). Optional `turn` (int) — included when the event has an associated dialog turn, omitted when system-emitted. Concurrency: relies on POSIX single-`write()` atomicity for under-`PIPE_BUF` payloads; no explicit file locking needed at typical event sizes.
+
+- **`main_export` emits `export_done`** in `src/unit_10/export.py` after the existing success message and `append_export_log` call. Payload includes `presentation_folder`, `version`, `slide_count`, `include_backup`, `pdf_path`. Best-effort — a timeline-write failure does NOT mask the export's success (try/except around the import + call; failures are silent).
+
+- **`main_handout` emits `handout_done`** in `src/unit_11/utility_skills.py` after the success print. Payload includes `mode`, `include_backup`, `version`, `slide_count`, `handout_path`. Same best-effort pattern.
+
+- **`main_script_generator` emits `script_done`** in `src/unit_11/utility_skills.py` after the success print. Payload includes `presentation_folder`, `version`, `slide_count`, `backup_slide_count`, `script_path`. Same best-effort pattern.
+
+**Recall integration.** Phase 1's `recall` already greps both `dialog.jsonl` and `timeline.jsonl`; Phase 3's emissions surface there immediately. A regression test in this phase verifies recall finds `export_done` payload fields by substring.
+
+**Detection method (forward-looking).** After Phase 3 lands, every `/debrief:export`, `/debrief:handout`, `/debrief:script` invocation appends one event to `output/timeline.jsonl`. The rewrite agent (Phase 2) reads this file as one of its inputs and uses the events to populate the brief's `## Prior decisions` section. A user invoking `python -m debrief.launcher recall export_done` after running an export sees the event surfaced.
+
+**Normative requirements:** none new. BUG-AUDIT-78 / Cycle 1 already established `REQ-MEMORY-TIMELINE-1`. Phase 3 implements the helper + the first three emitters; Phase 4 adds the remaining state-machine and consultant emitters under the same requirement.
+
+**Prior-Art for Rebuild:** "best-effort emission with try/except around the import and the call protects the host module from a memory-architecture-side regression." If `append_timeline_event` ever raises, the export / handout / script success path continues unaffected — the emission is observability, not core functionality. The host modules already have their own success logs (`export_log.jsonl`, stderr prints); the timeline event is additive. This pattern lets us add emitters across the codebase with confidence that a Phase 3 bug can't take down a deliverable.
+
+---
+
 *End of Debrief Stakeholder Specification v1.1*

@@ -297,6 +297,28 @@ def main_export(project_root: Path, include_backup: bool = False) -> None:
         error_message=None,
     )
 
+    # BC-2.18 / BUG-AUDIT-81 (Cycle 2 Phase 3 / REQ-MEMORY-TIMELINE-1):
+    # emit `export_done` to output/timeline.jsonl. Best-effort — a
+    # timeline-write failure is logged via the existing export_log
+    # entry above and MUST NOT mask the export's success. Lazy import
+    # so a missing launcher module doesn't crash export.
+    try:
+        from launcher import append_timeline_event  # type: ignore[import]
+
+        append_timeline_event(
+            project_root,
+            event="export_done",
+            payload={
+                "presentation_folder": folder,
+                "version": version,
+                "slide_count": slide_count,
+                "include_backup": include_backup,
+                "pdf_path": pdf_path_str,
+            },
+        )
+    except Exception:  # noqa: BLE001 — best-effort timeline emission
+        pass
+
 
 def build_page_list(
     state: Any,

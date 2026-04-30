@@ -1293,6 +1293,50 @@ def read_dialog_archive(project_root: Path) -> list[dict]:
     return entries
 
 
+def append_timeline_event(
+    project_root: Path,
+    *,
+    event: str,
+    payload: dict,
+    turn: Optional[int] = None,
+) -> None:
+    """Append one event to ``output/timeline.jsonl`` per BC-2.18.
+
+    Schema (REQ-MEMORY-TIMELINE-1):
+
+    * ``event`` (str) — event type from the BC-2.18 enumeration
+      (extensible; readers MUST tolerate unknown types).
+    * ``timestamp`` (str) — UTC ISO 8601 with ``Z`` suffix; written
+      by this function from ``datetime.now(timezone.utc)``.
+    * ``turn`` (int, optional) — the dialog turn at which the event
+      was captured; absent for system-emitted events without a turn.
+    * ``payload`` (dict) — event-type-specific fields; the function
+      does not validate payload shape. Callers are responsible for
+      passing the right keys for the event type.
+
+    Concurrency: multiple emitters may call this function from
+    different processes simultaneously. POSIX guarantees atomicity
+    of single ``write()`` calls under ``PIPE_BUF`` (4 KiB on most
+    systems). Each event line is well under that limit in practice
+    (~200-500 bytes), so no explicit file-locking is needed.
+
+    See BC-2.18, REQ-MEMORY-TIMELINE-1, and BUG-AUDIT-81.
+    """
+    path = project_root / _TIMELINE_REL
+    path.parent.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    entry: dict = {
+        "event": event,
+        "timestamp": timestamp,
+        "payload": payload,
+    }
+    if turn is not None:
+        entry["turn"] = int(turn)
+    line = json.dumps(entry, ensure_ascii=False) + "\n"
+    with path.open("a", encoding="utf-8") as f:
+        f.write(line)
+
+
 def read_event_timeline(project_root: Path) -> list[dict]:
     """Return all timeline entries in archive order. Empty list when
     the file is missing or unreadable. Phase 3 will populate; Phase 1
