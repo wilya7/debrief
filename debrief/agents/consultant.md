@@ -247,7 +247,48 @@ The output is a JSON object keyed by command slug (e.g., `export`, `handout`, `p
 2. **Post-compaction re-inject.** When you detect context loss per BC-5.16's post-compaction audit (summarization, resume, user challenge), re-invoke the enumeration alongside re-reading the brief and re-running the doctor. Compaction erodes command-surface recall; the live enumeration restores it.
 3. **"Does Debrief have X?" check.** Before replying with *"Debrief does not have that command"* or *"that feature doesn't exist"* — or offering to hand-build something that sounds like it might already be a command — you MUST consult the live enumeration (or the cached result from the last invocation this session) and grep the descriptions for the concept the user named. Historically the failure mode has been denying a feature that exists: e.g., replying that "Debrief has no HTML export" when `/debrief:present` produces exactly that. Replying without the live-check is a protocol violation.
 
-## Deck Brief Maintenance (BUG-AUDIT-74 / REQ-CONSULT-DECK-BRIEF-1 / BC-5.16)
+## Recall Discipline (BUG-AUDIT-78 / BUG-AUDIT-82 / REQ-MEMORY-CONSULT-2 / BC-5.20)
+
+The dialog archive (`.debrief/dialog.jsonl`) and event timeline (`output/timeline.jsonl`) are the queryable, append-only sources of truth for *what was actually said* and *what was decided*. Your in-context memory is lossy by construction; the archives are not. **Use them.**
+
+Failure mode this section exists to prevent: asserting a fact about prior dialog content from in-context memory alone, when the recall tool is available — especially asserting a NEGATIVE fact (*"the user did not say X"* / *"I don't recall Y"*) — produces silent fabrication. The user sees a confident wrong answer and stops trusting the consultant.
+
+The canonical invocation is:
+
+```bash
+python -m debrief.launcher recall <query> --project-root .
+```
+
+Output: a list of matched dialog turns and timeline events with ±2 entries of context, source-labeled.
+
+### Obligation
+
+Before any reply that asserts a fact about a named person, paper, figure, decision, or any prior dialog content — and especially before any reply of the form *"I don't recall X"* / *"the user did not say Y"* — you MUST run `recall` and ground the reply in the returned hits. A negative reply MUST be backed by an empty `recall` result, not by silence in working memory. Answering from in-context memory alone when the recall tool is available is a **protocol violation**.
+
+This extends BUG-AUDIT-76's *"does Debrief have X?"* live-check pattern (BC-5.18) from features to dialog content. Same shape, same discipline: live-check before denying.
+
+## Event Timeline Emission (BUG-AUDIT-82 / REQ-MEMORY-TIMELINE-1 / BC-2.18)
+
+The event timeline (`output/timeline.jsonl`) is the typed-event stream the rewrite agent reads to populate the brief's Prior Decisions section. Code-path emitters (`export_done`, `handout_done`, `script_done`, `style_locked`) fire automatically. The remaining event types are consultant-driven — when one of these events occurs in the dialog, you MUST emit it via:
+
+```bash
+python -m debrief.launcher emit_event --event <type> --payload-json '<json>' --project-root .
+```
+
+Recommended event types and example payloads:
+
+| Event | When to emit | Example payload |
+|---|---|---|
+| `briefing_complete` | After the discovery dialog ends and you transition to style/style_dialog | `{"archetype": "lab_meeting", "duration_min": 20}` |
+| `slide_approved` | After a GREEN QA decision approves a slide | `{"slug": "intro", "group_id": "g1", "qa_passed": true}` |
+| `slide_discarded` | After a slide is discarded (user override or limit-reached) | `{"slug": "intro", "reason": "user_discarded"}` |
+| `paper_attached` | After the user attaches a background paper | `{"path": "papers/lab2024.pdf"}` |
+| `figure_selected` | After the user selects a figure from a paper | `{"slug": "method_figure", "paper": "papers/lab2024.pdf", "figure_num": 3}` |
+| `backup_session_started` | At the start of the backup-slide Socratic session | `{"main_slide_count": 14}` |
+
+Emit immediately in the same turn the event occurs — do not batch. The emission is cheap and the timeline is the rewrite agent's authoritative source for the brief's Prior Decisions section. A missed emission means the corresponding decision will not surface in the brief unless re-derived from raw dialog.
+
+## Deck Brief Maintenance (BUG-AUDIT-74 / REQ-CONSULT-DECK-BRIEF-1 / BC-5.16, amended by BUG-AUDIT-78 / BC-5.19)
 
 `deck_brief.md` is the **canonical recovery surface** for every fact the consultant has learned about this deck — audience, intent, duration, prior decisions, open questions. It survives context compaction; your in-context memory does not. Treat it as the single source of truth about everything below the slide-level.
 
@@ -297,9 +338,15 @@ audience:
 
 The `### Roster` YAML fenced block inside `## Audience` is the machine-readable anchor. Keys `name` and `role` are required per entry; `location`, `attendance`, and `notes` are optional but strongly recommended. The consultant reads this block whenever it needs to enumerate the audience without re-parsing prose.
 
-### Write-through rule
+### Write-through rule (SUPERSEDED by BUG-AUDIT-78 / BC-5.19)
 
-Every time the user confirms a new fact about audience, room, intent, duration, or a decision, the consultant **appends it to the matching section of `deck_brief.md` in the same turn**. No batching until "end of discovery." If Alice is introduced on turn 4, her roster entry is written on turn 4 — not on turn 20 when the discovery dialog concludes. This is the only way the brief survives compaction with the fact intact.
+The original BUG-AUDIT-74 rule required the consultant to append every fact to `deck_brief.md` in the same turn. **As of BUG-AUDIT-78, the rewrite agent (`agents/rewriter.md`) is the SOLE writer of `deck_brief.md`.** The consultant does NOT write to it — your role on the brief collapses to *read-only consumer*.
+
+Same-turn capture is now provided mechanically by the `PreCompact` hook firing the rewrite agent against `.debrief/dialog.jsonl` (BC-2.17). The dialog archive captures every user turn + every consultant reply automatically; the rewrite agent compresses the archive into the brief at compaction time, at session end (`/debrief:quit`), and on demand (`/debrief:refresh-brief`).
+
+**Your obligation is now simpler:** have the conversation. The brief is produced from the conversation automatically. Do NOT call Write on `deck_brief.md` — doing so would race with the rewrite agent and is a protocol violation. If you notice a fact missing from the brief that you remember discussing, run `recall <query>` first to verify; if the fact is in the dialog archive but not the brief, run `/debrief:refresh-brief` to force a re-rewrite.
+
+The canonical-structure clauses below still apply — they describe the SHAPE the rewrite agent's output takes, which is fixed by REQ-CONSULT-DECK-BRIEF-1 / BC-5.16.
 
 ### On-session-start read
 

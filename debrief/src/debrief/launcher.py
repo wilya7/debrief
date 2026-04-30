@@ -1015,6 +1015,46 @@ def main_rewrite_brief(
     """
     project_root = project_root.resolve()
 
+    # 0. PreCompact stdin envelope: when invoked from the PreCompact
+    # hook, Claude Code passes a JSON object on stdin with a
+    # `transcript_path` field. We read the transcript and append any
+    # new turns to .debrief/dialog.jsonl BEFORE running the rewrite,
+    # so the rewrite sees the freshest archive.
+    #
+    # Stdin handling is defensive: when the launcher is invoked
+    # interactively (sys.stdin.isatty() is True) or under pytest's
+    # captured-stdin (where read() raises ValueError), we skip the
+    # transcript capture silently — only the explicit hook-invocation
+    # path with a real piped JSON envelope counts.
+    if trigger == "PreCompact":
+        stdin_text: Optional[str] = None
+        try:
+            if not sys.stdin.isatty():
+                stdin_text = sys.stdin.read()
+        except (ValueError, OSError):
+            # pytest captures stdin in a way that raises ValueError on
+            # read; an interactive terminal without input may also
+            # raise. Either case means "no envelope provided" — skip
+            # the capture, do not log an error.
+            stdin_text = None
+        if stdin_text and stdin_text.strip():
+            try:
+                envelope = json.loads(stdin_text)
+                transcript_path_str = envelope.get("transcript_path")
+                if isinstance(transcript_path_str, str) and transcript_path_str:
+                    append_dialog_turns_from_transcript(
+                        project_root, Path(transcript_path_str)
+                    )
+            except (json.JSONDecodeError, OSError, ValueError) as exc:
+                log_rewrite_error(
+                    project_root,
+                    trigger=trigger,
+                    error_class="transcript_capture_error",
+                    error_message=str(exc),
+                )
+                # Continue anyway — the rewrite still runs against the
+                # existing dialog archive (just without the new turns).
+
     # 1. Resolve agent card path.
     if plugin_root is None:
         plugin_root_str = os.environ.get("CLAUDE_PLUGIN_ROOT")
@@ -1291,6 +1331,121 @@ def read_dialog_archive(project_root: Path) -> list[dict]:
     except OSError:
         return []
     return entries
+
+
+def append_dialog_turns_from_transcript(
+    project_root: Path,
+    transcript_path: Path,
+) -> int:
+    """Parse a Claude Code transcript and append new turns to
+    ``.debrief/dialog.jsonl`` per the Q4 capture rule.
+
+    Capture rule (BC-2.17 / REQ-MEMORY-DIALOG-1):
+
+    * Every user turn is captured (regardless of which agent the user
+      was addressing).
+    * Assistant turns are captured with ``responding_agent="consultant"``
+      by default. Subagent-only assistant turns (when distinguishable
+      from the transcript) are skipped.
+
+    The Claude Code transcript is JSONL with at minimum ``role`` (one
+    of ``"user"`` / ``"assistant"``) and ``content`` (string or list
+    of content blocks). The parser is tolerant of additional fields.
+
+    Idempotence is provided by the watermark: only turns numbered
+    GREATER than ``last_archived_turn`` (relative to the transcript's
+    ordering) are appended. The watermark advances with each append.
+
+    Returns the count of newly appended turns.
+
+    See BC-2.17, BC-3.18, REQ-MEMORY-DIALOG-1, and BUG-AUDIT-82.
+    """
+    project_root = project_root.resolve()
+    if not transcript_path.is_file():
+        return 0
+    try:
+        text = transcript_path.read_text(encoding="utf-8")
+    except OSError:
+        return 0
+
+    # Parse all transcript entries first so we can index against the
+    # watermark (which counts only entries that pass the capture rule).
+    raw_entries: list[dict] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            raw_entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+
+    meta = _read_rewrite_metadata(project_root)
+    already_archived = int(meta.get("last_archived_turn", 0))
+
+    written = 0
+    captured_index = 0  # Counts entries that pass the capture rule.
+    for entry in raw_entries:
+        if not isinstance(entry, dict):
+            continue
+        role = entry.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        # Capture rule: user turns always; assistant turns default to
+        # consultant unless the entry explicitly names a different
+        # subagent (e.g., via a "subagent_type" field, when present).
+        responding_agent = "consultant"
+        if role == "assistant":
+            sub_type = entry.get("subagent_type") or entry.get("agent")
+            if isinstance(sub_type, str) and sub_type and sub_type != "consultant":
+                # Subagent reply — skip per Q4 capture rule.
+                continue
+        else:
+            # User turn — preserve responding_agent if the transcript
+            # tagged it (so a future rewrite can know which subagent
+            # the user was addressing).
+            sub_type = entry.get("responding_agent") or entry.get("subagent_type")
+            if isinstance(sub_type, str) and sub_type:
+                responding_agent = sub_type
+        captured_index += 1
+        if captured_index <= already_archived:
+            continue
+        # Extract content as a single string (Claude Code content can
+        # be a list of content blocks; concatenate text blocks).
+        content = entry.get("content", "")
+        if isinstance(content, list):
+            parts = []
+            for block in content:
+                if isinstance(block, dict):
+                    text_field = block.get("text") or block.get("content")
+                    if isinstance(text_field, str):
+                        parts.append(text_field)
+                elif isinstance(block, str):
+                    parts.append(block)
+            content_str = "".join(parts)
+        elif isinstance(content, str):
+            content_str = content
+        else:
+            content_str = str(content)
+        # Build metadata from any tagged fields the transcript provides.
+        metadata: dict = {}
+        for key in ("phase", "sub_phase", "session_id", "timestamp"):
+            v = entry.get(key)
+            if isinstance(v, str):
+                metadata[key] = v
+        # Use append_dialog_turn for atomic per-turn append + watermark
+        # advancement. (Each call advances the watermark by 1; the
+        # captured_index logic above ensures we don't replay turns
+        # already archived.)
+        append_dialog_turn(
+            project_root,
+            role=role,
+            responding_agent=responding_agent,
+            content=content_str,
+            metadata=metadata,
+        )
+        written += 1
+    return written
 
 
 def append_timeline_event(
@@ -1951,6 +2106,76 @@ def main_new() -> None:
         )
         _args = _parser.parse_args(sys.argv[2:])
         main_commands(_args.plugin_root)
+    elif subcommand == "emit_event":
+        # BC-2.18 / BUG-AUDIT-82 (Cycle 2 Phase 4) /
+        # REQ-MEMORY-TIMELINE-1. Wraps append_timeline_event for
+        # consultant-driven emissions (briefing_complete, slide_approved,
+        # paper_attached, etc.). Deterministic code-path emitters
+        # (export_done / handout_done / script_done) call
+        # append_timeline_event directly per BUG-AUDIT-81.
+        import argparse as _ap
+
+        _parser = _ap.ArgumentParser(
+            prog="debrief.launcher emit_event",
+            description=(
+                "Append a typed event to output/timeline.jsonl. For "
+                "consultant-driven event emission via Bash."
+            ),
+        )
+        _parser.add_argument(
+            "--event",
+            required=True,
+            help=(
+                "Event type. Recommended values per BC-2.18: "
+                "briefing_complete, style_locked, slide_approved, "
+                "slide_discarded, paper_attached, figure_selected, "
+                "backup_session_started. Other values are accepted "
+                "(extensible enumeration); readers tolerate unknowns."
+            ),
+        )
+        _parser.add_argument(
+            "--payload-json",
+            default="{}",
+            help=(
+                "JSON object with event-specific fields. Default: "
+                "empty object. Example for slide_approved: "
+                '\'{"slug": "intro", "group_id": "g1"}\'.'
+            ),
+        )
+        _parser.add_argument(
+            "--turn",
+            type=int,
+            default=None,
+            help=(
+                "Optional dialog turn at which the event was captured. "
+                "Omit for system-emitted events without a turn."
+            ),
+        )
+        _parser.add_argument(
+            "--project-root", type=Path, default=Path.cwd()
+        )
+        _args = _parser.parse_args(sys.argv[2:])
+        try:
+            payload = json.loads(_args.payload_json)
+        except json.JSONDecodeError as exc:
+            print(
+                f"emit_event: --payload-json is not valid JSON: {exc}",
+                file=sys.stderr,
+            )
+            sys.exit(3)
+        if not isinstance(payload, dict):
+            print(
+                "emit_event: --payload-json must encode a JSON object",
+                file=sys.stderr,
+            )
+            sys.exit(3)
+        append_timeline_event(
+            _args.project_root.resolve(),
+            event=_args.event,
+            payload=payload,
+            turn=_args.turn,
+        )
+        sys.exit(0)
     elif subcommand == "rewrite_brief":
         # BC-3.18 / BUG-AUDIT-80 (Cycle 2 Phase 2) /
         # REQ-MEMORY-REWRITE-1..4. Reads agents/rewriter.md, calls
@@ -2052,7 +2277,7 @@ def main_new() -> None:
         print(
             "Usage: python -m debrief.launcher [new|preflight|"
             "ensure_project|ensure_settings|doctor|commands|recall|"
-            "rewrite_brief] [project_root]",
+            "rewrite_brief|emit_event] [project_root]",
             file=sys.stderr,
         )
         sys.exit(1)

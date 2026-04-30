@@ -1476,6 +1476,24 @@ def promote_style_draft(project_root: Path) -> None:
         file=sys.stderr,
     )
 
+    # BC-2.18 / BUG-AUDIT-82 (Cycle 2 Phase 4): emit `style_locked`
+    # to output/timeline.jsonl. Best-effort — a timeline failure
+    # MUST NOT mask the style-promotion's success.
+    try:
+        from launcher import append_timeline_event  # type: ignore[import]
+
+        append_timeline_event(
+            project_root,
+            event="style_locked",
+            payload={
+                "style_config_path": "style_config.json",
+                "style_guide_path": "style_guide.md",
+                "style_css_path": "assets/style.css",
+            },
+        )
+    except Exception:  # noqa: BLE001 — best-effort timeline emission
+        pass
+
 
 # ---------------------------------------------------------------------------
 # skill_save (BC-11.9, BC-11.10)

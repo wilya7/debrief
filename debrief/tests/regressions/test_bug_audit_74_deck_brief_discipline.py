@@ -92,11 +92,19 @@ class TestDeckBriefMaintenanceSection:
         assert "## Deck Brief Maintenance" in text
 
     def test_section_cites_bug_audit_74(self) -> None:
-        section = _get_section(
-            _consultant_md_path().read_text(encoding="utf-8"),
-            "Deck Brief Maintenance (BUG-AUDIT-74 / "
-            "REQ-CONSULT-DECK-BRIEF-1 / BC-5.16)",
+        # The section heading begins with this prefix; BUG-AUDIT-78 /
+        # BC-5.19 amended the heading to also cite the supersession,
+        # so we match by prefix rather than by full heading.
+        text = _consultant_md_path().read_text(encoding="utf-8")
+        # Locate the section by prefix.
+        idx = text.find(
+            "## Deck Brief Maintenance (BUG-AUDIT-74"
         )
+        assert idx >= 0, "Section heading prefix not found"
+        # Slice from the heading to the next top-level `## ` (excluding
+        # nested markdown sub-headings inside fenced blocks).
+        section_end = text.find("\n## ", idx + 1)
+        section = text[idx:section_end] if section_end > 0 else text[idx:]
         assert "BUG-AUDIT-74" in section
         assert "REQ-CONSULT-DECK-BRIEF-1" in section
         assert "BC-5.16" in section
@@ -217,18 +225,27 @@ class TestDisciplineRulesPresent:
         return text[brief_start:dispatch_start]
 
     def test_write_through_rule_present(self) -> None:
+        # BUG-AUDIT-74's original write-through rule was SUPERSEDED by
+        # BUG-AUDIT-78 / BC-5.19 (the rewrite agent is now the sole
+        # writer of deck_brief.md). The Deck Brief Maintenance section
+        # still has a Write-through subsection, but its content has
+        # changed to document the supersession. This test pins the
+        # current expectation: the subsection exists, marked as
+        # superseded, and points at the new owner.
         section = self._maintenance_section()
-        # The rule has a dedicated heading AND uses the phrase
-        # "same turn" to nail timing semantics.
         assert "Write-through" in section
-        assert re.search(r"same turn", section, re.IGNORECASE)
-        # Forbids batching.
+        # Marked as superseded.
         assert re.search(
-            r"no batching|batching.*forbidden|not[- ]batched|"
-            r"without batching",
-            section,
-            re.IGNORECASE,
+            r"SUPERSEDED|superseded", section
+        ), "Write-through subsection must be marked as superseded"
+        # Points at BC-5.19 (the new owner).
+        assert "BC-5.19" in section, (
+            "Write-through subsection must cross-reference BC-5.19"
         )
+        # Names the rewrite agent as the new sole writer.
+        assert re.search(
+            r"sole writer|SOLE writer", section
+        ), "Write-through subsection must name the rewrite agent as sole writer"
 
     def test_on_session_start_read_rule_present(self) -> None:
         section = self._maintenance_section()

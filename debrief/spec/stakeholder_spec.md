@@ -7553,4 +7553,35 @@ This is a contract-documentation gap, not a present-tense bug. BUG-AUDIT-77 clos
 
 ---
 
+### BUG-AUDIT-82: Memory architecture Cycle 2 Phase 4 — PreCompact hook + transcript parser + emit_event CLI + consultant amendments
+
+**Status:** Cycle 2 Phase 4 of `spec/memory_architecture_rfc.md` §13. The integration phase that wires Phases 1+2+3 together: the PreCompact hook fires automatically; the consultant card reflects the rewrite-agent ownership change; new event types can be emitted by the consultant via `emit_event`. Phase 5 (migration + ledger repurposing + doctor extension) follows.
+
+**Scope.** Six concrete deliverables, all tied to BUG-AUDIT-78 / Cycle 1 contracts:
+
+1. **Transcript parser.** New `append_dialog_turns_from_transcript(project_root, transcript_path)` in `src/unit_3/launcher.py`. Reads Claude Code transcript JSONL, applies the Q4 capture rule (every user turn + only consultant replies; subagent replies skipped via `subagent_type` check on assistant entries). Tolerates content-block format (lists of `{type, text}` blocks). Idempotent against the watermark — re-running on the same transcript produces no duplicate appends.
+
+2. **PreCompact hook integration.** `main_rewrite_brief` extended to read stdin when `--trigger PreCompact`. Stdin envelope per Claude Code's PreCompact API: `{"transcript_path": "..."}`. The CLI parses the envelope, runs `append_dialog_turns_from_transcript`, then proceeds with the rewrite. Stdin parse failures are logged via the existing `log_rewrite_error` path and the rewrite continues against the existing archive.
+
+3. **PreCompact hook entry in `hooks.json`.** `event: PreCompact`, `matcher: ""` (auto + manual), `command: python -m debrief.launcher rewrite_brief --project-root ${CLAUDE_PROJECT_DIR} --trigger PreCompact`, `timeout: 60`.
+
+4. **`/debrief:refresh-brief` slash command.** New `commands/refresh-brief.md` with the canonical heading + description + behavior section. Documents the three triggers (PreCompact, /debrief:quit, refresh-brief) and the failure-handling contract.
+
+5. **`emit_event` CLI subcommand.** New launcher subcommand `python -m debrief.launcher emit_event --event <type> --payload-json <json> [--turn N] [--project-root PATH]`. Wraps `append_timeline_event` for consultant-driven emissions. Validates that `--payload-json` parses to a dict (not array); exit 3 on usage errors.
+
+6. **`style_locked` emitter** in `utility_skills.py:promote_style_draft`. The one remaining deterministic emitter (the others — `briefing_complete`, `slide_approved`, `slide_discarded`, `paper_attached`, `figure_selected`, `backup_session_started` — are consultant-driven and surface via the new `emit_event` CLI documented in the consultant card's `## Event Timeline Emission` section).
+
+7. **Consultant-card amendments** (`agents/consultant.md`):
+   - **`## Recall Discipline`** new section per BC-5.20. Names the failure mode (asserting facts from in-context memory alone), cites the canonical `recall` invocation, lists the obligation (recall before any recall-class reply, especially negative replies of the form *"I don't recall X"*).
+   - **`## Event Timeline Emission`** new section per BC-2.18 / BUG-AUDIT-82. Cites the `emit_event` invocation, lists six consultant-driven event types with example payloads, mandates same-turn emission.
+   - **`## Deck Brief Maintenance` write-through subsection rewritten.** The original BUG-AUDIT-74 write-through clause is marked SUPERSEDED by BUG-AUDIT-78 / BC-5.19. New text states the rewrite agent is the SOLE writer of `deck_brief.md`, the consultant's role collapses to read-only consumer, and same-turn capture is now provided mechanically by the PreCompact hook firing the rewrite agent against the dialog archive. Recovery path for missed facts: run `recall <query>`; if the fact is in dialog but not in brief, run `/debrief:refresh-brief`.
+
+**Detection method (forward-looking).** Once Phase 4 lands, every Claude Code compaction event automatically appends new dialog turns to `.debrief/dialog.jsonl` and runs the rewrite agent. The brief refreshes without consultant intervention. The user can invoke `/debrief:refresh-brief` to force a refresh on demand. Consultant-driven event emissions surface in `output/timeline.jsonl` after the consultant calls `emit_event` from its dialog turn.
+
+**Normative requirements:** none new. BUG-AUDIT-78 / Cycle 1 already established `REQ-MEMORY-CONSULT-1`, `REQ-MEMORY-CONSULT-2`, `REQ-MEMORY-DIALOG-1`, `REQ-MEMORY-TIMELINE-1`. Phase 4 implements the integration these requirements anchor.
+
+**Prior-Art for Rebuild:** "the integration phase reveals every loose end the foundation phases left." Phase 1 shipped the dialog archive and the recall CLI as standalone primitives — useful but unused. Phase 2 shipped the rewrite agent — useful but with no automatic trigger. Phase 3 shipped the timeline helper + three emitters — useful but only fired by deliverable code paths. Phase 4 connects them: PreCompact fires the rewrite, the rewrite reads the dialog, the dialog captures real conversation turns from the transcript, the timeline carries decision events, the consultant emits the events that the deliverable code paths can't observe. The architecture works as a system only after the integration phase. This is why phased shipping with explicit integration as the last phase is correct: each foundation phase is testable in isolation, and the integration phase's bugs can't hide in the foundation.
+
+---
+
 *End of Debrief Stakeholder Specification v1.1*

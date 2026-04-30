@@ -136,6 +136,11 @@ EXPECTED_COMMAND_FILES = {
     "quit.md",
     "script.md",
     "handout.md",
+    # BUG-AUDIT-82 (Cycle 2 Phase 4): /debrief:refresh-brief slash
+    # command. Forces the rewrite agent to regenerate deck_brief.md
+    # + output/audience.yaml on demand. One of the three rewrite
+    # triggers per REQ-MEMORY-REWRITE-2.
+    "refresh-brief.md",
 }
 
 # Expected command names (filenames without the .md extension).
