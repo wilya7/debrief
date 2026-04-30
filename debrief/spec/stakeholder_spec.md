@@ -7584,4 +7584,45 @@ This is a contract-documentation gap, not a present-tense bug. BUG-AUDIT-77 clos
 
 ---
 
+### BUG-AUDIT-83: Memory architecture Cycle 2 Phase 5 — `debrief doctor --brief-audit` mode + Cycle 2 closeout
+
+**Status:** Cycle 2 Phase 5 of `spec/memory_architecture_rfc.md` §13. Completes the five-phase implementation arc that started with BUG-AUDIT-78 (Cycle 1 spec/blueprint contracts) and progressed through BUG-AUDIT-79 (dialog archive + recall), BUG-AUDIT-80 (rewriter agent + CLI), BUG-AUDIT-81 (event timeline + 3 emitters), and BUG-AUDIT-82 (PreCompact integration + consultant card amendments). With this entry, the memory architecture is fully implemented; future BUG-AUDITs amend, polish, or extend.
+
+**Scope.** Extend `debrief doctor` with a `--brief-audit` mode that audits the memory-architecture state, surfacing brief drift and rewrite staleness alongside the existing slide-state drift report.
+
+**What ships:**
+
+- **`_audit_brief(project_root) -> BriefAuditReport`** in `src/unit_3/launcher.py`. Pure function. Five audit dimensions:
+  1. **`brief_present`** — `deck_brief.md` exists at project root.
+  2. **`brief_structure_valid`** — top-level sections conform to BC-5.16 canonical set (uses `validate_brief_structure` from Phase 2). `None` when brief absent.
+  3. **`roster_valid`** — when `### Roster` is present, the YAML parses and every entry has `name` + `role` keys (uses `validate_roster_yaml` from Phase 2). `None` when brief or roster absent.
+  4. **`watermark_aligned`** — `.debrief/rewrite_metadata.json`'s `last_archived_turn` equals the highest `turn` field in `.debrief/dialog.jsonl`. Mismatch indicates an interrupted append or a hand-edited archive.
+  5. **`rewrite_stale`** — `True` when more than 5 turns have accumulated since the last rewrite (heuristic threshold). Surfaces *"you've had a lot of conversation since the last rewrite"* without being a hard limit.
+
+- **`main_doctor` extended with `brief_audit: bool = False` parameter.** When `True`, the JSON output gains a `brief_audit` field and brief-side drift is reported via the existing exit-code-1 contract. When `False`, output is unchanged from BUG-AUDIT-75 — backward-compatible.
+
+- **`--brief-audit` CLI flag** wired into the `doctor` argparse. Usage: `python -m debrief.launcher doctor --project-root . --brief-audit`.
+
+- **Exit-code semantics extended.** Slide-side drift continues to exit 1 per BC-3.16; brief-side drift (structurally invalid brief, invalid roster, watermark mismatch, or rewrite staleness) also exits 1 when `--brief-audit` is passed. A clean run with both audits passing exits 0.
+
+**Cycle 2 closure.** With this phase complete, every Cycle 1 contract has a Cycle 2 implementation:
+
+| Cycle 1 contract | Cycle 2 implementation |
+|---|---|
+| REQ-MEMORY-DIALOG-1 (BC-2.17) | BUG-AUDIT-79 — `append_dialog_turn`, dialog archive schema, watermark |
+| REQ-MEMORY-TIMELINE-1 (BC-2.18) | BUG-AUDIT-81 + 82 — `append_timeline_event`, deterministic + consultant-driven emitters |
+| REQ-MEMORY-REWRITE-1..4 (BC-3.18, BC-5.19) | BUG-AUDIT-80 — rewriter agent-card, hybrid invocation, atomic dual-write |
+| REQ-MEMORY-RECALL-1 (BC-3.19) | BUG-AUDIT-79 — `recall` CLI |
+| REQ-MEMORY-CONSULT-1 (BC-5.16 amendment) | BUG-AUDIT-82 — consultant write-through retracted |
+| REQ-MEMORY-CONSULT-2 (BC-5.20) | BUG-AUDIT-82 — `## Recall Discipline` consultant section |
+| REQ-MEMORY-LEDGER-1 | BUG-AUDIT-78 spec + BUG-AUDIT-83 doctor — ledger.jsonl is now the orchestration log; user-facing content lives in dialog.jsonl + timeline.jsonl |
+
+**Detection method (forward-looking).** A user invoking `python -m debrief.launcher doctor --brief-audit` on any project gets a unified slide-state + memory-state health report. Drift surfaces with actionable notes (e.g., *"7 turns archived since the last rewrite at 2026-04-30T14:00Z; consider running `/debrief:refresh-brief`"*). The audit complements but does not replace the existing automatic mechanisms (PreCompact hook from Phase 4); it is a diagnostic layer on top of the active machinery.
+
+**Normative requirements:** none new. The five Cycle 1 normative requirements are all implemented now.
+
+**Prior-Art for Rebuild:** "ship a diagnostic layer above the active machinery once the active machinery is mature." Phase 4 made the architecture self-driving (PreCompact fires automatically; consultant emits via CLI; rewrite produces the brief). Phase 5's diagnostic layer doesn't FIX problems — Phase 4's automation does that — but it surfaces drift the automation can't catch (hand-edited archives, malformed manual brief edits, stale rewrites in low-compaction sessions). A diagnostic layer added before the automation is incomplete is noisy and chases moving targets; a diagnostic layer added after the automation stabilizes catches the residual edge cases.
+
+---
+
 *End of Debrief Stakeholder Specification v1.1*

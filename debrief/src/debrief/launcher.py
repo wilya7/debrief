@@ -1863,7 +1863,142 @@ def reconstruct_slide_records_from_files(
     return written
 
 
-def main_doctor(project_root: Path, *, reconstruct: bool = False) -> None:
+@dataclass
+class BriefAuditReport:
+    """Brief-audit dimensions surfaced by ``doctor --brief-audit``.
+
+    See BC-3.16 (extended) and BUG-AUDIT-83.
+    """
+
+    brief_present: bool
+    brief_structure_valid: Optional[bool]  # None when brief absent
+    roster_valid: Optional[bool]           # None when brief or roster absent
+    watermark_aligned: bool
+    rewrite_stale: bool
+    notes: list[str] = field(default_factory=list)
+
+
+def _audit_brief(project_root: Path) -> BriefAuditReport:
+    """Audit the memory-architecture state per BUG-AUDIT-83.
+
+    Five dimensions:
+
+    1. ``brief_present`` — ``deck_brief.md`` exists at project root.
+    2. ``brief_structure_valid`` — top-level sections conform to
+       BC-5.16's canonical set (uses ``validate_brief_structure``).
+       ``None`` when the brief is absent.
+    3. ``roster_valid`` — when ``### Roster`` is present, the YAML
+       parses and every entry has ``name`` + ``role`` keys (uses
+       ``validate_roster_yaml``). ``None`` when the brief is absent
+       OR the brief has no roster.
+    4. ``watermark_aligned`` — ``.debrief/rewrite_metadata.json``'s
+       ``last_archived_turn`` equals the highest ``turn`` field in
+       ``.debrief/dialog.jsonl``. Mismatch indicates an interrupted
+       append or a hand-edited archive.
+    5. ``rewrite_stale`` — ``True`` when more than 5 archived turns
+       have accumulated since the last rewrite per the watermark
+       timestamps. Threshold is heuristic and intentionally loose
+       — the goal is to surface "you've had a lot of conversation
+       since the last rewrite" not to be a hard limit.
+
+    Notes are accumulated as human-readable strings the doctor's
+    stderr summary can render.
+    """
+    notes: list[str] = []
+
+    # 1. Brief presence.
+    brief_path = project_root / _DECK_BRIEF_REL
+    brief_present = brief_path.is_file()
+
+    # 2. Brief structure validity.
+    brief_structure_valid: Optional[bool] = None
+    brief_text: Optional[str] = None
+    if brief_present:
+        try:
+            brief_text = brief_path.read_text(encoding="utf-8")
+            validate_brief_structure(brief_text)
+            brief_structure_valid = True
+        except OSError as exc:
+            brief_structure_valid = False
+            notes.append(f"brief unreadable: {exc}")
+        except ValueError as exc:
+            brief_structure_valid = False
+            notes.append(f"brief structure invalid: {exc}")
+
+    # 3. Roster validity (only when brief is present and structurally valid).
+    roster_valid: Optional[bool] = None
+    if brief_present and brief_text is not None and brief_structure_valid:
+        roster_yaml = extract_roster_yaml(brief_text)
+        if roster_yaml is not None:
+            try:
+                validate_roster_yaml(roster_yaml)
+                roster_valid = True
+            except ValueError as exc:
+                roster_valid = False
+                notes.append(f"roster YAML invalid: {exc}")
+
+    # 4. Watermark alignment.
+    meta = _read_rewrite_metadata(project_root)
+    last_archived_turn = int(meta.get("last_archived_turn", 0))
+    archive = read_dialog_archive(project_root)
+    if archive:
+        try:
+            highest_turn = max(int(e.get("turn", 0)) for e in archive)
+        except (ValueError, TypeError):
+            highest_turn = 0
+    else:
+        highest_turn = 0
+    watermark_aligned = last_archived_turn == highest_turn
+    if not watermark_aligned:
+        notes.append(
+            f"watermark ({last_archived_turn}) != highest turn in "
+            f"archive ({highest_turn}); the archive may have been "
+            f"hand-edited or truncated."
+        )
+
+    # 5. Rewrite staleness — heuristic.
+    rewrite_stale = False
+    last_rewrite_ts = meta.get("last_rewrite_timestamp")
+    if last_rewrite_ts is None and highest_turn > 5:
+        rewrite_stale = True
+        notes.append(
+            f"no rewrite has run yet ({highest_turn} turns archived). "
+            f"Run /debrief:refresh-brief to produce a brief."
+        )
+    elif last_rewrite_ts is not None and highest_turn > 0:
+        # Count turns whose timestamp is newer than last_rewrite_ts.
+        # This is a string-comparison shortcut that works because all
+        # timestamps are ISO 8601 with the Z suffix (lexicographic
+        # order matches chronological order).
+        newer_count = sum(
+            1 for e in archive
+            if isinstance(e.get("timestamp"), str)
+            and e["timestamp"] > last_rewrite_ts
+        )
+        if newer_count > 5:
+            rewrite_stale = True
+            notes.append(
+                f"{newer_count} turns archived since the last rewrite "
+                f"at {last_rewrite_ts}; consider running "
+                f"/debrief:refresh-brief."
+            )
+
+    return BriefAuditReport(
+        brief_present=brief_present,
+        brief_structure_valid=brief_structure_valid,
+        roster_valid=roster_valid,
+        watermark_aligned=watermark_aligned,
+        rewrite_stale=rewrite_stale,
+        notes=notes,
+    )
+
+
+def main_doctor(
+    project_root: Path,
+    *,
+    reconstruct: bool = False,
+    brief_audit: bool = False,
+) -> None:
     """Entry point for ``python -m debrief.launcher doctor
     --project-root <path> [--reconstruct]``.
 
@@ -1901,12 +2036,38 @@ def main_doctor(project_root: Path, *, reconstruct: bool = False) -> None:
             file=sys.stderr,
         )
 
-    summary = {
+    summary: dict[str, object] = {
         "drift_detected": report.drift_detected,
         "orphan_files": report.orphan_files,
         "orphan_records": report.orphan_records,
         "matched_count": report.matched_count,
     }
+
+    # BUG-AUDIT-83: --brief-audit extends the doctor with memory-
+    # architecture audits. The slide-state report above is unchanged;
+    # the brief_audit field is added when the flag is passed.
+    brief_drift = False
+    if brief_audit:
+        audit = _audit_brief(project_root)
+        summary["brief_audit"] = {
+            "brief_present": audit.brief_present,
+            "brief_structure_valid": audit.brief_structure_valid,
+            "roster_valid": audit.roster_valid,
+            "watermark_aligned": audit.watermark_aligned,
+            "rewrite_stale": audit.rewrite_stale,
+            "notes": audit.notes,
+        }
+        # Brief-side drift: structurally invalid brief, invalid roster,
+        # watermark misalignment, or staleness all count as drift the
+        # doctor reports via exit-code 1 (when not in remediation mode).
+        if (
+            audit.brief_structure_valid is False
+            or audit.roster_valid is False
+            or not audit.watermark_aligned
+            or audit.rewrite_stale
+        ):
+            brief_drift = True
+
     print(json.dumps(summary, indent=2))
 
     if report.drift_detected:
@@ -1925,12 +2086,27 @@ def main_doctor(project_root: Path, *, reconstruct: bool = False) -> None:
                 "entries for orphan files.",
                 file=sys.stderr,
             )
+        # Brief-audit notes are also surfaced when slide-drift is the
+        # primary report, so a single doctor run shows everything.
+        if brief_audit:
+            for note in summary["brief_audit"]["notes"]:  # type: ignore[index]
+                print(f"  brief_audit: {note}", file=sys.stderr)
         sys.exit(1)
 
-    print(
-        f"debrief doctor: OK — {report.matched_count} slide(s) in sync.",
-        file=sys.stderr,
-    )
+    if brief_drift:
+        print(
+            "debrief doctor: slides in sync; brief-audit DRIFT — "
+            "see brief_audit notes:",
+            file=sys.stderr,
+        )
+        for note in summary["brief_audit"]["notes"]:  # type: ignore[index]
+            print(f"  - {note}", file=sys.stderr)
+        sys.exit(1)
+
+    msg = f"debrief doctor: OK — {report.matched_count} slide(s) in sync."
+    if brief_audit:
+        msg += " Brief audit: clean."
+    print(msg, file=sys.stderr)
     sys.exit(0)
 
 
@@ -2267,10 +2443,22 @@ def main_new() -> None:
                 "the normal red-green cycle."
             ),
         )
+        _parser.add_argument(
+            "--brief-audit",
+            action="store_true",
+            help=(
+                "BUG-AUDIT-83 / Cycle 2 Phase 5: also audit the memory "
+                "architecture state — brief presence + structure + "
+                "roster YAML validity + watermark alignment + rewrite "
+                "staleness. Adds a `brief_audit` field to the JSON "
+                "report. Brief-side drift is reported via exit code 1."
+            ),
+        )
         _args = _parser.parse_args(sys.argv[2:])
         main_doctor(
             _args.project_root,
             reconstruct=_args.reconstruct,
+            brief_audit=_args.brief_audit,
         )
     else:
         print(f"Unknown subcommand: {subcommand!r}", file=sys.stderr)
