@@ -415,6 +415,38 @@ def sanitize_identifier(text: str, max_length: int = 40) -> str:
 
 **BC-2.16 sanitize_identifier algorithm compliance.** `sanitize_identifier` must implement the 7-step Debrief Identifier Sanitization Algorithm exactly as specified in Section 24.10.1, in order: (1) lowercase, (2) spaces/hyphens → underscores, (3) remove non-`[a-z0-9_]`, (4) collapse consecutive underscores, (5) strip leading/trailing underscores, (6) truncate to `max_length` (truncate anywhere — no word-boundary alignment), (7) empty result → `"untitled"`. **Note on step ordering:** Step 7 (empty-check) is evaluated on the result of step 5, BEFORE step 6 (truncation), per Section 24.10.1 ("If the result is empty after steps 1–5"). If the result after step 5 is non-empty, step 6 truncates it; if empty, step 7 returns `"untitled"` immediately without truncation. Given the same inputs, `sanitize_identifier` must always return the same output. No randomness. Callers must not pass already-sanitized strings to avoid double-sanitization.
 
+**BC-2.17 `.debrief/dialog.jsonl` schema (BUG-AUDIT-78 / REQ-MEMORY-DIALOG-1).** `.debrief/dialog.jsonl` is the append-only raw dialog archive. Each line is a JSON object:
+
+```json
+{"turn": 42,
+ "timestamp": "2026-04-29T14:32:17Z",
+ "role": "user",
+ "responding_agent": "consultant",
+ "content": "Alice is the engineer in Rome.",
+ "metadata": {"phase": "discovery", "sub_phase": "discovery/dialog"}}
+```
+
+Required fields: `turn` (int, monotonic across the project's lifetime), `timestamp` (ISO 8601 UTC with `Z` suffix), `role` (one of `"user"` | `"consultant"`), `responding_agent` (string identifying which agent the user was addressing — `"consultant"` | `"stylist"` | `"slide-maker"` | `"visual-qa"` | `"bug-diagnostic"`), `content` (string, the verbatim turn body), `metadata` (object containing at least `phase` and `sub_phase`; MAY contain additional implementation-defined fields).
+
+Capture rule (REQ-MEMORY-DIALOG-1): every USER turn is archived regardless of `responding_agent`; only CONSULTANT replies are archived (subagent replies are excluded). Marker entries with `event` keys (`"session_start"`, `"compaction"`) MAY appear interleaved but MUST NOT truncate the archive. The `dialog.jsonl` file is append-only: no edits, no deletions, no truncation across project lifetime.
+
+Watermark file `.debrief/rewrite_metadata.json` MUST track `last_archived_turn` (int) so dialog-append operations are idempotent against the same Claude Code transcript. The watermark file's full schema is defined by BC-3.18.
+
+**BC-2.18 `output/timeline.jsonl` schema (BUG-AUDIT-78 / REQ-MEMORY-TIMELINE-1).** `output/timeline.jsonl` is the append-only typed-event stream. Each line is a JSON object:
+
+```json
+{"event": "slide_approved",
+ "timestamp": "2026-04-29T14:42:01Z",
+ "turn": 73,
+ "payload": {"slug": "intro", "group_id": "g1"}}
+```
+
+Required fields: `event` (string from a closed extensible enumeration), `timestamp` (ISO 8601 UTC), `payload` (object whose schema is event-type-specific). Optional: `turn` (int, the dialog turn at which the event was captured; absent for system-emitted events that have no associated turn).
+
+Initial event-type enumeration: `briefing_complete`, `style_locked`, `slide_approved`, `slide_discarded`, `export_done`, `handout_done`, `script_done`, `paper_attached`, `figure_selected`, `backup_session_started`. Cycle 2 adds new event types as features ship; the enumeration is extensible without breaking the contract — readers MUST tolerate unknown event types (skip-and-continue).
+
+Multiple emitters write to this file concurrently — the state machine, export/handout/script/visual-qa modules, the consultant's action-capture path. Each write MUST be a single-line atomic JSON append (open-and-append-with-fsync), so concurrent writers do not corrupt the file.
+
 ---
 
 ## Unit 3: Launcher
@@ -552,6 +584,28 @@ The dispatch branch `elif subcommand == "doctor":` in `main_new()` parses `--pro
 
 Destructive remediation (deleting orphan HTML files or orphan state records) is OUT OF SCOPE for this contract — those decisions require explicit user intent and are outside the mechanical drift detector's role. See REQ-DOCTOR-1 and BUG-AUDIT-75.
 
+**BC-3.18 `rewrite_brief` subcommand (BUG-AUDIT-78 / REQ-MEMORY-REWRITE-1..4).** `src/unit_3/launcher.py` MUST provide a `rewrite_brief` subcommand wired into `main_new()`'s dispatch table. The subcommand:
+
+- Parses `--project-root` (Path, default `Path.cwd()`).
+- Optionally accepts a transcript path on stdin (PreCompact hook passes `transcript_path` as a JSON field on stdin); when present, the subcommand uses it to append new dialog turns to `.debrief/dialog.jsonl` per the REQ-MEMORY-DIALOG-1 capture rule.
+- Reads `agents/rewriter.md` (the agent-card per BC-5.19), extracts the model declaration from the YAML frontmatter and the system prompt from the body, calls the Anthropic API with that prompt as `system` and the inputs (dialog archive + event timeline + bootstrap-brief if applicable per REQ-MEMORY-REWRITE-3) as the user message.
+- On success: validates the response (canonical brief sections per REQ-CONSULT-DECK-BRIEF-1, roster YAML parses with `name`/`role` keys per entry), writes `deck_brief.md.tmp` + `output/audience.yaml.tmp`, atomically renames both, updates `.debrief/rewrite_metadata.json` (schema: `last_rewrite_timestamp`, `last_archived_turn`, `agent_version`, `model`, `bootstrap_complete`).
+- On failure: appends a JSON entry to `.debrief/rewrite_errors.jsonl` (schema: `timestamp`, `trigger` ∈ `"PreCompact" | "/debrief:quit" | "/debrief:refresh-brief"`, `error_class`, `error_message`, optional `transcript_path`) and **exits 0**. The hook MUST NOT block compaction on rewrite failure (REQ-MEMORY-REWRITE-4).
+- The atomic dual write MUST not produce partial state: if the second rename fails after the first succeeded, the implementation MUST roll back the first rename. (Implementation hint: rename to `.tmp.staged` first, run a final paired rename only after both temp files exist and validate.)
+
+The `rewrite_brief` subcommand MUST appear in the usage-line string printed by the catch-all `else` branch in `main_new()` so users discover it when they type an unknown subcommand. Cycle 2 implementation lands in Phase 2 of RFC §13.
+
+**BC-3.19 `recall` subcommand (BUG-AUDIT-78 / REQ-MEMORY-RECALL-1).** `src/unit_3/launcher.py` MUST provide a `recall` subcommand wired into `main_new()`'s dispatch table. The subcommand:
+
+- Parses `<query>` (positional, required, string) and `--project-root` (Path, default `Path.cwd()`).
+- Greps `.debrief/dialog.jsonl` and `output/timeline.jsonl` for the query (case-insensitive literal-string match against the `content` field of dialog entries and against any string-valued field of timeline entries).
+- Returns matched entries with ±2 entries of context, source-labeled (each output record carries `"source": "dialog" | "timeline"`).
+- Output format: pretty-printed table when `sys.stdout.isatty()`; JSON list otherwise. JSON shape: `[{"source": "dialog" | "timeline", "match": <entry>, "context_before": [<entry>...], "context_after": [<entry>...]}, ...]`.
+- Exit codes: 0 when matches found OR no matches but archives exist (no-match is not an error); 1 when a project file is missing or malformed; 3 on usage error.
+- v1 implementation uses Python `in` substring match on the relevant fields. A future full-text-search index (e.g., `tantivy`) MAY be added without changing the CLI surface — only the indexer would change.
+
+The `recall` subcommand MUST appear in the usage-line string printed by the catch-all `else` branch in `main_new()`. Cycle 2 implementation lands in Phase 1 of RFC §13.
+
 **BC-3.17 `list_commands` + commands subcommand (BUG-AUDIT-76 / REQ-CONSULT-CMD-SURFACE-1).** `src/unit_3/launcher.py` MUST provide two public helpers and MUST wire a `commands` subcommand into `main_new()`'s dispatch table:
 
 - `list_commands(plugin_root: Path) -> dict[str, str]` — pure. Scans `<plugin_root>/commands/*.md`, opens each file, locates the first non-blank line (which MUST be a heading of the form `# /debrief:<slug>`; non-matching files are skipped), walks past blank lines to the first non-blank description line, accumulates description text up to the next blank line joining multi-line paragraphs with a single space, and records the result in the returned dict keyed by the slug extracted from the heading. Files with a heading but no description are skipped (not emitted with empty string). Missing `commands/` directory yields `{}`. The function MUST be idempotent and read-only.
@@ -578,6 +632,25 @@ The hand-maintained `## Command Dispatch Menu` table in the agent card is RETAIN
 3. **Post-compaction re-audit.** When the consultant detects context loss per BC-5.16's post-compaction audit clause, it MUST re-run `debrief doctor` alongside re-reading `deck_brief.md` — compaction can erode the consultant's mental model of which slides exist, and filesystem reality is the authoritative backstop.
 
 Regression tests in `tests/regressions/test_bug_audit_75_doctor_and_drift.py` enforce the CLI behavior (drift detection, exit codes, reconstruction idempotence, minimal-record shape) and the consultant-card obligations (the Responsibilities bullet, the `## State Drift Audit` section, the three contents checks). See REQ-DOCTOR-1, REQ-CONSULT-DOCTOR-1, REQ-CONSULT-SLIDE-WT-1, and BUG-AUDIT-75.
+
+**BC-5.19 Rewrite agent (BUG-AUDIT-78 / REQ-MEMORY-REWRITE-1..4).** The plugin MUST ship a new agent at `agents/rewriter.md` that is the SOLE writer of `deck_brief.md` and `output/audience.yaml`. Contract:
+
+- **Agent-card frontmatter** declares `model: claude-sonnet-4-6` (no user-configurable override) and `tools: Read` (no Write tool — the rewrite-script wraps the model output and writes the files atomically; the agent itself is read-only on its working directory).
+- **Card body** is the system prompt. The body MUST encode at minimum these discipline rules: (a) no invention — facts not in inputs are not in output; (b) latest-state-only — no change-log sections inside the brief; (c) canonical sections only per REQ-CONSULT-DECK-BRIEF-1; (d) roster YAML required keys (`name`, `role`) per entry, recommended (`location`, `attendance`, `notes`); (e) subagent replies are NOT in the dialog archive — do not infer subagent-internal content.
+- **Hybrid invocation pattern.** The rewrite is dispatched NOT via Claude Code's Task tool (which is awkward from a hook context) but by the `rewrite_brief` CLI subcommand (BC-3.18) reading the agent-card file, extracting the model declaration from frontmatter and the system prompt from the body, and calling the Anthropic API directly with that prompt as `system` and the inputs as the user message. This preserves Debrief's "every agent has a card" convention while keeping the hook fast.
+- **Sole-writer invariant.** No other code path MAY write to `deck_brief.md` or `output/audience.yaml`. The consultant agent is forbidden from calling Write on either file (REQ-MEMORY-CONSULT-1). A regression test SHALL AST-scan `agents/consultant.md` (and any other agent card that references the brief) for forbidden Write-tool usage on those paths.
+- **Regenerate-from-scratch invariant.** Inputs to the rewrite MUST be `.debrief/dialog.jsonl` + `output/timeline.jsonl` only, EXCEPT on the very first rewrite of a project (per REQ-MEMORY-REWRITE-3, when `.debrief/rewrite_metadata.json` is absent), where the prior `deck_brief.md` MAY be a one-time bootstrap input. After bootstrap, the strict rule applies.
+- **Output validation.** Before atomic rename, the script MUST validate: (1) the rendered brief contains exactly the canonical section headings of REQ-CONSULT-DECK-BRIEF-1; (2) the `### Roster` YAML block parses; (3) every roster entry has non-empty `name` and `role` keys. Validation failure causes the script to log per REQ-MEMORY-REWRITE-4 and exit 0 with the prior versions retained.
+
+Cycle 2 implementation lands in Phase 2 of `spec/memory_architecture_rfc.md` §13. Regression tests in `tests/regressions/test_bug_audit_78_*` (Cycle 1) anchor the spec/blueprint contracts; Cycle 2 adds tests that exercise the actual rewrite path.
+
+**BC-5.20 Recall discipline (BUG-AUDIT-78 / REQ-MEMORY-CONSULT-2).** `agents/consultant.md` MUST contain a dedicated section titled `## Recall Discipline` placed within the existing compaction-recovery cluster (between `## Command Surface Awareness` and `## Deck Brief Maintenance`, OR appended to the cluster — exact placement to be determined in Cycle 2 Phase 4). The section MUST:
+
+1. **Name the failure mode.** Asserting a fact (about a named person, paper, figure, decision, or any prior dialog content) from in-context memory alone, when `recall` is available — especially asserting a NEGATIVE fact (*"the user did not say X"* / *"I don't recall Y"*) — produces silent fabrication.
+2. **Cite the canonical invocation.** `python -m debrief.launcher recall <query>`.
+3. **List the obligation.** Before any reply that asserts a fact about prior dialog content, the consultant MUST run `recall` and ground the reply in the returned hits. Negative replies (*"I don't recall X"*) MUST be backed by an empty `recall` result, not by silence in working memory. This extends BUG-AUDIT-76's *"does Debrief have X?"* live-check pattern (BC-5.18) from features to dialog content.
+
+Cycle 2 implementation lands in Phase 4 of `spec/memory_architecture_rfc.md` §13. The Cycle 1 regression test asserts only that the spec + blueprint anchors exist; the Cycle 2 test will additionally assert the agent-card section is present and contains the marker phrasings.
 
 **BC-3.15 `scripts/fetch_vendor.py` — vendor asset acquisition script.** The workspace MUST contain a script at `scripts/fetch_vendor.py` (at the workspace root, alongside `routing.py` and `prepare_task.py`; NOT inside the plugin directory — it is a maintainer build step, not a runtime artifact, and must not ship in `~/.claude/plugins/cache/`). The script: (a) reads `src/unit_1/assets/vendor/VERSIONS.md` via `_parse_versions`, which enforces the tab-separated `<filename>\tversion <ver>\tsha256:<hash>\t<source_url>` shape per BC-1.12 and raises `ValueError` on any malformed line; (b) for each listed entry, downloads the file from `<source_url>` via `urllib.request.urlopen` with a 30-second timeout (stdlib only; no `requests` or other third-party dependency); (c) computes SHA-256 of the downloaded bytes; (d) compares to the manifest hash and SKIPS the write if the target already exists and its hash already matches (idempotent no-op on a fully populated vendor directory); (e) FAILS LOUDLY on any hash mismatch — prints a stderr error naming the file, the manifest hash, and the downloaded hash, adds the file to a failure list, and exits with code 1 without writing anything; (f) on success, writes the verified bytes to the target path under `src/unit_1/assets/vendor/` and prints a `[fetch]` or `[skip]` line per entry plus a final summary count. The script MUST be invoked manually by the maintainer whenever VERSIONS.md is bumped — it is never auto-run by `bin/debrief` or any other user-facing entry point, preserving INV-07 (no external network requests from a running project). A regression test in `tests/regressions/test_bug_audit_16_vendor_real_files.py` asserts the script exists at the workspace root and is Python-importable. See BUG-AUDIT-16.
 
@@ -978,7 +1051,7 @@ The agent card MUST also include a dispatch-mapping table translating natural-la
 
 2. **Machine-readable audience roster.** Inside `## Audience`, a fenced ```yaml ``` block MUST carry an `audience:` list. Each entry MUST include keys `name` (string) and `role` (string). Recommended keys: `location`, `attendance` (one of `in-person` / `remote` / `remote (Teams)` etc.), `notes`. The roster is the machine-readable anchor; the `## Audience` prose above it is free-form narrative that complements but does not replace the roster.
 
-3. **Write-through.** Every confirmed new fact about audience, room, intent, duration, or a decision MUST be appended to the matching section in the SAME turn it is learned. Batching until "end of discovery" is forbidden — the failure mode BC-5.16 exists to prevent is context-compaction firing before the batched write.
+3. **Write-through.** *(Superseded by BUG-AUDIT-78 / BC-5.19.)* The original clause required the consultant to append every fact in the same turn it was learned. As of BUG-AUDIT-78, `deck_brief.md` is owned exclusively by the rewrite agent (BC-5.19) — the consultant does NOT write to it. Same-turn capture is now provided mechanically by the `PreCompact` hook firing the rewrite agent against `.debrief/dialog.jsonl` (BC-2.17). The canonical-structure clauses (1) and (2) above remain in force; only the writer changes. Cycle 2 implementation lands in Phase 4 of `spec/memory_architecture_rfc.md` §13.
 
 4. **On-session-start mandatory read.** After loading `archetypes.json` and `deck_state.json`, the consultant MUST read `deck_brief.md` in full if the file exists, regardless of `sub_phase`. This makes the brief the recovery source of truth across every session boundary — fresh start, resume, or re-open.
 
