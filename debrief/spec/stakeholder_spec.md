@@ -7489,4 +7489,42 @@ This is a contract-documentation gap, not a present-tense bug. BUG-AUDIT-77 clos
 
 ---
 
+### BUG-AUDIT-80: Memory architecture Cycle 2 Phase 2 — rewriter agent-card + rewrite_brief CLI
+
+**Status:** Cycle 2 Phase 2 of `spec/memory_architecture_rfc.md` §13. Builds on BUG-AUDIT-79's dialog archive + recall (Phase 1). The PreCompact hook wiring (Phase 4) and event timeline emitters (Phase 3) are NOT shipped here — they will follow in BUG-AUDIT-81..82. This entry covers Phase 2 only.
+
+**Scope.** Implements BC-3.18 (`rewrite_brief` CLI) and BC-5.19 (rewriter agent-card + hybrid invocation pattern) per BUG-AUDIT-78's Cycle 1 contracts.
+
+**What ships:**
+
+- **`src/unit_1/agents/rewriter.md`** — agent-card declaring `model: claude-sonnet-4-6` + `tools: Read`. Body is the system prompt encoding the BC-5.19 discipline rules: no invention, latest-state-only, canonical sections only, roster YAML schema, subagent-replies-not-archived, sections-may-be-absent, verbatim-when-possible, bootstrap honor system. Output format clause: emit ONLY the brief markdown, no preamble or postscript.
+
+- **`extract_agent_card(card_path) -> (model, system_prompt)`** in `launcher.py` — parses YAML frontmatter (light hand-rolled, avoids PyYAML for the trivial case), returns the `model` value and the body. Raises `ValueError` on malformed frontmatter or missing `model` key.
+
+- **`build_rewrite_inputs(dialog, timeline, prior_brief=None) -> str`** — formats the user-message body. Three labeled sections (BOOTSTRAP if applicable, DIALOG ARCHIVE, EVENT TIMELINE) with JSON-Lines payloads inside fenced code blocks. The closing line instructs the agent to emit the brief markdown directly.
+
+- **`validate_brief_structure(text)`** — verifies `# Deck Brief` heading + canonical top-level section list (no extras).
+
+- **`extract_roster_yaml(brief_text) -> str | None`** — pulls the YAML body from the `### Roster` section's fenced ```yaml ``` block. Returns `None` when the brief has no roster (allowed during early discovery).
+
+- **`validate_roster_yaml(yaml_text)`** — light hand-rolled YAML parser checking that every entry under `audience:` has non-empty `name` and `role` keys. Raises `ValueError` on schema violations.
+
+- **`call_rewrite_agent(model, system_prompt, user_message) -> str`** — Anthropic API call with lazy SDK import. Tests mock this function entirely so the test suite has no API dependency.
+
+- **`log_rewrite_error(project_root, *, trigger, error_class, error_message, transcript_path=None)`** — appends a structured failure entry to `.debrief/rewrite_errors.jsonl` per REQ-MEMORY-REWRITE-4.
+
+- **`main_rewrite_brief(project_root, *, trigger, plugin_root)`** — orchestrator. Reads agent-card → builds inputs → detects bootstrap from `.debrief/rewrite_metadata.json` → calls API → validates structure + roster → atomic dual-write of `deck_brief.md` + `output/audience.yaml` → updates watermark. **Exits 0 on every failure path** per REQ-MEMORY-REWRITE-4; failures are logged, not fatal.
+
+- **`rewrite_brief` dispatch branch** in `main_new()` with `--project-root` and `--trigger` argparse; usage-line extended.
+
+**Decoupling from PreCompact.** The CLI is callable standalone (`python -m debrief.launcher rewrite_brief --project-root .`). Phase 4 will wire the PreCompact hook to invoke it with `--trigger PreCompact`. Tests exercise the CLI via direct function calls with a mocked `call_rewrite_agent`.
+
+**Detection method (forward-looking).** A user invoking `python -m debrief.launcher rewrite_brief` on a project with seed dialog produces a fresh `deck_brief.md` and `output/audience.yaml`. On bootstrap (first invocation), the prior brief (if present) is included as a stylistic baseline; subsequent invocations exclude it. Failures (API errors, invalid output, write failures) appear in `.debrief/rewrite_errors.jsonl` and the prior brief is preserved.
+
+**Normative requirements:** none new. BUG-AUDIT-78 / Cycle 1 already established `REQ-MEMORY-REWRITE-1..4`. Phase 2 implements them.
+
+**Prior-Art for Rebuild:** "decoupling the LLM call from its callers via a single mockable seam makes complex orchestrators testable." `call_rewrite_agent` is a one-function boundary that tests replace with `patch.object(launcher, "call_rewrite_agent", ...)`. Every failure path (API outage, validation failure, write error) is exercised against a deterministic input. The contrast: an orchestrator that calls the API inline at three different points would require three patches and a more fragile test. One seam, many tests.
+
+---
+
 *End of Debrief Stakeholder Specification v1.1*

@@ -274,6 +274,11 @@ EXPECTED_AGENT_FILES = {
     "visual-qa.md",
     "bug-diagnostic.md",
     "stylist.md",
+    # BUG-AUDIT-80 (Cycle 2 Phase 2): rewriter agent-card added.
+    # Sole writer of deck_brief.md per BC-5.19; invoked via the
+    # rewrite_brief CLI subcommand (BC-3.18) at three triggers
+    # (PreCompact hook, /debrief:quit, /debrief:refresh-brief).
+    "rewriter.md",
 }
 
 
@@ -349,6 +354,20 @@ AGENT_FRONTMATTER_SPEC: dict[str, dict[str, Any]] = {
         "model": "claude-sonnet-4-6",
         "maxTurns": 20,
         "tools": "Read, Write, Edit, Bash",
+    },
+    # BC-5.19 / BUG-AUDIT-80: rewriter agent-card. Sole writer of
+    # deck_brief.md per BC-5.19. Single turn (maxTurns: 1) — the
+    # rewriter produces a complete brief in one call. Read-only tools
+    # — the wrapping rewrite_brief CLI handles the writes atomically.
+    "rewriter.md": {
+        "name": "rewriter",
+        "description": (
+            "Memory rewriter that produces deck_brief.md from the raw "
+            "dialog archive and event timeline"
+        ),
+        "model": "claude-sonnet-4-6",
+        "maxTurns": 1,
+        "tools": "Read",
     },
 }
 

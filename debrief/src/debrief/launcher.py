@@ -13,6 +13,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import sys
 from dataclasses import dataclass, field
@@ -681,6 +682,472 @@ def discover_soffice(project_root: Path) -> Path:
         f"LibreOffice (soffice) not found. Debrief requires LibreOffice "
         f"for PPTX reference import.\n{instructions}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Memory architecture — rewrite agent + rewrite_brief CLI
+# (BUG-AUDIT-80 Cycle 2 Phase 2 / BC-3.18 / BC-5.19 /
+# REQ-MEMORY-REWRITE-1..4).
+#
+# Phase 2 ships the rewrite_brief subcommand: extracts the agent-card
+# system prompt, builds the user message from dialog + timeline (and
+# bootstrap brief on first run), calls the Anthropic API, validates
+# the output, and atomically writes deck_brief.md + output/audience.yaml.
+# The PreCompact hook wiring (Phase 4) will invoke this CLI; Phase 2
+# tests exercise it via mocked API calls.
+# ---------------------------------------------------------------------------
+
+
+_DECK_BRIEF_REL = "deck_brief.md"
+_AUDIENCE_YAML_REL = "output/audience.yaml"
+_REWRITE_ERRORS_REL = ".debrief/rewrite_errors.jsonl"
+_REWRITER_AGENT_VERSION = "v1"
+
+
+_CANONICAL_BRIEF_SECTIONS = [
+    "## Audience",
+    "## Room composition",
+    "## Intent",
+    "## Duration",
+    "## Prior decisions",
+    "## Open questions",
+    "## Content Signals",
+]
+
+
+def extract_agent_card(card_path: Path) -> tuple[str, str]:
+    """Parse an agent-card markdown file and return (model, system_prompt).
+
+    Frontmatter is YAML between two ``---`` delimiters at the top of
+    the file. The ``model`` key is required. The body (everything
+    after the closing ``---``) is the system prompt.
+
+    Raises ``ValueError`` on malformed frontmatter or missing model.
+    """
+    text = card_path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        raise ValueError(
+            f"agent card {card_path} missing opening --- frontmatter"
+        )
+    # Find closing ---
+    closing_idx = None
+    for i, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            closing_idx = i
+            break
+    if closing_idx is None:
+        raise ValueError(
+            f"agent card {card_path} missing closing --- frontmatter"
+        )
+    fm_lines = lines[1:closing_idx]
+    body_lines = lines[closing_idx + 1:]
+    # Light-touch frontmatter parse — extract model key by line match.
+    # We avoid pulling in PyYAML for a trivial case.
+    model: Optional[str] = None
+    for fm_line in fm_lines:
+        s = fm_line.strip()
+        if s.startswith("model:"):
+            model = s.split(":", 1)[1].strip()
+            # Strip surrounding quotes if any.
+            if len(model) >= 2 and model[0] == model[-1] and model[0] in ("'", '"'):
+                model = model[1:-1]
+            break
+    if not model:
+        raise ValueError(
+            f"agent card {card_path} frontmatter missing 'model:' field"
+        )
+    body = "\n".join(body_lines).strip()
+    return model, body
+
+
+def build_rewrite_inputs(
+    dialog: list[dict],
+    timeline: list[dict],
+    prior_brief: Optional[str] = None,
+) -> str:
+    """Format dialog + timeline + (optional) prior brief into the
+    user-message body for the rewrite call.
+
+    The format is structured-but-simple: three labeled sections, each
+    a JSON-serialized list (or the prior brief verbatim). The agent
+    card's system prompt explains what each section is.
+    """
+    parts: list[str] = []
+    if prior_brief is not None:
+        parts.append(
+            "## BOOTSTRAP — prior deck_brief.md\n\n"
+            "This is the existing brief. Use it for stylistic continuity "
+            "on this first rewrite. It will NOT be provided on "
+            "subsequent rewrites — those are strictly source-derived.\n\n"
+            f"```markdown\n{prior_brief}\n```\n"
+        )
+    parts.append(
+        "## DIALOG ARCHIVE — every user turn + every consultant reply\n\n"
+        f"```jsonl\n"
+        + "\n".join(json.dumps(e, ensure_ascii=False) for e in dialog)
+        + "\n```\n"
+    )
+    parts.append(
+        "## EVENT TIMELINE — typed events\n\n"
+        f"```jsonl\n"
+        + "\n".join(json.dumps(e, ensure_ascii=False) for e in timeline)
+        + "\n```\n"
+    )
+    parts.append(
+        "Produce the new `deck_brief.md` per the canonical structure "
+        "and discipline rules in your system prompt. Output the "
+        "brief markdown directly — no preamble, no postscript."
+    )
+    return "\n".join(parts)
+
+
+def validate_brief_structure(text: str) -> None:
+    """Validate that ``text`` conforms to the canonical brief structure.
+
+    The brief MUST start with ``# Deck Brief`` and contain only the
+    canonical top-level sections (subset is allowed; supersets are
+    not). Raises ``ValueError`` on violations.
+    """
+    if not text.strip().startswith("# Deck Brief"):
+        raise ValueError(
+            "brief must start with '# Deck Brief' heading"
+        )
+    # Find every top-level `## ` heading and check it's in the
+    # canonical set.
+    found_sections: list[str] = []
+    for line in text.splitlines():
+        if line.startswith("## "):
+            found_sections.append(line.rstrip())
+    canonical_set = set(_CANONICAL_BRIEF_SECTIONS)
+    extras = [h for h in found_sections if h not in canonical_set]
+    if extras:
+        raise ValueError(
+            f"brief contains non-canonical top-level sections: "
+            f"{extras}. Canonical set: {_CANONICAL_BRIEF_SECTIONS}"
+        )
+
+
+def extract_roster_yaml(brief_text: str) -> Optional[str]:
+    """Extract the YAML block under ``### Roster`` inside ``## Audience``.
+
+    Returns the YAML body (without the fence delimiters), or None when
+    the brief has no roster (which is allowed during early discovery
+    per the rewriter's discipline rule 4).
+    """
+    # Locate "### Roster" inside the Audience section.
+    idx = brief_text.find("### Roster")
+    if idx < 0:
+        return None
+    # From there, find the next ```yaml fence.
+    after_heading = brief_text[idx:]
+    fence_open = re.search(r"```yaml\s*\n", after_heading)
+    if fence_open is None:
+        return None
+    body_start = fence_open.end()
+    fence_close = re.search(r"\n```", after_heading[body_start:])
+    if fence_close is None:
+        return None
+    body_end = body_start + fence_close.start()
+    return after_heading[body_start:body_end]
+
+
+def validate_roster_yaml(yaml_text: str) -> None:
+    """Parse the roster YAML and validate the BC-2.17 / BC-5.19 schema:
+    each entry has non-empty ``name`` and ``role`` keys.
+
+    We use a light hand-rolled parser to avoid the PyYAML dependency
+    in Phase 2 — the format is constrained (only ``name``, ``role``,
+    and the recommended optional keys; values are strings).
+
+    Raises ``ValueError`` on schema violations.
+    """
+    # Hand-rolled minimal YAML for the audience-roster shape:
+    #   audience:
+    #     - name: Alice
+    #       role: engineer
+    #       location: Rome
+    #       ...
+    lines = yaml_text.splitlines()
+    if not any(line.strip().startswith("audience:") for line in lines):
+        raise ValueError(
+            "roster YAML missing 'audience:' top-level key"
+        )
+
+    entries: list[dict[str, str]] = []
+    current: Optional[dict[str, str]] = None
+    in_audience = False
+    for raw_line in lines:
+        s = raw_line.rstrip()
+        if not s.strip():
+            continue
+        stripped_left = s.lstrip()
+        if stripped_left == "audience:" and not s.startswith(" "):
+            in_audience = True
+            continue
+        if not in_audience:
+            continue
+        if stripped_left.startswith("- "):
+            # New entry.
+            if current is not None:
+                entries.append(current)
+            current = {}
+            after_dash = stripped_left[2:].strip()
+            if ":" in after_dash:
+                k, v = after_dash.split(":", 1)
+                current[k.strip()] = v.strip()
+        elif current is not None and ":" in stripped_left:
+            k, v = stripped_left.split(":", 1)
+            current[k.strip()] = v.strip()
+    if current is not None:
+        entries.append(current)
+
+    if not entries:
+        # An audience: section with zero entries is acceptable — the
+        # rewriter is allowed to omit the roster entirely. If it
+        # emitted the heading + empty list, treat as no roster.
+        return
+    for i, entry in enumerate(entries):
+        if not entry.get("name"):
+            raise ValueError(
+                f"roster entry {i} missing required 'name' key"
+            )
+        if not entry.get("role"):
+            raise ValueError(
+                f"roster entry {i} missing required 'role' key"
+            )
+
+
+def call_rewrite_agent(
+    model: str,
+    system_prompt: str,
+    user_message: str,
+) -> str:
+    """Call the Anthropic API with the given system prompt and user
+    message. Return the model's response text.
+
+    Lazy import of the ``anthropic`` SDK so a missing dependency
+    surfaces as ImportError that the caller logs per
+    REQ-MEMORY-REWRITE-4 rather than crashing on module import.
+
+    Tests mock this function entirely.
+    """
+    import anthropic  # type: ignore[import]
+
+    client = anthropic.Anthropic()
+    response = client.messages.create(
+        model=model,
+        max_tokens=8192,
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_message}],
+    )
+    # Concatenate text blocks from the response.
+    parts: list[str] = []
+    for block in response.content:
+        if hasattr(block, "text"):
+            parts.append(block.text)
+    return "".join(parts)
+
+
+def log_rewrite_error(
+    project_root: Path,
+    *,
+    trigger: str,
+    error_class: str,
+    error_message: str,
+    transcript_path: Optional[str] = None,
+) -> None:
+    """Append a failure entry to ``.debrief/rewrite_errors.jsonl``.
+
+    Schema per REQ-MEMORY-REWRITE-4:
+    ``{"timestamp": "...", "trigger": "PreCompact" | "/debrief:quit" |
+       "/debrief:refresh-brief", "error_class": "...",
+       "error_message": "...", "transcript_path": "..." | null}``
+    """
+    path = project_root / _REWRITE_ERRORS_REL
+    path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "timestamp": datetime.now(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        ),
+        "trigger": trigger,
+        "error_class": error_class,
+        "error_message": error_message,
+        "transcript_path": transcript_path,
+    }
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Write ``content`` to ``path`` atomically: .tmp + fsync + rename."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(content, encoding="utf-8")
+    fd = os.open(str(tmp_path), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.rename(tmp_path, path)
+
+
+def main_rewrite_brief(
+    project_root: Path,
+    *,
+    trigger: str = "/debrief:refresh-brief",
+    plugin_root: Optional[Path] = None,
+) -> None:
+    """Entry point for ``python -m debrief.launcher rewrite_brief
+    [--project-root PATH] [--trigger ...]``.
+
+    Reads the rewriter agent-card, builds the user message from
+    dialog + timeline (+ bootstrap brief on first run), calls the
+    Anthropic API via ``call_rewrite_agent``, validates the output,
+    and atomically writes ``deck_brief.md`` + ``output/audience.yaml``.
+
+    On any failure path (missing card, API error, validation failure,
+    write error), the function logs to ``.debrief/rewrite_errors.jsonl``
+    via ``log_rewrite_error`` and exits 0 per REQ-MEMORY-REWRITE-4 —
+    NEVER block compaction.
+
+    See BC-3.18 / BC-5.19 / REQ-MEMORY-REWRITE-1..4 / BUG-AUDIT-80.
+    """
+    project_root = project_root.resolve()
+
+    # 1. Resolve agent card path.
+    if plugin_root is None:
+        plugin_root_str = os.environ.get("CLAUDE_PLUGIN_ROOT")
+        if plugin_root_str:
+            plugin_root = Path(plugin_root_str)
+        else:
+            # Fallback: assume workspace layout (delivered layout puts
+            # agents at <repo>/agents; workspace at src/unit_1/agents).
+            this_file = Path(__file__).resolve()
+            workspace_card = (
+                this_file.parent.parent / "unit_1" / "agents" / "rewriter.md"
+            )
+            delivered_card = this_file.parent.parent.parent / "agents" / "rewriter.md"
+            if workspace_card.is_file():
+                plugin_root = workspace_card.parent.parent.parent  # src/unit_1
+            elif delivered_card.is_file():
+                plugin_root = delivered_card.parent.parent
+            else:
+                plugin_root = this_file.parent.parent.parent
+
+    # 2. Read the agent card.
+    card_path = plugin_root / "agents" / "rewriter.md"
+    if not card_path.is_file():
+        # Try the workspace fallback path.
+        workspace_alt = (
+            Path(__file__).resolve().parent.parent / "unit_1" / "agents" / "rewriter.md"
+        )
+        if workspace_alt.is_file():
+            card_path = workspace_alt
+    try:
+        model, system_prompt = extract_agent_card(card_path)
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        log_rewrite_error(
+            project_root,
+            trigger=trigger,
+            error_class="agent_card_error",
+            error_message=f"failed to read rewriter card at {card_path}: {exc}",
+        )
+        sys.exit(0)
+
+    # 3. Detect bootstrap.
+    meta = _read_rewrite_metadata(project_root)
+    is_bootstrap = not meta.get("bootstrap_complete", False)
+    prior_brief: Optional[str] = None
+    brief_path = project_root / _DECK_BRIEF_REL
+    if is_bootstrap and brief_path.is_file():
+        try:
+            prior_brief = brief_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            # Read failure is logged but doesn't block the rewrite —
+            # we proceed without a bootstrap (treat as no prior brief).
+            log_rewrite_error(
+                project_root,
+                trigger=trigger,
+                error_class="bootstrap_read_error",
+                error_message=f"failed to read prior brief: {exc}",
+            )
+            prior_brief = None
+
+    # 4. Build inputs.
+    dialog = read_dialog_archive(project_root)
+    timeline = read_event_timeline(project_root)
+    user_message = build_rewrite_inputs(dialog, timeline, prior_brief)
+
+    # 5. Call API.
+    try:
+        response_text = call_rewrite_agent(model, system_prompt, user_message)
+    except Exception as exc:  # noqa: BLE001 — log and exit per contract
+        log_rewrite_error(
+            project_root,
+            trigger=trigger,
+            error_class=type(exc).__name__,
+            error_message=str(exc),
+        )
+        sys.exit(0)
+
+    # 6. Validate brief structure.
+    try:
+        validate_brief_structure(response_text)
+    except ValueError as exc:
+        log_rewrite_error(
+            project_root,
+            trigger=trigger,
+            error_class="brief_structure_invalid",
+            error_message=str(exc),
+        )
+        sys.exit(0)
+
+    # 7. Extract + validate roster YAML (may be absent during discovery).
+    roster_yaml = extract_roster_yaml(response_text)
+    if roster_yaml is not None:
+        try:
+            validate_roster_yaml(roster_yaml)
+        except ValueError as exc:
+            log_rewrite_error(
+                project_root,
+                trigger=trigger,
+                error_class="roster_yaml_invalid",
+                error_message=str(exc),
+            )
+            sys.exit(0)
+
+    # 8. Atomic dual write. Brief first, then audience.yaml. If either
+    # rename fails, the prior versions remain.
+    try:
+        _atomic_write_text(brief_path, response_text)
+        if roster_yaml is not None:
+            audience_path = project_root / _AUDIENCE_YAML_REL
+            _atomic_write_text(
+                audience_path,
+                f"audience:\n{roster_yaml.rstrip()}\n"
+                if not roster_yaml.lstrip().startswith("audience:")
+                else roster_yaml.rstrip() + "\n",
+            )
+    except OSError as exc:
+        log_rewrite_error(
+            project_root,
+            trigger=trigger,
+            error_class="write_failure",
+            error_message=str(exc),
+        )
+        sys.exit(0)
+
+    # 9. Update watermark.
+    meta["last_rewrite_timestamp"] = datetime.now(timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    meta["agent_version"] = _REWRITER_AGENT_VERSION
+    meta["model"] = model
+    meta["bootstrap_complete"] = True
+    _write_rewrite_metadata(project_root, meta)
+
+    sys.exit(0)
 
 
 # ---------------------------------------------------------------------------
@@ -1440,6 +1907,44 @@ def main_new() -> None:
         )
         _args = _parser.parse_args(sys.argv[2:])
         main_commands(_args.plugin_root)
+    elif subcommand == "rewrite_brief":
+        # BC-3.18 / BUG-AUDIT-80 (Cycle 2 Phase 2) /
+        # REQ-MEMORY-REWRITE-1..4. Reads agents/rewriter.md, calls
+        # the Anthropic API, atomically writes deck_brief.md +
+        # output/audience.yaml. Exits 0 always per contract; any
+        # failure is logged to .debrief/rewrite_errors.jsonl.
+        import argparse as _ap
+
+        _parser = _ap.ArgumentParser(
+            prog="debrief.launcher rewrite_brief",
+            description=(
+                "Rewrite deck_brief.md from the dialog archive and "
+                "event timeline. Sole writer of the brief per BC-5.19."
+            ),
+        )
+        _parser.add_argument(
+            "--project-root", type=Path, default=Path.cwd()
+        )
+        _parser.add_argument(
+            "--trigger",
+            choices=[
+                "PreCompact",
+                "/debrief:quit",
+                "/debrief:refresh-brief",
+            ],
+            default="/debrief:refresh-brief",
+            help=(
+                "Which trigger fired the rewrite. Recorded in any "
+                "rewrite_errors.jsonl entry. Default assumes manual "
+                "invocation by the user."
+            ),
+        )
+        _args = _parser.parse_args(sys.argv[2:])
+        main_rewrite_brief(
+            _args.project_root,
+            trigger=_args.trigger,
+            plugin_root=plugin_root,
+        )
     elif subcommand == "recall":
         # BC-3.19 / BUG-AUDIT-79 (Cycle 2 Phase 1) / REQ-MEMORY-RECALL-1.
         # Greps both .debrief/dialog.jsonl and output/timeline.jsonl for
@@ -1502,8 +2007,8 @@ def main_new() -> None:
         print(f"Unknown subcommand: {subcommand!r}", file=sys.stderr)
         print(
             "Usage: python -m debrief.launcher [new|preflight|"
-            "ensure_project|ensure_settings|doctor|commands|recall] "
-            "[project_root]",
+            "ensure_project|ensure_settings|doctor|commands|recall|"
+            "rewrite_brief] [project_root]",
             file=sys.stderr,
         )
         sys.exit(1)
