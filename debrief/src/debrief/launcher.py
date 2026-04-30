@@ -685,6 +685,1054 @@ def discover_soffice(project_root: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Script writer — agent + script_writer CLI
+# (BUG-AUDIT-84 Sub-cycle B / BC-3.20 / BC-5.21 / REQ-SCRIPT-WRITER-1..4).
+#
+# Sub-cycle B ships the agent-card invocation pattern + the six
+# guardrail validators + backup-before-overwrite + atomic write.
+# Sub-cycle C handles the handout simplification + auto-finalization
+# at deck-complete.
+# ---------------------------------------------------------------------------
+
+
+_SPEAKER_SCRIPT_REL = "speaker_script.md"
+_SCRIPT_BACKUPS_REL = ".debrief/script_backups"
+_SCRIPT_ERRORS_REL = ".debrief/script_errors.jsonl"
+_SCRIPT_WRITER_AGENT_VERSION = "v1"
+_SCRIPT_WRITER_TOKEN_CAP = 200_000
+_SCRIPT_WRITER_LENGTH_OVERRUN_FACTOR = 1.5
+_SCRIPT_WRITER_VOICE_DRIFT_THRESHOLD = 0.5
+_SCRIPT_WRITER_WORDS_PER_MINUTE = 150
+
+
+def read_audience_yaml(project_root: Path) -> str:
+    """Read ``output/audience.yaml`` if it exists; return empty string
+    when absent. The script-writer agent receives the YAML body
+    verbatim — it parses the structure itself in-context.
+    """
+    path = project_root / _AUDIENCE_YAML_REL
+    if not path.is_file():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def read_speaker_script(project_root: Path) -> Optional[str]:
+    """Read ``<project_root>/speaker_script.md`` if it exists. Returns
+    None when absent (no co-writer baseline to provide).
+    """
+    path = project_root / _SPEAKER_SCRIPT_REL
+    if not path.is_file():
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def _estimate_tokens(text: str) -> int:
+    """Coarse token estimator: chars / 4. Sufficient for the 200K cap
+    decision (we want comfortable headroom, not exact tokenization).
+    """
+    return max(0, len(text) // 4)
+
+
+def truncate_dialog_to_token_cap(
+    dialog: list[dict],
+    fixed_inputs_text: str,
+    cap_tokens: int = _SCRIPT_WRITER_TOKEN_CAP,
+) -> list[dict]:
+    """Head-truncate the dialog archive (oldest turns dropped first)
+    until the assembled inputs fit within the token cap.
+
+    ``fixed_inputs_text`` is a string approximation of every other
+    input (brief + audience.yaml + timeline + slides + baseline
+    speaker_script + the JSON envelope around external_documents).
+    The caller assembles this once; we estimate tokens and trim
+    the dialog until the total fits.
+
+    Returns the (possibly truncated) dialog list. Order preserved.
+    """
+    fixed_tokens = _estimate_tokens(fixed_inputs_text)
+    budget = cap_tokens - fixed_tokens
+    if budget <= 0:
+        # Fixed inputs alone exceed the cap; drop the entire dialog.
+        # The agent will work with no archive; rare and the failure
+        # log will surface this if it produces a weak script.
+        return []
+    dialog_text = "\n".join(json.dumps(e, ensure_ascii=False) for e in dialog)
+    if _estimate_tokens(dialog_text) <= budget:
+        return dialog
+    # Trim from the head. We do binary-search-style trimming for speed:
+    # a linear "drop one entry at a time" is O(n*m) where m is the
+    # token count of the dialog. For typical sizes (a few hundred
+    # turns), drop in batches.
+    truncated = list(dialog)
+    while truncated and _estimate_tokens(
+        "\n".join(json.dumps(e, ensure_ascii=False) for e in truncated)
+    ) > budget:
+        # Drop the oldest 10% of remaining entries (or at least 1).
+        drop_n = max(1, len(truncated) // 10)
+        truncated = truncated[drop_n:]
+    return truncated
+
+
+def build_script_writer_inputs(
+    deck_brief_text: str,
+    audience_yaml_text: str,
+    timeline: list[dict],
+    dialog: list[dict],
+    slides_data: list[dict],
+    existing_speaker_script: Optional[str],
+) -> str:
+    """Assemble the user-message body for the script-writer call.
+
+    Structure (one section per input source, labeled), JSON-Lines
+    payloads inside fenced code blocks where relevant. The closing
+    section instructs the agent to emit the script markdown directly.
+
+    The ``external_documents`` slot is ALWAYS present, ALWAYS empty
+    in v1 — schema reservation per REQ-SCRIPT-WRITER-1 forward-
+    compatibility for BUG-AUDIT-85.
+    """
+    parts: list[str] = []
+
+    # 1. Brief
+    parts.append(
+        "## DECK BRIEF — current state of audience / room / intent / duration\n\n"
+        f"```markdown\n{deck_brief_text}\n```\n"
+    )
+
+    # 2. Audience roster (when present)
+    if audience_yaml_text.strip():
+        parts.append(
+            "## AUDIENCE ROSTER — named attendees\n\n"
+            f"```yaml\n{audience_yaml_text}\n```\n"
+        )
+
+    # 3. Event timeline
+    parts.append(
+        "## EVENT TIMELINE — typed events in time order\n\n"
+        f"```jsonl\n"
+        + "\n".join(json.dumps(e, ensure_ascii=False) for e in timeline)
+        + "\n```\n"
+    )
+
+    # 4. Dialog archive
+    parts.append(
+        "## DIALOG ARCHIVE — every user turn + every consultant reply\n\n"
+        "Subject to a 200K-token cap on the assembled message; oldest "
+        "turns are dropped first when truncation fires.\n\n"
+        f"```jsonl\n"
+        + "\n".join(json.dumps(e, ensure_ascii=False) for e in dialog)
+        + "\n```\n"
+    )
+
+    # 5. Slides
+    parts.append(
+        "## SLIDES — approved slides in array order\n\n"
+        "Each slide entry contains slug, title, content_summary, "
+        "visual_approach, design_choices, user_assets paths.\n\n"
+        f"```jsonl\n"
+        + "\n".join(json.dumps(s, ensure_ascii=False) for s in slides_data)
+        + "\n```\n"
+    )
+
+    # 6. Existing speaker_script.md (co-writer baseline)
+    if existing_speaker_script is not None:
+        parts.append(
+            "## CO-WRITER BASELINE — existing speaker_script.md\n\n"
+            "Use this for stylistic continuity. Preserve the user's "
+            "verbatim phrasing on slides whose source data is unchanged. "
+            "Adopt the user's voice when writing new sections.\n\n"
+            f"```markdown\n{existing_speaker_script}\n```\n"
+        )
+
+    # 7. External documents — always empty in v1.
+    parts.append(
+        "## EXTERNAL DOCUMENTS — forward-compat slot, always empty in v1\n\n"
+        "BUG-AUDIT-85 will populate this for archetypes that center "
+        "external documents (journal_club: paper PDFs; "
+        "thesis_discussion: thesis PDF; grant_panel: proposal PDF). "
+        "v1 always has external_documents=[] and you do NOT mention "
+        "paper-specific content in v1 even if a slide's user_assets "
+        "references a paper image.\n\n"
+        "```yaml\n"
+        "external_documents: []\n"
+        "```\n"
+    )
+
+    # 8. Instruction
+    parts.append(
+        "Produce the new `speaker_script.md` per the canonical structure "
+        "and discipline rules in your system prompt. Output the script "
+        "markdown directly — no preamble, no postscript."
+    )
+    return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Validators — one function per guardrail (#2 is prompt-only)
+# ---------------------------------------------------------------------------
+
+
+_NUMERIC_PATTERN = re.compile(
+    r"\b\d+\.?\d*\s*"
+    r"(?:[%×]|"
+    r"(?:mm|cm|kg|ms|s|min|h|x|fold|patients|samples|n\s*=)\b)"
+)
+_NAME_PATTERN = re.compile(r"\b[A-Z][a-z]+\b")
+
+
+def _slide_section_blocks(text: str) -> list[tuple[str, str, str]]:
+    """Parse a script into (heading, slug, body) tuples per slide
+    section. Heading is the full ``## Slide N: <title>`` line; slug
+    is the value extracted from the ``**Slug:** \\`<slug>\\``` line;
+    body is the prose between the heading and the next slide / EOF.
+    """
+    blocks: list[tuple[str, str, str]] = []
+    lines = text.splitlines()
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i]
+        if line.startswith("## Slide ") or line.startswith("## Backup Slides"):
+            heading = line
+            j = i + 1
+            slug = ""
+            while j < n and not (
+                lines[j].startswith("## Slide ")
+                or lines[j].startswith("## Backup Slides")
+                or lines[j].startswith("---") and j > i + 2
+            ):
+                m = re.match(r"\*\*Slug:\*\*\s*`([^`]+)`", lines[j].strip())
+                if m and not slug:
+                    slug = m.group(1).strip()
+                j += 1
+            body = "\n".join(lines[i:j])
+            if line.startswith("## Slide "):
+                blocks.append((heading, slug, body))
+            i = j
+        else:
+            i += 1
+    return blocks
+
+
+def validate_script_structure(
+    script_text: str, slides_data: list[dict]
+) -> Optional[str]:
+    """Per-slide structure validator (guardrail #3).
+
+    Returns None on success, error string on failure.
+    """
+    if not script_text.strip().startswith("# Speaker Script"):
+        return "script must start with '# Speaker Script' heading"
+    blocks = _slide_section_blocks(script_text)
+    expected_main = [s for s in slides_data if not s.get("backup")]
+    expected_backup = [s for s in slides_data if s.get("backup")]
+    expected_total = len(expected_main) + len(expected_backup)
+    if len(blocks) != expected_total:
+        return (
+            f"script section count {len(blocks)} != "
+            f"expected {expected_total} (main: {len(expected_main)}, "
+            f"backup: {len(expected_backup)})"
+        )
+    # Each section must have the four required subsections.
+    required = (
+        "### Key talking points",
+        "### Transition",
+        "### Estimated speaking time",
+    )
+    for heading, slug, body in blocks:
+        for req in required:
+            if req not in body:
+                return (
+                    f"section {heading!r} missing required subsection "
+                    f"{req!r}"
+                )
+    return None
+
+
+def validate_script_traceability(
+    script_text: str,
+    audience_entries: list[dict],
+    timeline: list[dict],
+    slides_data: list[dict],
+    deck_brief_text: str,
+    dialog: list[dict],
+) -> Optional[str]:
+    """Source-traceability validator (guardrail #1, lightweight).
+
+    Returns None on pass, error string on the first failed check.
+    """
+    # Build the full traceable corpus (case-insensitive substring
+    # search target).
+    corpus_parts: list[str] = [deck_brief_text.lower()]
+    for s in slides_data:
+        for k in ("content_summary", "visual_approach", "design_choices"):
+            v = s.get(k) or ""
+            if isinstance(v, str):
+                corpus_parts.append(v.lower())
+    for e in dialog:
+        c = e.get("content")
+        if isinstance(c, str):
+            corpus_parts.append(c.lower())
+    corpus = "\n".join(corpus_parts)
+
+    # Numeric claims in the script must appear in the corpus.
+    for m in _NUMERIC_PATTERN.finditer(script_text):
+        claim = m.group(0).strip().lower()
+        # Allow the time-check checkpoint patterns (e.g., "~5 min")
+        # which are derived numerics, not user-surfaced.
+        if claim.startswith("~"):
+            continue
+        if claim not in corpus:
+            # Be tolerant: trim trailing units and recheck.
+            base = re.match(r"\d+\.?\d*", claim)
+            if base and base.group(0) in corpus:
+                continue
+            return (
+                f"numeric claim {claim!r} not found in brief / dialog "
+                f"/ slide content_summary corpus"
+            )
+
+    # Names mentioned in the script must appear in the roster (when
+    # roster is present). Skip when no roster — names may appear in
+    # dialog but not yet in YAML, and we don't want false-positives
+    # on common words that look like names (e.g., "Method", "Figure").
+    if audience_entries:
+        roster_names = {
+            (e.get("name") or "").strip()
+            for e in audience_entries
+            if isinstance(e.get("name"), str)
+        }
+        roster_names.discard("")
+        if roster_names:
+            # Extract candidate names from the script's prose (the
+            # heading and slug lines have title-case identifiers we
+            # don't want to flag, so we exclude per-slide headers).
+            prose_lines: list[str] = []
+            for line in script_text.splitlines():
+                stripped = line.strip()
+                if (
+                    stripped.startswith("## ")
+                    or stripped.startswith("### ")
+                    or stripped.startswith("#")
+                    or stripped.startswith("**Slug:**")
+                    or stripped.startswith("**")
+                    or stripped.startswith(">")
+                ):
+                    continue
+                prose_lines.append(line)
+            prose = "\n".join(prose_lines)
+            mentioned: set[str] = {
+                m.group(0) for m in _NAME_PATTERN.finditer(prose)
+            }
+            # Filter to names that look like roster-style first names —
+            # skip common English title-case words via a short
+            # exclusion list. Keep this conservative.
+            common_titlecase_words = {
+                # Honorifics + structural slide-deck terms.
+                "Slide", "Figure", "Method", "Results", "Audience",
+                "Mr", "Ms", "Dr", "Prof",
+                # Pronouns + determiners.
+                "The", "We", "I", "Our", "Their", "His", "Her", "Its", "My",
+                "Your", "He", "She", "It", "They", "You",
+                "This", "That", "These", "Those", "Such",
+                "All", "Some", "Most", "Many", "Few", "Each", "Every",
+                "Both", "Neither", "Either",
+                # Common sentence-starter verbs.
+                "Open", "Close", "Frame", "Set", "Make", "Take", "Hold",
+                "Move", "Turn", "Give", "Run", "Walk", "Show", "Tell",
+                "Demonstrate", "Describe", "Explain", "Summarize", "Present",
+                "Conclude", "Note", "Highlight", "Emphasize", "Underline",
+                "Recall", "Remember", "Notice", "Compare", "Contrast",
+                "Consider", "Suppose", "Assume", "Imagine", "Look", "See",
+                "Listen", "Read", "Write", "Continue", "Begin", "Start",
+                "End", "Stop", "Pause", "Skip", "Include", "Exclude",
+                # Common sentence-starter adverbs / connectives.
+                "Today", "Now", "Then", "Here", "There", "So", "Thus",
+                "Hence", "Therefore", "However", "Yet", "Still", "Meanwhile",
+                "Afterwards", "First", "Second", "Third", "Finally", "Last",
+                "Initially", "Eventually", "Specifically", "Particularly",
+                "Importantly", "Notably", "Crucially", "Critically",
+                # Time vocabulary.
+                "Yesterday", "Tomorrow", "Year", "Month", "Day", "Week",
+                "Morning", "Afternoon", "Evening",
+                # Common contentful sentence starters in scientific prose.
+                "Background", "Methods", "Discussion", "Conclusion",
+                "Introduction", "Summary", "Abstract", "References",
+                "Appendix", "Acknowledgments", "Funding",
+            }
+            mentioned = {n for n in mentioned if n not in common_titlecase_words}
+            for name in mentioned:
+                # If the name looks like a roster name (any roster
+                # entry's first word matches), it's allowed regardless
+                # of full-string equality — handles "Alice" vs "Alice
+                # Smith".
+                first_words = {
+                    rn.split()[0] for rn in roster_names if rn
+                }
+                if name in first_words or name in roster_names:
+                    continue
+                # Name not in roster — flag.
+                return (
+                    f"script mentions name {name!r} which is not in the "
+                    f"audience roster"
+                )
+
+    # Citation checks (basic): references to "paper" should map to
+    # at least one paper_attached event when timeline has any.
+    paper_events = [e for e in timeline if e.get("event") == "paper_attached"]
+    paper_paths_lc = {
+        str((e.get("payload") or {}).get("path", "")).lower()
+        for e in paper_events
+    }
+    paper_paths_lc.discard("")
+    # Look for explicit `papers/...` citations in the script.
+    for m in re.finditer(r"papers/[^\s)]+\.pdf", script_text, re.IGNORECASE):
+        cited_path = m.group(0).lower()
+        if not paper_paths_lc:
+            return (
+                f"script cites paper path {cited_path!r} but no "
+                f"paper_attached events exist in the timeline"
+            )
+        if cited_path not in paper_paths_lc:
+            return (
+                f"script cites paper path {cited_path!r} which does not "
+                f"match any paper_attached event in the timeline"
+            )
+
+    return None
+
+
+def validate_script_length_budget(
+    script_text: str,
+    total_duration_minutes: Optional[float],
+    main_slide_count: int,
+) -> list[str]:
+    """Length-budget validator (guardrail #4). Returns a list of
+    warning strings (one per slide that exceeds budget by more than
+    `_SCRIPT_WRITER_LENGTH_OVERRUN_FACTOR`). Empty list when within
+    budget. NEVER blocks the write — overruns are warnings only.
+    """
+    if not total_duration_minutes or main_slide_count <= 0:
+        return []
+    per_slide_budget = total_duration_minutes / main_slide_count
+    overrun_threshold = per_slide_budget * _SCRIPT_WRITER_LENGTH_OVERRUN_FACTOR
+    warnings: list[str] = []
+    for heading, slug, body in _slide_section_blocks(script_text):
+        # Skip backup slides — they're not budgeted.
+        if "(backup)" in heading.lower():
+            continue
+        # Estimate words in Key talking points + Transition only
+        # (skip the metadata lines).
+        ktp_idx = body.find("### Key talking points")
+        eta_idx = body.find("### Estimated speaking time")
+        if ktp_idx < 0 or eta_idx < 0 or eta_idx <= ktp_idx:
+            continue
+        prose = body[ktp_idx:eta_idx]
+        words = len(prose.split())
+        estimated_minutes = words / _SCRIPT_WRITER_WORDS_PER_MINUTE
+        if estimated_minutes > overrun_threshold:
+            warnings.append(
+                f"slide {slug!r}: estimated {estimated_minutes:.1f}min "
+                f"exceeds budget {per_slide_budget:.1f}min by more than "
+                f"{int((_SCRIPT_WRITER_LENGTH_OVERRUN_FACTOR - 1) * 100)}%"
+            )
+    return warnings
+
+
+def validate_script_roster_mentions(
+    script_text: str,
+    audience_entries: list[dict],
+    slides_data: list[dict],
+) -> Optional[str]:
+    """Roster-aware mentions validator (guardrail #5). Returns None
+    on pass, error string on first failure.
+
+    A roster member's name appears in a slide's section ONLY if at
+    least one content word (length > 4) from the roster entry's
+    `notes` overlaps with the slide's `content_summary` /
+    `visual_approach`.
+    """
+    if not audience_entries:
+        return None
+    blocks = _slide_section_blocks(script_text)
+    slides_by_slug = {s.get("slug"): s for s in slides_data if s.get("slug")}
+    name_to_entry: dict[str, dict] = {}
+    for e in audience_entries:
+        name = (e.get("name") or "").strip()
+        if name:
+            first = name.split()[0]
+            name_to_entry[first] = e
+            name_to_entry[name] = e
+
+    common_titlecase_words = {
+        # Honorifics + structural slide-deck terms.
+        "Slide", "Figure", "Method", "Results", "Audience",
+        "Mr", "Ms", "Dr", "Prof",
+        # Pronouns + determiners.
+        "The", "We", "I", "Our", "Their", "His", "Her", "Its", "My",
+        "Your", "He", "She", "It", "They", "You",
+        "This", "That", "These", "Those", "Such",
+        "All", "Some", "Most", "Many", "Few", "Each", "Every",
+        "Both", "Neither", "Either",
+        # Common sentence-starter verbs.
+        "Open", "Close", "Frame", "Set", "Make", "Take", "Hold",
+        "Move", "Turn", "Give", "Run", "Walk", "Show", "Tell",
+        "Demonstrate", "Describe", "Explain", "Summarize", "Present",
+        "Conclude", "Note", "Highlight", "Emphasize", "Underline",
+        "Recall", "Remember", "Notice", "Compare", "Contrast",
+        "Consider", "Suppose", "Assume", "Imagine", "Look", "See",
+        "Listen", "Read", "Write", "Continue", "Begin", "Start",
+        "End", "Stop", "Pause", "Skip", "Include", "Exclude",
+        # Common sentence-starter adverbs / connectives.
+        "Today", "Now", "Then", "Here", "There", "So", "Thus",
+        "Hence", "Therefore", "However", "Yet", "Still", "Meanwhile",
+        "Afterwards", "First", "Second", "Third", "Finally", "Last",
+        "Initially", "Eventually", "Specifically", "Particularly",
+        "Importantly", "Notably", "Crucially", "Critically",
+        # Time vocabulary.
+        "Yesterday", "Tomorrow", "Year", "Month", "Day", "Week",
+        "Morning", "Afternoon", "Evening", "Today",
+        # Common contentful sentence starters in scientific prose.
+        "Background", "Methods", "Discussion", "Conclusion",
+        "Introduction", "Summary", "Abstract", "References",
+        "Appendix", "Acknowledgments", "Funding",
+    }
+
+    for heading, slug, body in blocks:
+        slide = slides_by_slug.get(slug, {})
+        slide_content = " ".join([
+            (slide.get("content_summary") or ""),
+            (slide.get("visual_approach") or ""),
+        ]).lower()
+        slide_words = {
+            w for w in re.findall(r"\b[a-z]{5,}\b", slide_content)
+        }
+
+        # Walk prose lines (skip metadata).
+        prose_lines: list[str] = []
+        for line in body.splitlines():
+            stripped = line.strip()
+            if (
+                stripped.startswith("## ")
+                or stripped.startswith("### ")
+                or stripped.startswith("**Slug:**")
+                or stripped.startswith(">")
+            ):
+                continue
+            prose_lines.append(line)
+        prose = " ".join(prose_lines)
+
+        for m in _NAME_PATTERN.finditer(prose):
+            name = m.group(0)
+            if name in common_titlecase_words:
+                continue
+            entry = name_to_entry.get(name)
+            if entry is None:
+                continue  # Caught by traceability check.
+            notes = (entry.get("notes") or "").lower()
+            notes_words = {
+                w for w in re.findall(r"\b[a-z]{5,}\b", notes)
+            }
+            if not notes_words:
+                return (
+                    f"slide {slug!r} mentions roster member {name!r} but "
+                    f"the roster entry has no notes — cannot justify the "
+                    f"mention. Use neutral phrasing or extend the roster."
+                )
+            overlap = slide_words & notes_words
+            if not overlap:
+                return (
+                    f"slide {slug!r} mentions roster member {name!r} but "
+                    f"none of {name!r}'s notes keywords overlap with the "
+                    f"slide's content. Either remove the mention or "
+                    f"extend the roster entry's notes."
+                )
+    return None
+
+
+def _bigrams(text: str) -> set[tuple[str, str]]:
+    """Lowercased word bigrams from a body of text (punctuation-naive)."""
+    words = re.findall(r"\b[a-z0-9_]+\b", text.lower())
+    return {(words[i], words[i + 1]) for i in range(len(words) - 1)}
+
+
+def validate_script_voice_drift(
+    new_script: str,
+    prior_script: Optional[str],
+    slides_data: list[dict],
+    prior_slide_signatures: dict[str, str],
+) -> list[str]:
+    """Co-writer voice-drift validator (guardrail #6). Returns a list
+    of warning strings (one per slide whose Jaccard bigram similarity
+    fell below `_SCRIPT_WRITER_VOICE_DRIFT_THRESHOLD` despite source
+    data being unchanged). Empty list when no drift detected.
+
+    ``prior_slide_signatures`` is a mapping from slug to a string
+    fingerprint of the slide's source data at the time of the prior
+    generation — content_summary + visual_approach + design_choices
+    concatenated. The caller computes this from the prior generation's
+    metadata; if it matches the current slide's signature the slide's
+    source is "unchanged" and drift is meaningful.
+
+    Backup-slide blocks are not checked (they're typically Q&A-only).
+    """
+    if prior_script is None or not prior_slide_signatures:
+        return []
+    new_blocks = {
+        slug: body for _, slug, body in _slide_section_blocks(new_script)
+    }
+    prior_blocks = {
+        slug: body for _, slug, body in _slide_section_blocks(prior_script)
+    }
+    warnings: list[str] = []
+    for s in slides_data:
+        if s.get("backup"):
+            continue
+        slug = s.get("slug")
+        if not slug:
+            continue
+        prior_sig = prior_slide_signatures.get(slug)
+        if prior_sig is None:
+            continue  # Slide is new; no drift check.
+        cur_sig = "|".join([
+            s.get("content_summary") or "",
+            s.get("visual_approach") or "",
+            s.get("design_choices") or "",
+        ])
+        if cur_sig != prior_sig:
+            continue  # Source changed; agent has reason to rewrite.
+        prior_body = prior_blocks.get(slug)
+        new_body = new_blocks.get(slug)
+        if not prior_body or not new_body:
+            continue
+        prior_grams = _bigrams(prior_body)
+        new_grams = _bigrams(new_body)
+        if not prior_grams or not new_grams:
+            continue
+        union = prior_grams | new_grams
+        intersection = prior_grams & new_grams
+        if not union:
+            continue
+        similarity = len(intersection) / len(union)
+        if similarity < _SCRIPT_WRITER_VOICE_DRIFT_THRESHOLD:
+            warnings.append(
+                f"slide {slug!r}: voice-drift Jaccard similarity "
+                f"{similarity:.2f} < {_SCRIPT_WRITER_VOICE_DRIFT_THRESHOLD} "
+                f"despite unchanged source data"
+            )
+    return warnings
+
+
+# ---------------------------------------------------------------------------
+# CLI orchestrator
+# ---------------------------------------------------------------------------
+
+
+def call_script_writer_agent(
+    model: str,
+    system_prompt: str,
+    user_message: str,
+) -> str:
+    """Call the Anthropic API for the script-writer. Mockable seam.
+
+    Lazy import so a missing SDK dependency surfaces as ImportError
+    that the caller logs per REQ-SCRIPT-WRITER-2 rather than crashing
+    on module import.
+    """
+    import anthropic  # type: ignore[import]
+
+    client = anthropic.Anthropic()
+    response = client.messages.create(
+        model=model,
+        max_tokens=16384,
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_message}],
+    )
+    parts: list[str] = []
+    for block in response.content:
+        if hasattr(block, "text"):
+            parts.append(block.text)
+    return "".join(parts)
+
+
+def log_script_error(
+    project_root: Path,
+    *,
+    trigger: str,
+    error_class: str,
+    error_message: str,
+) -> None:
+    """Append a failure entry to ``.debrief/script_errors.jsonl``."""
+    path = project_root / _SCRIPT_ERRORS_REL
+    path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "timestamp": datetime.now(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        ),
+        "trigger": trigger,
+        "error_class": error_class,
+        "error_message": error_message,
+    }
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def backup_speaker_script(project_root: Path) -> Optional[Path]:
+    """Copy existing ``speaker_script.md`` to
+    ``.debrief/script_backups/speaker_script.<UTC ISO 8601>.md``.
+
+    Returns the backup path on success, None when no existing script
+    or on backup failure (logged but non-fatal per BC-11.20).
+    """
+    src = project_root / _SPEAKER_SCRIPT_REL
+    if not src.is_file():
+        return None
+    backup_dir = project_root / _SCRIPT_BACKUPS_REL
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    # Filesystem-safe timestamp: hyphens instead of colons.
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
+    dest = backup_dir / f"speaker_script.{ts}.md"
+    try:
+        shutil.copy2(src, dest)
+    except OSError:
+        return None
+    return dest
+
+
+def _parse_audience_yaml(yaml_text: str) -> list[dict]:
+    """Parse the audience YAML body into a list of entry dicts.
+
+    Light hand-rolled parser matching utility_skills.validate_roster_yaml's
+    grammar so we don't introduce a PyYAML dependency for the trivial
+    case. Returns empty list on parse failure or when no audience: key.
+    """
+    if not yaml_text.strip():
+        return []
+    entries: list[dict] = []
+    current: Optional[dict] = None
+    in_audience = False
+    for raw_line in yaml_text.splitlines():
+        s = raw_line.rstrip()
+        if not s.strip():
+            continue
+        stripped_left = s.lstrip()
+        if stripped_left == "audience:" and not s.startswith(" "):
+            in_audience = True
+            continue
+        if not in_audience:
+            continue
+        if stripped_left.startswith("- "):
+            if current is not None:
+                entries.append(current)
+            current = {}
+            after_dash = stripped_left[2:].strip()
+            if ":" in after_dash:
+                k, v = after_dash.split(":", 1)
+                current[k.strip()] = v.strip()
+        elif current is not None and ":" in stripped_left:
+            k, v = stripped_left.split(":", 1)
+            current[k.strip()] = v.strip()
+    if current is not None:
+        entries.append(current)
+    return entries
+
+
+def main_script_writer(
+    project_root: Path,
+    *,
+    trigger: str = "/debrief:script",
+    plugin_root: Optional[Path] = None,
+) -> None:
+    """Entry point for ``python -m debrief.launcher script_writer
+    [--project-root PATH] [--trigger ...]``.
+
+    Reads the script-writer agent-card, builds the user message from
+    brief + audience.yaml + timeline + dialog + slides + (existing
+    speaker_script.md as co-writer baseline), calls the Anthropic API
+    via ``call_script_writer_agent``, validates the output against the
+    six guardrails, backs up the existing script, atomically writes
+    the new one, emits the ``script_done`` timeline event.
+
+    On any failure path: logs to ``.debrief/script_errors.jsonl`` and
+    exits 0 per REQ-SCRIPT-WRITER-2 — NEVER block the consultant.
+
+    See BC-3.20 / BC-5.21 / REQ-SCRIPT-WRITER-1..4 / BUG-AUDIT-84.
+    """
+    project_root = project_root.resolve()
+
+    # 1. Resolve agent card path (mirror main_rewrite_brief logic).
+    if plugin_root is None:
+        plugin_root_str = os.environ.get("CLAUDE_PLUGIN_ROOT")
+        if plugin_root_str:
+            plugin_root = Path(plugin_root_str)
+        else:
+            this_file = Path(__file__).resolve()
+            workspace_card = (
+                this_file.parent.parent / "unit_1" / "agents"
+                / "script-writer.md"
+            )
+            delivered_card = (
+                this_file.parent.parent.parent / "agents" / "script-writer.md"
+            )
+            if workspace_card.is_file():
+                plugin_root = workspace_card.parent.parent.parent
+            elif delivered_card.is_file():
+                plugin_root = delivered_card.parent.parent
+            else:
+                plugin_root = this_file.parent.parent.parent
+
+    card_path = plugin_root / "agents" / "script-writer.md"
+    if not card_path.is_file():
+        workspace_alt = (
+            Path(__file__).resolve().parent.parent / "unit_1" / "agents"
+            / "script-writer.md"
+        )
+        if workspace_alt.is_file():
+            card_path = workspace_alt
+
+    # 2. Read agent card.
+    try:
+        model, system_prompt = extract_agent_card(card_path)
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        log_script_error(
+            project_root,
+            trigger=trigger,
+            error_class="agent_card_error",
+            error_message=f"failed to read script-writer card at {card_path}: {exc}",
+        )
+        sys.exit(0)
+
+    # 3. Load inputs.
+    brief_path = project_root / _DECK_BRIEF_REL
+    deck_brief_text = ""
+    if brief_path.is_file():
+        try:
+            deck_brief_text = brief_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            log_script_error(
+                project_root,
+                trigger=trigger,
+                error_class="brief_read_error",
+                error_message=str(exc),
+            )
+
+    audience_yaml_text = read_audience_yaml(project_root)
+    audience_entries = _parse_audience_yaml(audience_yaml_text)
+    timeline = read_event_timeline(project_root)
+    dialog = read_dialog_archive(project_root)
+
+    # 4. Slide records — read from deck_state.json.
+    try:
+        from debrief_state import read_deck_state  # type: ignore[import]
+
+        deck_state = read_deck_state(project_root)
+    except Exception as exc:  # noqa: BLE001
+        log_script_error(
+            project_root,
+            trigger=trigger,
+            error_class="deck_state_read_error",
+            error_message=str(exc),
+        )
+        sys.exit(0)
+
+    approved = [
+        s for s in deck_state.slides
+        if s.status == "approved"
+    ]
+    # Preserve the BUG-AUDIT-65 / REQ-SCRIPT-BACKUP-1 semantic: at
+    # least one MAIN (non-backup) approved slide is required. A deck
+    # of only backup slides would yield a script with no main talk.
+    main_approved = [s for s in approved if not s.backup]
+    if not main_approved:
+        log_script_error(
+            project_root,
+            trigger=trigger,
+            error_class="no_approved_slides",
+            error_message="no approved main (non-backup) slides — cannot generate script",
+        )
+        sys.exit(0)
+
+    slides_data: list[dict] = []
+    for s in approved:
+        slides_data.append({
+            "slug": s.slug,
+            "title": s.title,
+            "content_summary": s.content_summary or "",
+            "visual_approach": s.visual_approach or "",
+            "design_choices": s.design_choices or "",
+            "user_assets": list(s.user_assets or []),
+            "backup": bool(s.backup),
+        })
+
+    main_slide_count = sum(1 for s in slides_data if not s["backup"])
+
+    # 5. Co-writer baseline.
+    existing_speaker_script = read_speaker_script(project_root)
+
+    # 6. Truncate dialog if assembled inputs would exceed the cap.
+    fixed_inputs = build_script_writer_inputs(
+        deck_brief_text=deck_brief_text,
+        audience_yaml_text=audience_yaml_text,
+        timeline=timeline,
+        dialog=[],  # placeholder for sizing
+        slides_data=slides_data,
+        existing_speaker_script=existing_speaker_script,
+    )
+    truncated_dialog = truncate_dialog_to_token_cap(
+        dialog, fixed_inputs, cap_tokens=_SCRIPT_WRITER_TOKEN_CAP
+    )
+    user_message = build_script_writer_inputs(
+        deck_brief_text=deck_brief_text,
+        audience_yaml_text=audience_yaml_text,
+        timeline=timeline,
+        dialog=truncated_dialog,
+        slides_data=slides_data,
+        existing_speaker_script=existing_speaker_script,
+    )
+
+    # 7. Call API.
+    try:
+        response_text = call_script_writer_agent(model, system_prompt, user_message)
+    except Exception as exc:  # noqa: BLE001
+        log_script_error(
+            project_root,
+            trigger=trigger,
+            error_class=type(exc).__name__,
+            error_message=str(exc),
+        )
+        sys.exit(0)
+
+    # 8. Validate guardrails (3, 1, 5 are blockers; 4, 6 are warnings).
+    err = validate_script_structure(response_text, slides_data)
+    if err is not None:
+        log_script_error(
+            project_root,
+            trigger=trigger,
+            error_class="script_structure_invalid",
+            error_message=err,
+        )
+        sys.exit(0)
+
+    err = validate_script_traceability(
+        response_text, audience_entries, timeline,
+        slides_data, deck_brief_text, dialog,
+    )
+    if err is not None:
+        log_script_error(
+            project_root,
+            trigger=trigger,
+            error_class="script_traceability_invalid",
+            error_message=err,
+        )
+        sys.exit(0)
+
+    err = validate_script_roster_mentions(
+        response_text, audience_entries, slides_data
+    )
+    if err is not None:
+        log_script_error(
+            project_root,
+            trigger=trigger,
+            error_class="script_roster_mention_invalid",
+            error_message=err,
+        )
+        sys.exit(0)
+
+    # Length-budget warnings (non-blocking).
+    duration_match = re.search(
+        r"\*\*Target duration:\*\*\s*(\d+(?:\.\d+)?)\s*minutes",
+        response_text,
+    )
+    total_duration = float(duration_match.group(1)) if duration_match else None
+    for w in validate_script_length_budget(
+        response_text, total_duration, main_slide_count
+    ):
+        log_script_error(
+            project_root,
+            trigger=trigger,
+            error_class="warning_length_overrun",
+            error_message=w,
+        )
+
+    # Voice-drift warnings (co-writer mode only; non-blocking).
+    if existing_speaker_script:
+        prior_signatures: dict[str, str] = {}
+        # Approximation: for slides present in the existing script,
+        # we don't have stored prior signatures — use the current
+        # signatures (which means drift is only flagged when source
+        # data hasn't changed, which is the desired semantic). Future
+        # enhancement: persist a per-slide signature in
+        # rewrite_metadata.json or a sibling file.
+        for s in slides_data:
+            prior_signatures[s["slug"]] = "|".join([
+                s["content_summary"], s["visual_approach"], s["design_choices"],
+            ])
+        for w in validate_script_voice_drift(
+            response_text, existing_speaker_script,
+            slides_data, prior_signatures,
+        ):
+            log_script_error(
+                project_root,
+                trigger=trigger,
+                error_class="warning_voice_drift",
+                error_message=w,
+            )
+
+    # 9. Backup existing script.
+    backup_speaker_script(project_root)
+
+    # 10. Atomic write of the new script.
+    script_path = project_root / _SPEAKER_SCRIPT_REL
+    try:
+        _atomic_write_text(script_path, response_text)
+    except OSError as exc:
+        log_script_error(
+            project_root,
+            trigger=trigger,
+            error_class="write_failure",
+            error_message=str(exc),
+        )
+        sys.exit(0)
+
+    # 11. Emit script_done timeline event.
+    try:
+        # Determine the active presentation folder for the payload —
+        # use the most recent presentation record if one exists, else
+        # leave folder absent (the rewrite agent and other consumers
+        # don't depend on it).
+        folder = (
+            deck_state.presentations[-1].folder
+            if deck_state.presentations
+            else ""
+        )
+        append_timeline_event(
+            project_root,
+            event="script_done",
+            payload={
+                "presentation_folder": folder,
+                "slide_count": main_slide_count,
+                "backup_slide_count": sum(
+                    1 for s in slides_data if s["backup"]
+                ),
+                "script_path": _SPEAKER_SCRIPT_REL,
+                "agent_version": _SCRIPT_WRITER_AGENT_VERSION,
+                "model": model,
+            },
+        )
+    except Exception:  # noqa: BLE001 — best-effort timeline emission
+        pass
+
+    print(str(script_path), file=sys.stderr)
+    sys.exit(0)
+
+
+# ---------------------------------------------------------------------------
 # Memory architecture — rewrite agent + rewrite_brief CLI
 # (BUG-AUDIT-80 Cycle 2 Phase 2 / BC-3.18 / BC-5.19 /
 # REQ-MEMORY-REWRITE-1..4).
@@ -2352,6 +3400,45 @@ def main_new() -> None:
             turn=_args.turn,
         )
         sys.exit(0)
+    elif subcommand == "script_writer":
+        # BC-3.20 / BUG-AUDIT-84 Sub-cycle B / REQ-SCRIPT-WRITER-1..4.
+        # Reads agents/script-writer.md, calls the Anthropic API,
+        # validates the six guardrails, backs up the existing
+        # speaker_script.md, atomically writes the new one, emits
+        # script_done. Exits 0 always per contract.
+        import argparse as _ap
+
+        _parser = _ap.ArgumentParser(
+            prog="debrief.launcher script_writer",
+            description=(
+                "Generate the speaker script from brief + audience + "
+                "timeline + dialog + slide records. Sole writer of "
+                "speaker_script.md per BC-5.21."
+            ),
+        )
+        _parser.add_argument(
+            "--project-root", type=Path, default=Path.cwd()
+        )
+        _parser.add_argument(
+            "--trigger",
+            choices=[
+                "/debrief:script",
+                "deck-complete-finalization",
+                "/debrief:handout-cascade",
+            ],
+            default="/debrief:script",
+            help=(
+                "Which trigger fired the script generation. Recorded "
+                "in any script_errors.jsonl entry. Default assumes "
+                "manual /debrief:script invocation."
+            ),
+        )
+        _args = _parser.parse_args(sys.argv[2:])
+        main_script_writer(
+            _args.project_root,
+            trigger=_args.trigger,
+            plugin_root=plugin_root,
+        )
     elif subcommand == "rewrite_brief":
         # BC-3.18 / BUG-AUDIT-80 (Cycle 2 Phase 2) /
         # REQ-MEMORY-REWRITE-1..4. Reads agents/rewriter.md, calls
@@ -2465,7 +3552,7 @@ def main_new() -> None:
         print(
             "Usage: python -m debrief.launcher [new|preflight|"
             "ensure_project|ensure_settings|doctor|commands|recall|"
-            "rewrite_brief|emit_event] [project_root]",
+            "rewrite_brief|emit_event|script_writer] [project_root]",
             file=sys.stderr,
         )
         sys.exit(1)

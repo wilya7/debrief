@@ -229,16 +229,21 @@ def test_time_check_not_inside_backup_section():
 # ---------------------------------------------------------------------------
 
 
-def test_precondition_unchanged_with_only_backup_slides(tmp_path, capsys):
-    """BC-11.16 equivalent: a deck with ONLY backup slides must still
-    fail to generate a script. The main-slide precondition is
-    unchanged by BUG-AUDIT-65."""
+def test_precondition_unchanged_with_only_backup_slides(tmp_path):
+    """BC-11.16 equivalent under the BUG-AUDIT-84 contract: a deck
+    with ONLY backup slides must still skip script generation.
+
+    The original test asserted exit-2; under REQ-SCRIPT-WRITER-1 /
+    BC-3.20 the script-writer NEVER blocks the consultant — it logs
+    ``error_class: no_approved_slides`` and exits 0. The precondition
+    semantics ("no main slide → no script written") are preserved;
+    only the failure surface changed.
+    """
     (tmp_path / ".debrief").mkdir(parents=True, exist_ok=True)
     (tmp_path / "slides").mkdir(parents=True, exist_ok=True)
     (tmp_path / "deck_brief.md").write_text(
         "**Duration:** 10 minutes\n", encoding="utf-8"
     )
-    # Create a presentation record so the `presentations` precondition passes.
     pres = debrief_state.PresentationRecord(
         folder="2026_04_18_demo",
         created_at="2026-04-18",
@@ -262,6 +267,22 @@ def test_precondition_unchanged_with_only_backup_slides(tmp_path, capsys):
 
     with pytest.raises(SystemExit) as excinfo:
         utility_skills.main_script_generator(tmp_path)
-    assert excinfo.value.code == 2
-    captured = capsys.readouterr()
-    assert "no approved non-backup slides" in captured.err.lower()
+    # Exit 0 always (REQ-SCRIPT-WRITER-2 / BC-3.20).
+    assert excinfo.value.code == 0
+    # No script written.
+    assert not (tmp_path / "speaker_script.md").exists()
+    # Failure logged to .debrief/script_errors.jsonl.
+    import json
+    errors_path = tmp_path / ".debrief" / "script_errors.jsonl"
+    assert errors_path.is_file()
+    entries = [
+        json.loads(line)
+        for line in errors_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    # The orchestrator's "no approved (non-backup) slides" check is
+    # the first thing that filters slides, so we expect a
+    # no_approved_slides entry.
+    assert any(
+        e["error_class"] == "no_approved_slides" for e in entries
+    ), f"expected no_approved_slides entry, got {entries}"

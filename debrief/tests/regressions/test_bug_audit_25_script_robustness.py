@@ -1,10 +1,28 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Carlo Fusco and Leonardo Restivo
-"""Regression tests for BUG-AUDIT-25.
+"""Regression tests for BUG-AUDIT-25 — RETIRED by BUG-AUDIT-84.
 
-BUG-AUDIT-25 applies filesystem-derived versioning and an
-approved-slide precondition to ``/debrief:script``, consistent
-with the handout (BUG-AUDIT-21) and export (BUG-AUDIT-23) fixes.
+BUG-AUDIT-25 introduced filesystem-derived versioning under
+``output/<presentation_folder>/script_v{NNN}.md`` and an exit-2
+precondition for ``main_script_generator``.
+
+REQ-SCRIPT-WRITER-1 / BC-3.20 / BUG-AUDIT-84 Sub-cycle B retire that
+contract:
+
+- Versioned outputs are gone. The script is one canonical artifact
+  at ``<project_root>/speaker_script.md``; prior versions land in
+  ``.debrief/script_backups/`` instead.
+- The "no approved slides" path no longer exits 2. It logs
+  ``error_class: no_approved_slides`` to ``.debrief/script_errors.jsonl``
+  and exits 0 — the script-writer NEVER blocks the consultant.
+
+Successor coverage lives in
+``tests/regressions/test_bug_audit_84_sub_b_script_writer.py``
+(``TestMainScriptWriterOrchestrator``).
+
+Only one invariant from BUG-AUDIT-25 survives the rewrite and is
+re-asserted here: the script-writer must NOT mutate
+``deck_state.json``.
 """
 
 from __future__ import annotations
@@ -12,7 +30,8 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -26,16 +45,24 @@ def _is_workspace_layout() -> bool:
 
 
 for _dir in (
+    _PROJECT_ROOT / "src" / ("unit_1" if _is_workspace_layout() else "debrief"),
+    _PROJECT_ROOT / "src" / ("unit_3" if _is_workspace_layout() else "debrief"),
     _PROJECT_ROOT / "src" / ("unit_11" if _is_workspace_layout() else "debrief"),
     _PROJECT_ROOT / "src" / ("unit_2" if _is_workspace_layout() else "debrief"),
 ):
     if str(_dir) not in sys.path:
         sys.path.insert(0, str(_dir))
 
-import utility_skills  # noqa: E402
+import launcher  # noqa: E402
 
 _TS = "2026-04-16T12:00:00Z"
-_FOLDER = "2026_04_16_test_deck"
+_VALID_SCRIPT = (
+    "# Speaker Script\n\n**Target duration:** 10 minutes\n\n"
+    "## Slide 1: Title of intro\n\n"
+    "### Key talking points\n\nKey talking content for intro slide.\n\n"
+    "### Transition\n\nMove on naturally.\n\n"
+    "### Estimated speaking time\n\n~10.0 minutes\n"
+)
 
 
 def _slide_dict(slug: str, **kw: Any) -> dict[str, Any]:
@@ -52,107 +79,40 @@ def _slide_dict(slug: str, **kw: Any) -> dict[str, Any]:
     return defaults
 
 
-def _setup_script_project(
-    root: Path,
-    *,
-    slides: Optional[list[dict[str, Any]]] = None,
-) -> None:
+def _plugin_root_for_tests() -> Path:
+    """Locate the agent-card plugin root for the active layout."""
+    if _is_workspace_layout():
+        return _PROJECT_ROOT / "src" / "unit_1"
+    return _PROJECT_ROOT
+
+
+def test_deck_state_not_mutated_by_script_writer(tmp_path: Path) -> None:
+    """BUG-AUDIT-25 (preserved invariant): the script-writer reads
+    deck_state.json but never writes to it. Re-asserted under the
+    BUG-AUDIT-84 contract via main_script_writer (mocked API)."""
     state = {
         "project_name": "test",
         "created_at": _TS,
         "archetype": "lab_meeting",
         "style_locked": True,
         "closing_slide": None,
-        "slides": slides if slides is not None else [_slide_dict("intro")],
-        "presentations": [{
-            "folder": _FOLDER,
-            "created_at": _TS,
-            "slide_manifest": [],
-            "export_count": 0,
-            "script_count": 0,
-            "handout_count": 0,
-            "separator_position": None,
-            "separator_content": None,
-        }],
+        "slides": [_slide_dict("intro")],
+        "presentations": [],
     }
-    (root / "deck_state.json").write_text(json.dumps(state), encoding="utf-8")
+    state_path = tmp_path / "deck_state.json"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    before = state_path.read_bytes()
 
+    with patch.object(
+        launcher, "call_script_writer_agent", return_value=_VALID_SCRIPT
+    ):
+        with pytest.raises(SystemExit) as ei:
+            launcher.main_script_writer(
+                tmp_path,
+                trigger="/debrief:script",
+                plugin_root=_plugin_root_for_tests(),
+            )
 
-class TestScriptVersionDerivedFromFilesystem:
-    """BUG-AUDIT-25: version is filesystem-derived, no state mutation."""
-
-    def test_first_script_is_v001(self, tmp_path: Path) -> None:
-        _setup_script_project(tmp_path)
-        utility_skills.main_script_generator(tmp_path)
-        expected = tmp_path / "output" / _FOLDER / "script_v001.md"
-        assert expected.is_file()
-
-    def test_preexisting_v002_yields_v003(self, tmp_path: Path) -> None:
-        _setup_script_project(tmp_path)
-        out_dir = tmp_path / "output" / _FOLDER
-        out_dir.mkdir(parents=True)
-        (out_dir / "script_v002.md").write_text("old script")
-
-        utility_skills.main_script_generator(tmp_path)
-        assert (out_dir / "script_v003.md").is_file()
-
-    def test_deck_state_not_mutated(self, tmp_path: Path) -> None:
-        _setup_script_project(tmp_path)
-        before = (tmp_path / "deck_state.json").read_bytes()
-
-        utility_skills.main_script_generator(tmp_path)
-
-        after = (tmp_path / "deck_state.json").read_bytes()
-        assert before == after
-
-
-class TestScriptApprovedSlidePrecondition:
-    """BUG-AUDIT-25: exit 2 if no approved non-backup slides."""
-
-    def test_no_approved_slides_exits_2(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture,
-    ) -> None:
-        _setup_script_project(
-            tmp_path,
-            slides=[_slide_dict("draft_1", status="draft")],
-        )
-        with pytest.raises(SystemExit) as exc_info:
-            utility_skills.main_script_generator(tmp_path)
-        assert exc_info.value.code == 2
-        msg = capsys.readouterr().err.lower()
-        assert "approved" in msg
-
-    def test_only_backup_approved_exits_2(
-        self, tmp_path: Path,
-    ) -> None:
-        _setup_script_project(
-            tmp_path,
-            slides=[_slide_dict("backup_1", backup=True)],
-        )
-        with pytest.raises(SystemExit) as exc_info:
-            utility_skills.main_script_generator(tmp_path)
-        assert exc_info.value.code == 2
-
-    def test_backup_slides_appear_under_backup_section(
-        self, tmp_path: Path,
-    ) -> None:
-        """BUG-AUDIT-65 / REQ-SCRIPT-BACKUP-1 / BC-11.6b: script now
-        INCLUDES approved backup slides, under a '## Backup Slides'
-        section heading. Prior to BUG-AUDIT-65 this test asserted
-        exclusion — that behavior was wrong per the Round 5 UX review
-        (presenters need Q&A notes)."""
-        _setup_script_project(
-            tmp_path,
-            slides=[
-                _slide_dict("live_1"),
-                _slide_dict("backup_old", backup=True),
-            ],
-        )
-        utility_skills.main_script_generator(tmp_path)
-        script = (tmp_path / "output" / _FOLDER / "script_v001.md").read_text()
-        assert "live_1" in script
-        # BUG-AUDIT-65: backup slide now INCLUDED, under its own section.
-        assert "backup_old" in script
-        assert "## Backup Slides" in script
-        # Backup slide appears AFTER the main slide block.
-        assert script.index("backup_old") > script.index("live_1")
+    assert ei.value.code == 0
+    after = state_path.read_bytes()
+    assert before == after

@@ -398,22 +398,51 @@ class TestScriptEmitsScriptDone:
         )
 
     def test_script_emits_script_done(self, tmp_path: Path) -> None:
-        self._seed_project_with_presentation(tmp_path)
-        import utility_skills  # type: ignore[import]
+        """BUG-AUDIT-81 + BUG-AUDIT-84: script_done is emitted from
+        ``main_script_writer`` (the new orchestrator) on a successful
+        write. Mock the API call so we don't depend on the anthropic
+        SDK or network.
 
-        try:
-            utility_skills.main_script_generator(tmp_path)
-        except SystemExit:
-            pass
+        The ``version`` field was retired by REQ-SCRIPT-WRITER-1 (one
+        canonical script, no NNN versioning). This test asserts the
+        payload shape under the new contract.
+        """
+        self._seed_project_with_presentation(tmp_path)
+        valid_script = (
+            "# Speaker Script\n\n**Target duration:** 10 minutes\n\n"
+            "## Slide 1: Intro\n\n"
+            "### Key talking points\n\nKey talking content for intro.\n\n"
+            "### Transition\n\nMove on naturally.\n\n"
+            "### Estimated speaking time\n\n~10.0 minutes\n"
+        )
+
+        # Locate the agent-card root for the active layout.
+        if _is_workspace_layout():
+            plugin_root = _PROJECT_ROOT / "src" / "unit_1"
+        else:
+            plugin_root = _PROJECT_ROOT
+
+        with patch.object(
+            launcher, "call_script_writer_agent", return_value=valid_script
+        ):
+            try:
+                launcher.main_script_writer(
+                    tmp_path,
+                    trigger="/debrief:script",
+                    plugin_root=plugin_root,
+                )
+            except SystemExit:
+                pass
 
         events = read_event_timeline(tmp_path)
         script_done = [e for e in events if e.get("event") == "script_done"]
         assert len(script_done) == 1
         payload = script_done[0]["payload"]
         assert payload["presentation_folder"] == "2026_04_30_lab_meeting"
-        assert payload["version"] >= 1
         assert payload["slide_count"] == 1
-        assert "script_path" in payload
+        assert payload["script_path"] == "speaker_script.md"
+        assert "agent_version" in payload
+        assert "model" in payload
 
 
 # ---------------------------------------------------------------------------

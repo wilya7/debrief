@@ -766,189 +766,35 @@ class TestMainViewRedGreenDeferral:
 
 
 # ===========================================================================
-# BC-11.5 + BC-11.6: main_script_generator precondition and folder selection
+# BC-11.5 + BC-11.6: main_script_generator — RETIRED by BUG-AUDIT-84.
+#
+# The legacy ``main_script_generator`` produced versioned outputs at
+# ``output/<presentation_folder>/script_v{NNN}.md`` and exited with
+# code 1 when no ``presentations[]`` record existed. REQ-SCRIPT-WRITER-1
+# / BC-3.20 retire that contract: ``main_script_generator`` is now a
+# thin delegator to ``launcher.main_script_writer`` which writes one
+# canonical ``<project_root>/speaker_script.md`` and exits 0 always.
+#
+# Comprehensive coverage of the new orchestrator lives in
+# ``tests/regressions/test_bug_audit_84_sub_b_script_writer.py``
+# (``TestMainScriptWriterOrchestrator``). The single invariant
+# preserved here is the delegation hop itself.
 # ===========================================================================
 
 
-class TestMainScriptGeneratorPrecondition:
-    """Tests for BC-11.5: script_generator exits when presentations is empty."""
+class TestMainScriptGeneratorDelegatesToScriptWriter:
+    """BUG-AUDIT-84 Sub-cycle B: ``main_script_generator`` is a thin
+    delegator to ``launcher.main_script_writer``."""
 
-    def test_main_script_generator_exits_code_1_when_no_presentations(
-        self,
-        tmp_path: Path,
-        capsys: pytest.CaptureFixture,
-    ) -> None:
-        """BC-11.5: No presentations → exit 1 with error message."""
-        (tmp_path / "output").mkdir()
-        (tmp_path / "deck_brief.md").write_text("# Brief\n\nSome content.")
-        _write_deck_state(tmp_path, slides=[], presentations=[])
-        _write_debrief_state(tmp_path)
-        with pytest.raises(SystemExit) as exc_info:
+    def test_delegates_with_default_trigger(self, tmp_path: Path) -> None:
+        with patch("launcher.main_script_writer") as mock_writer:
+            mock_writer.return_value = None
             main_script_generator(tmp_path)
-        assert exc_info.value.code == 1
-        output = capsys.readouterr()
-        combined = output.out + output.err
-        assert "No export" in combined
-
-    def test_main_script_generator_prints_no_export_message(
-        self,
-        tmp_path: Path,
-        capsys: pytest.CaptureFixture,
-    ) -> None:
-        """BC-11.5: The exact error message text is checked."""
-        (tmp_path / "output").mkdir()
-        (tmp_path / "deck_brief.md").write_text("# Brief")
-        _write_deck_state(tmp_path, presentations=[])
-        _write_debrief_state(tmp_path)
-        with pytest.raises(SystemExit):
-            main_script_generator(tmp_path)
-        output = capsys.readouterr()
-        combined = output.out + output.err
-        assert "Run /debrief:export first" in combined
-
-
-class TestMainScriptGeneratorFolderSelection:
-    """Tests for BC-11.6: script version numbering and folder selection."""
-
-    def test_main_script_generator_uses_most_recent_presentation_folder(
-        self,
-        tmp_path: Path,
-    ) -> None:
-        """BC-11.6: Uses last entry in presentations array for folder."""
-        first_folder = "2026_04_10_first"
-        last_folder = "2026_04_12_last"
-        (tmp_path / "output").mkdir()
-        (tmp_path / "output" / first_folder).mkdir()
-        (tmp_path / "output" / last_folder).mkdir()
-        (tmp_path / "deck_brief.md").write_text("# Brief\n\nContent here.")
-        presentations = [
-            {
-                "folder": first_folder,
-                "created_at": _TS,
-                "slide_manifest": [],
-                "export_count": 1,
-                "script_count": 0,
-                "handout_count": 0,
-                "separator_position": None,
-                "separator_content": None,
-            },
-            {
-                "folder": last_folder,
-                "created_at": _TS,
-                "slide_manifest": [],
-                "export_count": 1,
-                "script_count": 0,
-                "handout_count": 0,
-                "separator_position": None,
-                "separator_content": None,
-            },
-        ]
-        _write_deck_state(
-            tmp_path,
-            slides=[_slide_dict("intro")],
-            presentations=presentations,
-        )
-        _write_debrief_state(tmp_path)
-        main_script_generator(tmp_path)
-        assert (tmp_path / "output" / last_folder / "script_v001.md").exists()
-
-    def test_main_script_generator_version_zero_padded_to_3_digits(
-        self,
-        tmp_path: Path,
-    ) -> None:
-        """BC-11.6: NNN is zero-padded: first script is script_v001.md."""
-        folder = "2026_04_12_deck"
-        (tmp_path / "output").mkdir()
-        (tmp_path / "output" / folder).mkdir()
-        (tmp_path / "deck_brief.md").write_text("# Brief\n\nContent.")
-        presentations = [
-            {
-                "folder": folder,
-                "created_at": _TS,
-                "slide_manifest": [],
-                "export_count": 1,
-                "script_count": 0,
-                "handout_count": 0,
-                "separator_position": None,
-                "separator_content": None,
-            }
-        ]
-        _write_deck_state(
-            tmp_path,
-            slides=[_slide_dict("intro")],
-            presentations=presentations,
-        )
-        _write_debrief_state(tmp_path)
-        main_script_generator(tmp_path)
-        expected = tmp_path / "output" / folder / "script_v001.md"
-        assert expected.exists()
-
-    def test_main_script_generator_second_run_produces_script_v002(
-        self,
-        tmp_path: Path,
-    ) -> None:
-        """BUG-AUDIT-25: filesystem-derived versioning — pre-existing
-        script_v001.md in the output dir means the next run produces
-        script_v002.md.
-        """
-        folder = "2026_04_12_deck"
-        out_dir = tmp_path / "output" / folder
-        out_dir.mkdir(parents=True)
-        (out_dir / "script_v001.md").write_text("old script")
-        (tmp_path / "deck_brief.md").write_text("# Brief\n\nContent.")
-        presentations = [
-            {
-                "folder": folder,
-                "created_at": _TS,
-                "slide_manifest": [],
-                "export_count": 1,
-                "script_count": 0,
-                "handout_count": 0,
-                "separator_position": None,
-                "separator_content": None,
-            }
-        ]
-        _write_deck_state(
-            tmp_path,
-            slides=[_slide_dict("intro")],
-            presentations=presentations,
-        )
-        _write_debrief_state(tmp_path)
-        main_script_generator(tmp_path)
-        expected = tmp_path / "output" / folder / "script_v002.md"
-        assert expected.exists()
-
-    def test_main_script_generator_prints_output_path_to_stderr(
-        self,
-        tmp_path: Path,
-        capsys: pytest.CaptureFixture,
-    ) -> None:
-        """main_script_generator prints the generated file path to stderr."""
-        folder = "2026_04_12_deck"
-        (tmp_path / "output").mkdir()
-        (tmp_path / "output" / folder).mkdir()
-        (tmp_path / "deck_brief.md").write_text("# Brief\n\nContent.")
-        presentations = [
-            {
-                "folder": folder,
-                "created_at": _TS,
-                "slide_manifest": [],
-                "export_count": 1,
-                "script_count": 0,
-                "handout_count": 0,
-                "separator_position": None,
-                "separator_content": None,
-            }
-        ]
-        _write_deck_state(
-            tmp_path,
-            slides=[_slide_dict("intro")],
-            presentations=presentations,
-        )
-        _write_debrief_state(tmp_path)
-        main_script_generator(tmp_path)
-        captured = capsys.readouterr()
-        assert "script_v001.md" in captured.err
+        mock_writer.assert_called_once()
+        # Positional project_root + trigger kwarg.
+        args, kwargs = mock_writer.call_args
+        assert Path(args[0]) == tmp_path
+        assert kwargs.get("trigger") == "/debrief:script"
 
 
 # ===========================================================================

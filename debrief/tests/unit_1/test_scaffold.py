@@ -284,6 +284,11 @@ EXPECTED_AGENT_FILES = {
     # rewrite_brief CLI subcommand (BC-3.18) at three triggers
     # (PreCompact hook, /debrief:quit, /debrief:refresh-brief).
     "rewriter.md",
+    # BUG-AUDIT-84 Sub-cycle B: script-writer agent-card added.
+    # Sole writer of speaker_script.md per BC-5.21; invoked via the
+    # script_writer CLI subcommand (BC-3.20) at three triggers
+    # (/debrief:script, deck-complete-finalization, /debrief:handout-cascade).
+    "script-writer.md",
 }
 
 
@@ -369,6 +374,22 @@ AGENT_FRONTMATTER_SPEC: dict[str, dict[str, Any]] = {
         "description": (
             "Memory rewriter that produces deck_brief.md from the raw "
             "dialog archive and event timeline"
+        ),
+        "model": "claude-sonnet-4-6",
+        "maxTurns": 1,
+        "tools": "Read",
+    },
+    # BC-5.21 / BUG-AUDIT-84 Sub-cycle B: script-writer agent-card.
+    # Sole writer of speaker_script.md per BC-5.21. Single turn
+    # (maxTurns: 1) — the writer produces the full script in one
+    # call. Read-only tools — the wrapping script_writer CLI handles
+    # the atomic writes and backups.
+    "script-writer.md": {
+        "name": "script-writer",
+        "description": (
+            "Speaker-script writer that turns the deck's memory "
+            "(brief + audience + timeline + dialog) and slide "
+            "records into presenter-ready prose"
         ),
         "model": "claude-sonnet-4-6",
         "maxTurns": 1,

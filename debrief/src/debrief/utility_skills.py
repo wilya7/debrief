@@ -896,13 +896,37 @@ def generate_script_content(
 def main_script_generator(project_root: Path) -> None:
     """Entry point for: python -m debrief.script_generator --project-root <path>
 
-    Read deck_brief.md and deck_state.json. Write
-    output/<folder>/script_v{NNN}.md. Print path to stderr.
+    BUG-AUDIT-84 Sub-cycle B: this function is now a thin delegator
+    to ``launcher.main_script_writer``. The legacy versioned-output
+    behavior (write to ``output/<folder>/script_v{NNN}.md`` via the
+    deterministic template ``generate_script_content``) is RETIRED.
 
-    BUG-AUDIT-25: filesystem-derived versioning (scan dir, max + 1)
-    replaces the old script_count + 1 state-field pattern. No state
-    mutation. Precondition check for approved non-backup slides added.
+    The new path: the script-writer agent (``agents/script-writer.md``)
+    produces presenter-ready prose from the full memory surface;
+    output goes to ``<project_root>/speaker_script.md`` with backup-
+    before-overwrite per BC-11.20.
+
+    Existing CLI invocations (``python -m debrief.utility_skills
+    generate_script ...``) continue to work via this delegator. The
+    historical preconditions ("at least one presentation must exist")
+    are RELAXED — the script-writer no longer requires a prior export.
+
+    BUG-AUDIT-25's filesystem-derived versioning: superseded.
     """
+    try:
+        from launcher import main_script_writer  # type: ignore[import]
+    except ImportError as exc:
+        print(
+            f"BUG-AUDIT-84: cannot import launcher.main_script_writer: {exc}. "
+            f"Verify the plugin is installed correctly.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    main_script_writer(project_root, trigger="/debrief:script")
+    return  # main_script_writer calls sys.exit(0) on its own.
+
+    # ---- Legacy implementation retained below for reference; never executes ----
     project_root = project_root.resolve()
     deck_state = read_deck_state(project_root)
 
