@@ -11,6 +11,18 @@ notes source established by BUG-AUDIT-68 / BC-11.15a must remain
 strictly user-managed; generators read it via ``_load_speaker_script``
 but never write it.
 
+**BUG-AUDIT-84 NOTE (forthcoming amendment).** Sub-cycle A of the
+script-writer architecture RFC (`spec/script_writer_rfc.md`) RETRACTS
+the ``speaker_script.md`` non-write invariant. After Sub-cycle B ships
+the script-writer agent, the SOLE writer of ``speaker_script.md`` will
+be the new ``script_writer`` CLI subcommand (BC-3.20) operating on
+output from ``agents/script-writer.md`` (BC-5.21). Until Sub-cycle B
+lands, the assertions below remain accurate (no current code path
+writes ``speaker_script.md``); this docstring is the heads-up that
+the test will be rewritten in Sub-cycle B to enforce the new contract:
+ONLY the ``script_writer`` code path may write the file; legacy
+modules still cannot.
+
 TEST CLASSES:
 
 1. TestGeneratorModulesDoNotWriteSpeakerScript — AST-scans the
