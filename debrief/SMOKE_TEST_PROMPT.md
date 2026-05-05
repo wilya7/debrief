@@ -677,3 +677,56 @@ python -m debrief.utility_skills save --label <label> --project-root .
 python -m debrief.utility_skills restore --label <label> --project-root .
 python -m debrief.utility_skills quit --project-root .
 ```
+
+
+---
+
+# Smoke Test - Lab Meeting + Single-Figure Paper Borrow (BUG-AUDIT-90)
+
+This smoke covers the user-stated scenario from 2026-05-03: a 10-minute lab meeting where the presenter wants to discuss only Figure 2 of someone else's paper. It exercises the `concept_source` paper_role and the single-figure G1.3 reply path.
+
+## Setup
+
+```bash
+mkdir -p /tmp/smoke_lab_fig2 && cd /tmp/smoke_lab_fig2
+# Use any open-license PDF (or the synthetic fixture from
+# tests/regressions/test_bug_audit_87_real_pdf_end_to_end.py).
+SAMPLE_PDF=/tmp/sample_paper.pdf
+debrief new
+debrief
+```
+
+## Phase 1 - Discovery
+
+The consultant should:
+
+1. Greet and ask the universal questions (duration, assets, audience).
+2. When you provide the PDF path, run `python -m debrief.paper_analyzer --pdf $SAMPLE_PDF --paper-slug <slug> --project-root .` per BC-5.11.
+3. Emit `paper_attached`.
+4. Set `sub_phase = discovery/paper_analysis`.
+5. Open the `## Paper Discussion` (BC-5.22) - discuss the paper substantively without forcing every figure on you.
+6. Confirm archetype = `lab_meeting`, paper_role = `concept_source`.
+7. Transition to `discovery/figure_selection` and present the G1.3 figure list.
+
+## Phase 2 - Single-figure selection
+
+When the figure list appears, reply with the literal `2`. The consultant should:
+
+- Read `debrief_state.json.selected_figures = [2]`.
+- Build ONE slide brief for Figure 2.
+- NOT propose additional figure slides for completeness.
+- Emit `figure_selected` with `{"slug": "<slide_slug>", "paper": "<path>", "figure_num": 2}`.
+- Proceed to style and slide production normally.
+
+## Phase 3 - Verify
+
+The final deck must:
+
+- Contain a slide using `assets/reference/papers/<slug>/figures/fig_2.png`.
+- Render the caption as a styled `<figcaption class="figure-caption">` element.
+- Carry an attribution line (e.g., `Figure from <Authors>, <Year>, <Journal>` - using whichever fields the analyzer recovered).
+- Pass visual-qa with VETO-07 not firing (the caption styling is correct).
+
+## Bug-reporting shape
+
+If the consultant proposes additional figure slides beyond your `2` selection, that is a `paper_role` violation per BC-5.23 - file as `BUG-ST-LM-1: consultant over-designed concept_source deck`. If VETO-07 fires on the figure 2 slide, file as `BUG-ST-LM-2: caption styled as body text on paper-derived figure`.

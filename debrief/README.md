@@ -48,7 +48,59 @@ The consultant agent manages the workflow between these commands. Just follow th
 
 ---
 
+## Working with Papers
+
+debrief can ingest academic paper PDFs during discovery and extract their figures, captions, and per-figure claims into your presentation. **Every archetype accepts papers** - the question is whether the consultant proactively asks for one (`paper_required`) and how the paper is used once provided (`paper_role`).
+
+| Archetype | `paper_role` | `paper_required` | Behavior |
+|---|---|---|---|
+| `journal_club` (single_paper) | `primary_dissection` | **yes** | Paper IS the presentation. Each selected figure becomes its own slide; figure-by-figure dissection. |
+| `journal_club` (multi_paper) | `primary_thematic` | **yes** | Multiple papers compared thematically; cross-paper composite slides allowed. |
+| `thesis_discussion` | `primary_document` | **yes** | Thesis PDF is mandatory; structure mapped to chapters with aggressive cuts. |
+| `lecture` | `concept_source` | no | Papers are an **optional** resource pool. Pick specific concepts/figures to teach. |
+| `lab_meeting` | `concept_source` | no | Same as lecture. Common case: borrow a single figure from someone else's paper for a 5-minute discussion. |
+| `seminar` | `concept_source` | no | Same as lecture. |
+| `custom` | `concept_source` | no | Most flexible default; you negotiate the actual handling per paper. |
+| `conference_talk` | `background_reference` | no | Papers cited where relevant; not auto-converted to figure slides. |
+| `job_talk` | `background_reference` | no | Same as conference_talk. |
+| `grant_panel` | `background_reference` | no | Same; papers cited as background to a funding case. |
+| `investor_pitch` | `background_reference` | no | Same; market research / technical references. |
+
+When you supply a paper PDF path during discovery, the consultant runs the analyzer regardless of archetype. The `paper_role` shapes *how* the paper is used downstream; the `paper_required` flag determines whether the consultant *proactively demands* one. You can also override the role for a specific paper during discussion - e.g., a lecture user can say "I just want to cite this one as background, not build a figure slide" and that paper becomes `background_reference` for this deck.
+
+### Single-figure case
+
+For `concept_source` archetypes (lecture, lab_meeting, seminar), the figure-selection gate (G1.3) accepts either `ALL` or a space-separated list of figure numbers. A reply of `2` selects only Figure 2 - the consultant will build one slide for that figure with proper attribution and **will not** propose additional figure slides "for completeness." Your selection is the contract.
+
+Example: tomorrow's 10-minute lab meeting where you want to discuss Figure 2 of a paper you read this morning. Drop the PDF path into the briefing, reply `2` when the figure list comes up, and the deck centres on that one figure.
+
+### How extraction works
+
+When you provide a PDF path during discovery, debrief runs a local, deterministic pipeline (PyMuPDF - no network calls, no LLM/VLM):
+
+1. Parses the PDF, extracts text, section structure, figure captions, and figure images.
+2. Distributes figure images across captions on each page (multi-figure-per-page is handled correctly - each caption gets its own image).
+3. Extracts a 1-3 sentence claim per figure from the text following the caption.
+4. Pulls metadata (title, authors, journal, year) from PDF metadata + page-1 heuristics, with conservative fallback to `Unknown` rather than wrong guesses.
+5. Writes `.debrief/paper_analysis_<slug>.md` (captions + claims + narrative arc) and `assets/reference/papers/<slug>/figures/fig_N.png` per figure.
+
+Slides built from extracted figures carry a citation line (`Figure from <Authors>, <Year>, <Journal>`) and the caption is rendered as a styled `<figcaption>` element, not body text - VETO-07 enforces this regardless of archetype.
+
+---
+
 ## Troubleshooting
+
+### "Hook blocked the memory write" / writes outside project denied
+
+You may see the consultant report something like *"Hook blocked the memory write (debrief project policy)"*. This is by design and not a bug:
+
+- The PreToolUse hook `bin/check-write-auth` blocks every Write/Edit outside the project directory, including writes Claude Code's runtime sometimes attempts to its own auto-memory location (`~/.claude/projects/<encoded>/memory/`).
+- Debrief has its own project-scoped memory architecture (`.debrief/dialog.jsonl`, `output/timeline.jsonl`, `deck_brief.md`, `output/audience.yaml`, slide records in `deck_state.json`) - all inside the project, all written by Python CLIs that bypass the hook.
+- Nothing is lost: the dialog archive captures every turn implicitly, and the rewriter agent consolidates the brief at PreCompact and on `/debrief:quit`.
+
+If you see this message, the consultant in newer plugin versions (post-BUG-AUDIT-92) will silently re-route the action to the appropriate debrief CLI. If you are on an older plugin and see it interrupt your flow, the safe response is "continue" - your project memory is fine.
+
+### Other troubleshooting
 
 **"Style config not yet locked" error:**
 Run `/debrief:style` before attempting to create or edit slides. The style must be locked before any slide files can be written.
