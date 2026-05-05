@@ -48,6 +48,8 @@ The briefing is archetype-aware. At the start of every project, load the archety
 Read `${CLAUDE_PLUGIN_ROOT}/archetypes.json`. Look up the key matching `deck_state.json`'s `archetype` field. The entry contains:
 
 - `consultant_instructions` — your primary behavioral directive for this type
+- `paper_role` — how PDF papers are used by this archetype if one is provided (BUG-AUDIT-90 / BUG-AUDIT-91 / BC-5.23). One of `primary_dissection`, `primary_thematic`, `primary_document`, `concept_source`, `background_reference`. Drives the `## Paper Discussion` shape after `paper_analyzer` runs. Note: paper handling is universally available — every archetype accepts a paper if the user provides one. The role describes *how to use it*, not *whether it is accepted*.
+- `paper_required` (bool) — whether the consultant MUST proactively ask for a paper as the first archetype-specific question. `true` only for `journal_club` (the article IS the presentation) and `thesis_discussion` (the thesis is the defended subject). `false` for every other archetype — papers are optional and accepted if offered. (BUG-AUDIT-91 / BC-5.23.)
 - `time_default` / `time_range` — starting point for duration negotiation
 - `slide_density` — dense / medium / light
 - `disclosure_emphasis` — how aggressively to use progressive disclosure
@@ -62,7 +64,15 @@ Read `${CLAUDE_PLUGIN_ROOT}/archetypes.json`. Look up the key matching `deck_sta
 ### Step 2: Universal questions (ask for ALL archetypes)
 
 1. **Duration**: "How long is the presentation?" Offer the archetype's `time_default` and `time_range` as a starting point. **If the user specifies a duration outside the archetype's `time_range`, push back**: "The typical range for a [archetype] is [time_range]. Your [N] minutes is [shorter/longer] than usual — would you like to adjust, or should I adapt the structure for this duration? Alternatively, a different archetype like [suggestion] might be a better fit." *(BUG-AUDIT-53 / BUG-ST-3)*
-2. **Assets**: "Do you have assets to include — figures, data, diagrams, photos?" Then specifically: "Do you have background papers to reference? I can accept links, DOIs, PDFs, or BibTeX entries and build background slides from them."
+2. **Assets**: "Do you have assets to include — figures, data, diagrams, photos?" Then specifically: "Do you have papers I should draw from? I can accept links, DOIs, PDFs, or BibTeX entries." Paper handling is universally available — every archetype accepts a paper PDF. What changes per archetype is HOW the paper is used (the archetype's `paper_role`) and WHETHER the consultant proactively demands one (the archetype's `paper_required`):
+
+   - `primary_dissection` (journal_club / single_paper) — papers ARE the presentation, figure-by-figure. `paper_required: true` — Step 5 below imposes a strict imperative.
+   - `primary_thematic` (journal_club / multi_paper) — multiple papers compared thematically. `paper_required: true` (inherited from journal_club).
+   - `primary_document` (thesis_discussion) — the thesis is the defended subject. `paper_required: true` — Step 5 imposes a strict imperative.
+   - `concept_source` (lecture, lab_meeting, seminar, custom) — papers are an OPTIONAL resource pool. `paper_required: false`. The user picks specific concepts/figures via the G1.3 gate. A user reply selecting a SINGLE figure (e.g., `2`) is a fully valid path; do not over-design the deck around figures the user did not ask for.
+   - `background_reference` (conference_talk, job_talk, grant_panel, investor_pitch) — papers, when supplied, are cited but not auto-converted to figure slides. `paper_required: false`.
+
+   Whenever the user provides a paper path during discovery, run `paper_analyzer` per `## Paper Analyzer Invocation` below — regardless of archetype. The trigger is path-shape detection in the user's turn (a string ending in `.pdf` whose file exists). The role only shapes downstream behavior, not whether the analyzer fires. The user may also override the default role per-paper during the open `## Paper Discussion` ("I just want to cite this, not build a figure slide" → treat as `background_reference` for that paper).
 
 ### Step 3: Conditional questions (ask based on archetype flags)
 
@@ -347,6 +357,8 @@ The deterministic rule is that the discussion HAPPENS — read `.debrief/paper_a
 - **`primary_document`** (thesis_discussion): Discuss the thesis structure. Aggressively cut to highlights — "what is the exciting version?"
 - **`concept_source`** (lecture, lab_meeting, seminar, custom): Discuss which concepts in the paper(s) the user wants to teach or borrow. Map each candidate concept to a learning objective or talking point. The user may want a single specific figure (e.g., "I just want to show Figure 2 of this paper") — that is a fully valid `concept_source` case. Do not over-design the slide deck around extracted figures the user did not ask for.
 - **`background_reference`** (conference_talk, job_talk, grant_panel, investor_pitch): Discuss which papers should be cited and where. Do not auto-generate figure slides; references go on relevant content slides as citations.
+
+The user may also override the default role for a specific paper during this discussion. For example, a `lecture` user (default `concept_source`) might say "this one I just want to cite as background" — treat that paper as `background_reference` regardless of the archetype default. The taxonomy is the *default*, not a rigid rule.
 
 The user may also override the default role for a specific paper during this discussion. For example, a `lecture` user (default `concept_source`) might say "this one I just want to cite as background" — treat that paper as `background_reference` regardless of the archetype default. The taxonomy is the *default*, not a rigid rule.
 

@@ -45,12 +45,12 @@ import yaml
 # ---------------------------------------------------------------------------
 
 _TESTS_DIR = Path(__file__).resolve().parent.parent  # tests/
-_PROJECT_ROOT = _TESTS_DIR.parent  # delivered plugin root
-_UNIT_ROOT = _PROJECT_ROOT  # plugin scaffold is at project root in delivered repo
+_PROJECT_ROOT = _TESTS_DIR.parent  # debrief1.0/
+_UNIT_ROOT = _PROJECT_ROOT / "src" / "unit_1"
 
 
 def _unit(rel: str) -> Path:
-    """Return the absolute path of a file inside the plugin root."""
+    """Return the absolute path of a file inside src/unit_1/."""
     return _UNIT_ROOT / rel
 
 
@@ -217,6 +217,9 @@ class TestCommandFileStructure:
     def test_command_file_first_heading_is_namespaced(
         self, command_file: str
     ) -> None:
+        # Each command file's first non-blank line must be a `# /debrief:<name>`
+        # heading, where <name> matches the filename stem. BUG-AUDIT-10:
+        # filenames are bare <name>.md with no plugin prefix.
         path = _unit("commands") / command_file
         content = path.read_text(encoding="utf-8")
         first_nonblank = next(
@@ -284,10 +287,10 @@ EXPECTED_AGENT_FILES = {
     # rewrite_brief CLI subcommand (BC-3.18) at three triggers
     # (PreCompact hook, /debrief:quit, /debrief:refresh-brief).
     "rewriter.md",
-    # BUG-AUDIT-84 Sub-cycle B: script-writer agent-card added.
-    # Sole writer of speaker_script.md per BC-5.21; invoked via the
-    # script_writer CLI subcommand (BC-3.20) at three triggers
-    # (/debrief:script, deck-complete-finalization, /debrief:handout-cascade).
+    # BUG-AUDIT-84 Sub-cycle B: script-writer agent-card. Sole writer
+    # of speaker_script.md per BC-5.21; invoked via the script_writer
+    # CLI subcommand (BC-3.20) at /debrief:script + auto-finalization
+    # at deck-complete + /debrief:handout auto-cascade.
     "script-writer.md",
 }
 
@@ -379,17 +382,16 @@ AGENT_FRONTMATTER_SPEC: dict[str, dict[str, Any]] = {
         "maxTurns": 1,
         "tools": "Read",
     },
-    # BC-5.21 / BUG-AUDIT-84 Sub-cycle B: script-writer agent-card.
-    # Sole writer of speaker_script.md per BC-5.21. Single turn
-    # (maxTurns: 1) — the writer produces the full script in one
-    # call. Read-only tools — the wrapping script_writer CLI handles
-    # the atomic writes and backups.
+    # BC-5.21 / BUG-AUDIT-84: script-writer agent-card. Sole writer
+    # of speaker_script.md per BC-5.21. Single turn (maxTurns: 1) —
+    # produces a complete script in one call. Read-only tools — the
+    # wrapping script_writer CLI handles the writes atomically.
     "script-writer.md": {
         "name": "script-writer",
         "description": (
             "Speaker-script writer that turns the deck's memory "
-            "(brief + audience + timeline + dialog) and slide "
-            "records into presenter-ready prose"
+            "(brief + audience + timeline + dialog) and slide records "
+            "into presenter-ready prose"
         ),
         "model": "claude-sonnet-4-6",
         "maxTurns": 1,
@@ -593,7 +595,8 @@ class TestHooksPointerAndStructure:
         self, hooks_json: dict
     ) -> None:
         # BC-1.4 / BUG-AUDIT-17: timeout must be >= 60 (BUG-AUDIT-17
-        # bumped it to 120 for Playwright rendering inside qa_checker.py).
+        # bumped it to 120 to accommodate Playwright rendering inside
+        # qa_checker.py).
         post_hooks = _get_hooks_by_event(hooks_json, "PostToolUse")
         timeouts = [h.get("timeout") for h in post_hooks]
         assert any(t is not None and t >= 60 for t in timeouts), (
@@ -716,6 +719,7 @@ class TestEnvironmentYmlCompleteness:
         """
         deps = env_yml.get("dependencies", [])
         conda_deps = [d for d in deps if isinstance(d, str)]
+        # Also walk the pip section in case someone tried to pin it there.
         pip_deps = _get_pip_deps(env_yml)
         assert not any("libreoffice-still" in d for d in conda_deps), (
             f"BUG-AUDIT-4 regression: libreoffice-still reappeared in "
@@ -1468,6 +1472,7 @@ class TestVersionsMdFormat:
 # BC-1.13  archetypes.json completeness
 # ---------------------------------------------------------------------------
 
+# BUG-AUDIT-47: expanded from 8 to 10 archetypes with full schema
 EXPECTED_ARCHETYPE_KEYS = {
     "lab_meeting",
     "conference_talk",
@@ -1481,8 +1486,11 @@ EXPECTED_ARCHETYPE_KEYS = {
     "custom",
 }
 
+# BUG-AUDIT-47: expanded required fields to match new schema
 REQUIRED_ARCHETYPE_FIELDS = {
     "presentation_type",
+    "paper_role",  # BUG-AUDIT-90 / BC-5.23
+    "paper_required",  # BUG-AUDIT-91 / BC-5.23 amendment
     "time_default",
     "time_range",
     "slide_density",

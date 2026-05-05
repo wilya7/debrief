@@ -1,6 +1,8 @@
 {
   "lab_meeting": {
     "presentation_type": "Lab Meeting",
+    "paper_role": "concept_source",
+    "paper_required": false,
     "time_default": 10,
     "time_range": "5-15 min",
     "slide_density": "dense",
@@ -13,7 +15,7 @@
     "series_default": false,
     "sub_modes": null,
     "rhetorical_emphasis": "Data-centric, iterative, invites critique and discussion from peers",
-    "consultant_instructions": "Keep briefing short: ask for data figures early (expected but not mandatory) and confirm duration. Structure slides as brief context, then data/results, then next steps. Dense slides are fine but enforce legibility from back of room (serif titles at 36px+, sans-serif body at 20px+). Propose multi-slide progressive disclosure builds where figures benefit from staged reveal. Minimal background — colleagues know the field.",
+    "consultant_instructions": "Keep briefing short: ask for data figures early (expected but not mandatory) and confirm duration. Structure slides as brief context, then data/results, then next steps. Dense slides are fine but enforce legibility from back of room (serif titles at 36px+, sans-serif body at 20px+). Propose multi-slide progressive disclosure builds where figures benefit from staged reveal. Minimal background — colleagues know the field. Lab meetings often cite a single figure from someone else's paper to motivate discussion — paper_role is `concept_source`: if the user provides a paper PDF, run `paper_analyzer` and let the user pick one or more specific figures via the G1.3 gate (a reply of `2` selecting only Figure 2 is fully valid; do not over-design).",
     "key_defaults_text": "10-minute lab meeting. 2-3 dense slides. Focus on new results and open questions. Minimal background; colleagues know the field.",
     "content_signal_defaults": {
       "figures": true,
@@ -26,6 +28,8 @@
   },
   "conference_talk": {
     "presentation_type": "Conference Talk",
+    "paper_role": "background_reference",
+    "paper_required": false,
     "time_default": 15,
     "time_range": "10-45 min",
     "slide_density": "light",
@@ -51,6 +55,8 @@
   },
   "seminar": {
     "presentation_type": "Seminar",
+    "paper_role": "concept_source",
+    "paper_required": false,
     "time_default": 45,
     "time_range": "30-60 min",
     "slide_density": "medium",
@@ -76,6 +82,8 @@
   },
   "lecture": {
     "presentation_type": "Lecture",
+    "paper_role": "concept_source",
+    "paper_required": false,
     "time_default": 60,
     "time_range": "30-90 min",
     "slide_density": "dense",
@@ -101,6 +109,8 @@
   },
   "journal_club": {
     "presentation_type": "Journal Club",
+    "paper_role": "primary_dissection",
+    "paper_required": true,
     "time_default": 20,
     "time_range": "15-30 min",
     "slide_density": "medium",
@@ -132,6 +142,8 @@
   },
   "grant_panel": {
     "presentation_type": "Grant Panel Presentation",
+    "paper_role": "background_reference",
+    "paper_required": false,
     "time_default": 12,
     "time_range": "10-15 min",
     "slide_density": "medium",
@@ -157,6 +169,8 @@
   },
   "job_talk": {
     "presentation_type": "Job Talk",
+    "paper_role": "background_reference",
+    "paper_required": false,
     "time_default": 45,
     "time_range": "20-45 min",
     "slide_density": "medium",
@@ -189,6 +203,8 @@
   },
   "thesis_discussion": {
     "presentation_type": "Thesis Defense",
+    "paper_role": "primary_document",
+    "paper_required": true,
     "time_default": 35,
     "time_range": "20-45 min",
     "slide_density": "medium",
@@ -220,6 +236,8 @@
   },
   "investor_pitch": {
     "presentation_type": "Investor Pitch",
+    "paper_role": "background_reference",
+    "paper_required": false,
     "time_default": 15,
     "time_range": "5-20 min",
     "slide_density": "light",
@@ -252,6 +270,8 @@
   },
   "custom": {
     "presentation_type": "Custom",
+    "paper_role": "concept_source",
+    "paper_required": false,
     "time_default": 20,
     "time_range": "any",
     "slide_density": "medium",

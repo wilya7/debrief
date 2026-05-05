@@ -1215,7 +1215,7 @@ Each archetype pre-configures a set of defaults that the Consultant uses as the 
   - Whether a questions/discussion section is needed within the allocated time
 
   The time is recorded in `deck_brief.md` Content Signals as `allocated_time: "<N>min"`. The Consultant uses it to constrain the narrative arc — proposing fewer, punchier groups for short talks and more detailed groups for longer ones.
-- **REQ-CONSULT-17:** If the user provides one or more academic paper PDFs during discovery (for journal club presentations), the Consultant MUST invoke the paper analyzer module (`debrief.paper_analyzer`) to extract content from each PDF. The extraction pipeline:
+- **REQ-CONSULT-17:** If the user provides one or more academic paper PDFs during discovery, the Consultant MUST invoke the paper analyzer module (`debrief.paper_analyzer`) to extract content from each PDF. Paper handling is universally available — every archetype accepts papers when offered (BUG-AUDIT-91). The trigger is per-PDF-path-shaped string in the user's discovery turn AND file existence — see `agents/consultant.md` `## Paper Analyzer Invocation` for the deterministic invocation rules per BC-5.22 and the multi-paper loop. The archetype's `paper_role` field (BUG-AUDIT-90) does NOT gate the trigger — it shapes downstream slide-planning behavior only. The archetype's `paper_required` field (BUG-AUDIT-91) determines whether the Consultant must proactively *demand* a paper (true for `journal_club` and `thesis_discussion`; false for all others). The extraction pipeline:
 
   1. **Parse the PDF** — extract full text, section structure, figure captions, figure images, and metadata (using PyMuPDF (imported as `fitz`)). Metadata extraction prefers the PDF's metadata dictionary (`title`, `author`, `subject`) and falls back to conservative page-1 text heuristics when those fields are absent or producer-noise (e.g., `LaTeX with hyperref`, `PDF Producer`). Heuristics intentionally err toward `None` when no plausible value is found rather than surfacing wrong guesses in REQ-CONSULT-18's citation line. *(BUG-AUDIT-87.)*
   2. **Identify key figures** — match figure references in text to extracted images. Rank by citation frequency and section location (results figures > supplementary figures).
@@ -1233,14 +1233,22 @@ Each archetype pre-configures a set of defaults that the Consultant uses as the 
   **Paper slug derivation.** The paper slug is derived from the PDF filename by: (1) stripping the `.pdf` extension, (2) applying the Debrief Identifier Sanitization Algorithm (Section 24.10.1) with `max_length=50`. Example: `Nature_2024_Smith_et_al.pdf` → `nature_2024_smith_et_al`. The slug is used in: `.debrief/paper_analysis_<paper_slug>.md`, `assets/reference/papers/<paper_slug>/`, and all G1.3 placeholders. If the user provides multiple papers, each gets its own slug derived independently.
 
   The paper analyzer runs exactly once per paper, at the moment the user provides the paper path during discovery. It does NOT re-run at G1.1 BRIEF APPROVED or any later transition. The results (extracted figures, claims, narrative arc) are cached in `.debrief/paper_analysis_<paper_slug>.md` and referenced by later phases.
-- **REQ-CONSULT-18:** For journal club presentations, the Consultant MUST build the narrative arc around the extracted figures and claims, generating connective tissue between them. The Consultant proposes slide groups structured as:
+- **REQ-CONSULT-18:** Slide-planning behavior over extracted paper content branches by `paper_role` (BUG-AUDIT-90). For `primary_dissection` (journal_club / single_paper) and `primary_thematic` (journal_club / multi_paper), the Consultant MUST build the narrative arc around the extracted figures and claims, generating connective tissue between them. The Consultant proposes slide groups structured as:
   - **Context slides** — background the paper assumes but the audience needs
   - **Figure slides** — each key figure as a standalone image slide (REQ-ASSET-4) or embedded in a multi-element slide, with the extracted claim as the key message
   - **Critique/discussion slides** — the presenter's interpretation, limitations, connections to other work
 
   Every slide that uses an extracted figure MUST include a citation line: "Figure from [Authors], [Year], [Journal]" — styled per the style guide and positioned as a caption, not body text.
 
-  The Consultant presents the extracted figures as a numbered list in `.debrief/paper_analysis_<paper_slug>.md` (one line per figure with `<N>. <caption>` format). Gate G1.3 prompts the user with this list and accepts either `ALL` or a space-separated list of figure numbers. The user's selection is written directly to `debrief_state.json.selected_figures` (durable field per Section 17.5 and P-BP-13; not ephemeral `gate_data.json`). The Consultant reads this field when planning slide groups. *(BUG-AUDIT-31: the routing loop is dead; the consultant handles all dispatch via Tool calls.)*
+  The Consultant presents the extracted figures as a numbered list in `.debrief/paper_analysis_<paper_slug>.md` (one line per figure with `<N>. <caption>` format). Gate G1.3 prompts the user with this list and accepts either `ALL` or a space-separated list of figure numbers. The user's selection is written directly to `debrief_state.json.selected_figures` (durable field per Section 17.5 and P-BP-13; not ephemeral `gate_data.json`). The Consultant reads this field when planning slide groups. The G1.3 gate fires for any archetype once `paper_analyzer` has run on at least one paper — its scope is universal (BUG-AUDIT-90 / BUG-AUDIT-91). *(BUG-AUDIT-31: the routing loop is dead; the consultant handles all dispatch via Tool calls.)*
+
+  For **`paper_role: primary_document`** (thesis_discussion), the same G1.3 mechanic applies but the figure list is the thesis's figures and the narrative is mapped to thesis chapters with aggressive cuts to highlights — see the thesis_discussion `consultant_instructions`.
+
+  For **`paper_role: concept_source`** (lecture, lab_meeting, seminar, custom), papers are an OPTIONAL resource pool. The user's G1.3 reply IS the contract — a reply of `2` means "build one slide for Figure 2 of this paper, that is all." The Consultant MUST NOT propose additional figure slides "for completeness" beyond the user's explicit selection. Figure-borrowing is allowed: a single extracted figure may anchor multiple slides if the user explicitly asks for that staged reveal, but the default is one figure → one slide. Per-figure attribution is mandatory (the citation line above) regardless of `concept_source` vs. `primary_*`.
+
+  For **`paper_role: background_reference`** (conference_talk, job_talk, grant_panel, investor_pitch), the Consultant SHOULD NOT auto-generate figure slides from extracted papers. Papers are cited where their concepts are referenced on existing content slides; the analyzer's outputs (`.debrief/paper_analysis_<slug>.md`, figure files) inform citation formatting and provide a fallback figure source when the user's own data is unavailable, but the slide deck's narrative remains the user's own work, not the cited papers'.
+
+  The user MAY override the archetype's default `paper_role` for a specific paper during the consultant's `## Paper Discussion` (BC-5.22). For example, a `lecture` user (default `concept_source`) might say "this one I just want to cite as background" — the Consultant treats that paper as `background_reference` regardless of the archetype default. The role is the *default*, not a rigid rule. *(BUG-AUDIT-91.)*
 
   When `archetype` is `journal_club`, the Consultant MUST ask for paper PDFs as its first question, without waiting for a trigger: "Which paper(s) would you like to present? Give me the file path(s)." This overrides the normal progressive disclosure gate for the journal club trigger.
 
@@ -4766,7 +4774,7 @@ The Blueprint Reviewer will verify the self-eval document exists and cross-check
 3. Does every sub_phase in the Transition Table have at least one exit transition? (List them all and verify none is a dead end.)
 4. Does every sub_phase in the Transition Table have at least one entry transition? (No unreachable states.)
 5. Are all conditional branches (e.g., `backup_mode=true`, `papers_provided=true`, `closing_slide_pending=true`, `group_revise_slug` non-null) covered with explicit rows in the Transition Table?
-6. When multiple conditions are true simultaneously (e.g., `papers_provided=true` AND `reference_provided=true`), is the priority order explicit?
+6. When multiple conditions are true simultaneously (e.g., `papers_provided=true` AND `reference_provided=true`), is the priority order explicit? **Resolved per BUG-AUDIT-90 (2026-05-03):** the two flags are independent — `papers_provided` triggers `paper_analyzer` (writes to `.debrief/paper_analysis_<slug>.md` and `assets/reference/papers/<slug>/`), `reference_provided` triggers `style_analyzer` (writes to `.debrief/draft/derived_style_guide.md` and `assets/reference/slides/`). They target disjoint state surfaces and may run in either order, in series or interleaved across turns. For sub_phase ordering: when both fire from a single turn, the consultant runs `paper_analyzer` first (sets `discovery/paper_analysis`) and `style_analyzer` next (transitions through `discovery/style_analysis`) — paper-derived content informs the brief, which informs the style dialog. There is no priority *conflict*; only a deterministic *order* when both happen at once.
 7. Does the `complete` state have a defined re-entry path for resume?
 8. Does every machine gate (G2.2, G3.1, G3.2, G4.5) have a defined detection mechanism that reads specific state files or artifacts? *(BUG-AUDIT-31: machine gates are dead at runtime; the consultant handles these checks directly)*
 9. Is the `pre_view_state` set/restore/clear lifecycle complete for every path through G3.V (DETAIL FIX, ESCALATE, CONTINUE)?
@@ -7781,6 +7789,88 @@ BC-5.22 added documenting the section structure and regression-test obligations.
 **Normative requirements:** none new (BC-5.22 in `blueprint_contracts.md` carries the binding contract; existing REQ-CONSULT-17/18 are unchanged in scope at this cycle — Cycle 5 / BUG-AUDIT-90 generalizes them).
 
 **Prior-Art for Rebuild:** *"determinism applies to structure, not to substantive discussion."* The user's refinement here generalizes beyond the paper-analyzer case: agent-card sections often need a deterministic shell (transitions, commands, event emissions, sub_phase strings — testable via literal-substring grep) wrapping an open content layer (where LLM judgment is the value, not the smell — verified only by section-header presence). When designing future agent-card additions, separate the two concerns: pin the rails, leave the prose. A regression test that pins discussion prose word-for-word over-specifies the agent and discourages substantive engagement; a regression test that pins zero substrings under-specifies the rails and lets compaction erode the deterministic plumbing. BC-5.22's two-tier structure is the template.
+
+---
+
+### BUG-AUDIT-90: paper_role taxonomy across archetypes — generalize paper handling beyond journal_club
+
+**Status:** Cycle 5 of the journal-club / paper-handling audit (2026-05-03). The largest-scope cycle: touches `archetypes.json`, `agents/consultant.md`, `agents/slide-maker.md`, `agents/visual-qa.md`, `spec/stakeholder_spec.md` (REQ-CONSULT-17, REQ-CONSULT-18, line 4769), and `blueprint/blueprint_contracts.md` (BC-5.11, new BC-5.23). Closes FINDING-COV-1, FINDING-COV-2, FINDING-COV-3, FINDING-COV-4, and the open spec question at line 4769 — all in a single coordinated cycle so the cross-archetype semantics are coherent.
+
+**Problem.** Pre-cycle, paper handling was hardcoded to two archetypes:
+
+- REQ-CONSULT-17 was scoped *"for journal club presentations"* (parenthetical on the trigger).
+- REQ-CONSULT-18 was titled *"For journal club presentations, the Consultant MUST build the narrative arc..."* — entirely journal-club-shaped.
+- VETO-07 was *"(journal club only)"*.
+- The G1.3 figure-selection gate fired only for journal_club.
+
+Other archetypes that should support paper handling — `lecture` (multi-paper concept-borrowing for teaching), `lab_meeting` (single-figure borrowing for a 5-minute discussion of someone else's result), `seminar` (concept-source for synthesis talks) — had no defined path. The user's stated tomorrow scenario (lab meeting, present only Figure 2 of a paper) was provably impossible: lab_meeting's `consultant_instructions` made no mention of papers, and even if a PDF were provided, the analyzer wouldn't be triggered, and the G1.3 gate (which already supports a single-figure reply) was outside the journal-club scope.
+
+The 2026-05-03 audit identified the architectural cause: paper handling was archetype-coupled when it should be a cross-cutting capability with archetype-driven *behavior*. The user agreed and approved the introduction of an explicit `paper_role` taxonomy as a first-class field on each archetype.
+
+**Root cause.** Initial design coupled paper handling to one archetype's semantics rather than designing paper-as-asset as a property orthogonal to archetype. The line between "this archetype uses papers" and "the paper IS this archetype's content" was never drawn — so papers ended up either central (journal_club, thesis_discussion) or absent (everything else), with no middle ground for "papers as resource pool."
+
+**Detection method.** 2026-05-03 audit Layer 1 — built a cross-archetype matrix (FINDING-COV-1) showing only thesis_discussion had a Step-5 imperative for papers; journal_club had only the sub-mode question; lecture had zero paper handling. Pre-fix regression test (`tests/regressions/test_bug_audit_90_paper_role_taxonomy.py`) asserts every archetype has a `paper_role` field with a value in the closed taxonomy, the canonical mapping is pinned, VETO-07 detection switched from archetype-name to file-path, slide-maker.md has a `## Paper-Derived Figures` section documenting the `concept_source` single-figure case, and the spec line 4769 question is resolved.
+
+**Fix summary.** A coordinated change spanning data, prompts, contracts, and spec:
+
+1. **`archetypes.json`** — every archetype gains a `paper_role` field. Mapping: `lab_meeting: concept_source`, `conference_talk: background_reference`, `seminar: concept_source`, `lecture: concept_source`, `journal_club: primary_dissection` (multi_paper sub-mode escalates to `primary_thematic`), `grant_panel: none`, `job_talk: background_reference`, `thesis_discussion: primary_document`, `investor_pitch: none`, `custom: none`. The `lab_meeting` consultant_instructions amended to mention the optional single-figure case.
+
+2. **`agents/consultant.md`** — Step 1 archetype-loading section gains a `paper_role` bullet. Step 2 (Assets) is now paper_role-aware: it documents how each role uses papers, including the explicit single-figure case for `concept_source` ("a reply of `2` selecting only Figure 2 is fully valid"). The `## Paper Discussion` section (added in BUG-AUDIT-89) already documents per-role discussion shape.
+
+3. **`agents/slide-maker.md`** — new `## Paper-Derived Figures` section codifies the rendering rules: caption styled as `<figcaption class="figure-caption">` not body text, mandatory citation line `Figure from <Authors>, <Year>, <Journal>`, single-slide rule for `concept_source`, figure-by-figure for `primary_dissection`, cross-paper composite for `primary_thematic`. Includes a complete HTML example.
+
+4. **`agents/visual-qa.md`** — VETO-07 detection rule changed from "for journal-club archetypes" to "for any slide whose `user_assets` references a path under `assets/reference/papers/`." File-path detection is archetype-blind and naturally generalizes.
+
+5. **`spec/stakeholder_spec.md`** — REQ-CONSULT-17 re-scoped from "for journal club presentations" to "for any archetype whose `paper_role` is not `none`." REQ-CONSULT-18 split into branches per `paper_role`: `primary_*` get figure-by-figure narrative; `concept_source` gets explicit "user's G1.3 reply IS the contract — do not over-design"; `background_reference` gets cite-don't-auto-generate. Line 4769's open priority question resolved: `papers_provided` and `reference_provided` are independent (different state surfaces, different agents); when both fire from one turn, paper_analyzer runs first because paper-derived content informs the brief that informs the style dialog.
+
+6. **`blueprint/blueprint_contracts.md`** — new BC-5.23 codifies the taxonomy and its consequences (analyzer trigger, gate firing, VETO scope, slide-maker behavior, consultant discussion shape). BC-5.11's amendment from Cycle 3 already required the journal-club imperative; the trigger-firing condition is now reinforced via paper_role.
+
+**Normative requirements:** none new (BC-5.23 carries the binding contract; existing REQ-CONSULT-17/18 are amended in scope, not in normative content).
+
+**Prior-Art for Rebuild:** *"when a feature is asymmetrically coupled to one archetype but conceptually applies to several, the coupling is the bug."* The pre-cycle design had paper handling embedded in journal_club's identity rather than expressed as a property of any archetype. Refactoring to a `paper_role` field separates "what archetype is this?" from "how does this archetype use papers?" Future cross-archetype features should follow the same shape: identify the property (e.g., "uses papers", "needs handouts", "expects backup slides"), make it a first-class field on each archetype, encode behavior as a function of the field, and write the regression test that pins the canonical mapping. Avoid the temptation to keep features in one archetype's `consultant_instructions` if conceptually they apply more broadly — it always becomes the next BUG-AUDIT.
+
+---
+
+### BUG-AUDIT-91: Two-axis paper handling — drop `paper_role: none`, add `paper_required` boolean
+
+**Status:** Cycle 8 of the journal-club / paper-handling audit (2026-05-03). Refines BUG-AUDIT-90's single-axis taxonomy after the user observed that paper handling should be available across all archetypes (lab_meeting, lecture, even grant_panel/investor_pitch when relevant) but proactively demanded only for archetypes where the paper IS the defended/dissected subject.
+
+**Problem.** BUG-AUDIT-90 introduced `paper_role` as a single field that conflated two concerns:
+
+1. *How* a paper is used if one is provided (figure-by-figure dissection? cited as background? concept source?).
+2. *Whether* the archetype handles papers at all — `paper_role: none` meant the consultant would refuse to invoke `paper_analyzer` even if the user supplied a PDF.
+
+The user surfaced the conflation: a grant_panel presenter might want to cite a background paper; an investor_pitch deck might reference a market-research paper; a lab_meeting often borrows a single figure from someone else's work for a 5-minute discussion. The `none` value blocked all of these. Worse, `none` made the architecture brittle — every "I want to use a paper here" turn would require an archetype change first, defeating the user's actual workflow.
+
+**Root cause.** Single-axis design that conflated availability with behavior. `paper_role: none` was used as a gate-keeper for the analyzer trigger when it should have only described downstream behavior.
+
+**Detection method.** User observation during the 2026-05-03 audit cycle. After Cycle 5 / BUG-AUDIT-90 landed, the user pointed out that excluding lab_meeting from concept_source would block their actual use case (their tomorrow scenario was actually `journal_club` or `lecture`), and that paper handling should be available everywhere as an option even though only journal_club mandates it. The user proposed a two-axis design: keep `paper_role` for behavior, add `paper_required` for availability. Cycle 8 implements that.
+
+**Fix summary.** Two-axis design:
+
+1. **`paper_role`** retained, but `none` value retired. Every archetype now has a positive role describing *how* a paper is used if provided. Re-mappings of the three previously-`none` archetypes:
+   - `grant_panel`: `none` → `background_reference` (papers cited as background, not auto-converted to figure slides).
+   - `investor_pitch`: `none` → `background_reference` (market research, technical references).
+   - `custom`: `none` → `concept_source` (most flexible default; user negotiates explicitly).
+
+2. **`paper_required: bool`** added to every archetype. `true` only for `journal_club` and `thesis_discussion` — the two archetypes where the paper IS the defended/dissected subject. `false` for every other archetype — papers are accepted when offered but not proactively demanded.
+
+3. **Universal analyzer trigger.** The `paper_analyzer` invocation fires whenever the user supplies a path-shaped string ending in `.pdf` whose file exists, regardless of archetype. The pre-amendment "fires for `paper_role != none`" gate is dropped. `agents/consultant.md` Step 2 and `## Paper Analyzer Invocation` updated accordingly. REQ-CONSULT-17 re-scoped to drop the role-based gate.
+
+4. **User can override role per-paper.** During the open `## Paper Discussion` section (BC-5.22), the user may say "this one I just want to cite as background" — the consultant treats that paper as `background_reference` regardless of the archetype default. The taxonomy is the *default*, not a rigid rule.
+
+5. **BC-5.23 amended** to document both fields, the universal trigger, and the override mechanism. BC-5.22 amended to require five (not six) `paper_role` values in `## Paper Discussion`.
+
+6. **Regression tests:**
+   - `tests/regressions/test_bug_audit_90_paper_role_taxonomy.py` extended: `none` rejected from `VALID_ROLES`; new tests for `paper_required` field presence, type, canonical mapping, and the "only journal_club + thesis_discussion are required" invariant.
+   - `tests/regressions/test_bug_audit_89_consultant_paper_sections.py` updated: assertion changed from "all six" to "all five" `paper_role` values; new test asserts the retired `none` bullet is absent.
+   - `tests/unit_1/test_scaffold.py` `REQUIRED_ARCHETYPE_FIELDS` extended with `paper_required`.
+
+7. **Documentation refreshed:** `README.md` "Working with Papers" section updated to reflect the two-axis model (no more "none" row; new `paper_required` column). `CHANGELOG.md` `[Unreleased]` block extended with Cycle 8 entry. `SMOKE_TEST_PROMPT.md` lab-meeting smoke unchanged (it already exercises the universal-acceptance path).
+
+**Normative requirements:** none new (BC-5.23 amendment carries the binding contract; REQ-CONSULT-17 amendment is clarification).
+
+**Prior-Art for Rebuild:** *"when a single field is doing two jobs, split it."* BUG-AUDIT-90's `paper_role` field carried both behavior (figure-by-figure vs. cite-only vs. concept_source) and availability (`none` = "this archetype refuses papers"). Splitting into `paper_role` (behavior) and `paper_required` (availability + proactive demand) makes both concerns first-class and lets each be negotiated independently. The pattern: when you find yourself adding a sentinel value to a behavioral enum to also encode a yes/no question ("none means it's off"), promote the yes/no question to its own field. The two-axis design composes naturally; the single-axis design always grows another sentinel.
 
 ---
 

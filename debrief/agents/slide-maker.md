@@ -106,6 +106,26 @@ Every claim, figure, or data point sourced from external work MUST have a citati
 
 If the consultant provided BibTeX metadata, format the citation precisely (author, year, journal). If only a DOI or link was provided, use a short-form citation.
 
+## Paper-Derived Figures (BUG-AUDIT-90 / BC-5.22)
+
+When a slide's `user_assets` includes a path under `assets/reference/papers/<paper_slug>/figures/`, the figure was extracted by `paper_analyzer` from a source PDF. These slides have stricter requirements than user-owned figures:
+
+- **Caption discipline.** The figure caption (read from `.debrief/paper_analysis_<paper_slug>.md` under `## Key Figures`) MUST render as a styled `<div class="figure-caption">…</div>` element BELOW the figure image, not as plain `<p>` body text. VETO-07 fires when the caption is rendered as body text — visual-qa enforces this regardless of archetype (the rule used to be journal-club-only; per BUG-AUDIT-90 it now triggers whenever a paper-derived figure appears).
+- **Attribution is mandatory.** Every paper-derived figure MUST carry a citation line referencing the source paper. Use the metadata from `## Metadata` in the analysis md: `Figure from <Authors>, <Year>, <Journal>`. When any of those fields is `None`/Unknown, render only the available portion (e.g., `Figure from Smith et al., 2026` if journal is absent) — do not invent values.
+- **Single-figure case (paper_role = `concept_source`).** When the consultant brief specifies a single figure number (e.g., the user replied `2` to G1.3), build ONE slide for that figure. Do not propose additional figure slides "for completeness" — the user's selection is the contract. Lab-meeting and lecture briefings are the most common shape here.
+- **Figure-by-figure (paper_role = `primary_dissection`).** Each selected figure becomes its own slide, in paper order. The narrative is the paper's narrative.
+- **Cross-paper composite (paper_role = `primary_thematic`).** Figures from multiple papers may be composed onto a single comparison slide; each figure retains its own citation line.
+
+Example caption + attribution block:
+
+```html
+<figure class="paper-figure">
+  <img src="../assets/reference/papers/smith_2026_neuron/figures/fig_2.png" alt="Hippocampal place cells">
+  <figcaption class="figure-caption">Hippocampal place cells across conditions.</figcaption>
+  <div class="citation">Figure from Smith et al., 2026, Neuron</div>
+</figure>
+```
+
 ## Video Placeholder (REQ-UNIV-19)
 
 When the slide brief includes a video asset:

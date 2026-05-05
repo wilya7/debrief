@@ -148,7 +148,8 @@ def test_path_shape_trigger_described() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_all_six_paper_roles_mentioned_in_discussion() -> None:
+def test_all_five_paper_roles_mentioned_in_discussion() -> None:
+    """Per BUG-AUDIT-91 the `none` value was retired; only five roles remain."""
     body = _section_body(_consultant_md_path().read_text(), "## Paper Discussion")
     for role in (
         "primary_dissection",
@@ -156,9 +157,18 @@ def test_all_six_paper_roles_mentioned_in_discussion() -> None:
         "primary_document",
         "concept_source",
         "background_reference",
-        "none",
     ):
         assert role in body, f"paper_role value missing from discussion section: {role!r}"
+
+
+def test_retired_none_role_absent_from_discussion() -> None:
+    """The `none` value was retired in BUG-AUDIT-91 — must not appear as a role bullet."""
+    body = _section_body(_consultant_md_path().read_text(), "## Paper Discussion")
+    # Look for the literal "**`none`**:" bullet pattern (the retired role label form).
+    # Bare "none" can legitimately appear in prose, so we only assert the bullet form is absent.
+    assert "**`none`**:" not in body, (
+        "the retired paper_role bullet `**\\`none\\`**:` must be removed per BUG-AUDIT-91"
+    )
 
 
 def test_single_figure_case_called_out_in_discussion() -> None:
