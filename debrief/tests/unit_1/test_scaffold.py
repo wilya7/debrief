@@ -1583,8 +1583,15 @@ class TestArchetypesJsonCompleteness:
 
 REQUIRED_README_SECTIONS = {
     "Installation",
-    "First Run",
-    "Quick Start",
+    # Cycle 12: Tutorial replaces First Run + Quick Start as the new-user
+    # entry point with happy-path walkthroughs per archetype.
+    "Tutorial",
+    "Archetypes",
+    "Command Reference",
+    "Working with Papers",
+    "Memory Architecture",
+    "Deliverables",
+    "Diagnostics",
     "Troubleshooting",
     "Uninstallation",
     "Dependencies",
