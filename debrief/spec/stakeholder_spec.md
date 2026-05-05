@@ -7874,4 +7874,35 @@ The user surfaced the conflation: a grant_panel presenter might want to cite a b
 
 ---
 
+### BUG-AUDIT-92: Claude Code auto-memory injection collides with debrief's project-scoped memory
+
+**Status:** Cycle 9 (2026-05-03). User-reported during a live journal-club session: the consultant said *"Hook blocked the memory write (debrief project policy). No matter — I'll hold your context in this session and we can stash it differently later."* The user asked why the hook was interfering with the memory system. Diagnosis showed the issue was not a hook bug or a memory-system bug, but a conflict between two parallel memory subsystems running on the same Claude Code session.
+
+**Problem.** Claude Code's runtime injects, at session start, a system prompt of the form *"You have a persistent, file-based memory system at `~/.claude/projects/<encoded-path>/memory/`."* This is Claude Code's general-purpose auto-memory feature; it is added unconditionally to every main session. In a debrief session, the consultant IS the main session (the project's `CLAUDE.md` says *"You are the consultant agent for this debrief presentation project"*) — so the consultant inherits the auto-memory injection. When the consultant tries to use the auto-memory via the Write tool, the path `~/.claude/projects/...` is OUTSIDE the project root (`$PWD = <project>`), so the `bin/check-write-auth` hook blocks it per BC-1.9 (*"Blocks writes outside `$PWD/`"*). The consultant correctly understood the block as policy but surfaced it to the user as a "memory failure," which is misleading: debrief has its own project-scoped memory architecture (BUG-AUDIT-78 through BUG-AUDIT-83), and that architecture is fully functional. The user's facts were not lost — they were captured implicitly by the dialog archive (`.debrief/dialog.jsonl`) and would be consolidated into `deck_brief.md` by the rewriter at PreCompact time. The consultant just did not know to use those instead of the auto-memory path.
+
+**Root cause.** Two parallel memory subsystems on the same session:
+
+1. **Claude Code's auto-memory** at `~/.claude/projects/<encoded>/memory/` — runtime-injected, outside any project root, intended for cross-session preferences and notes that survive across all Claude Code sessions for a given project directory.
+2. **Debrief's project-scoped memory** at `.debrief/dialog.jsonl`, `output/timeline.jsonl`, `deck_brief.md`, `output/audience.yaml`, all inside the project root, written via Python CLIs that bypass the Write tool entirely (and therefore bypass the hook).
+
+The consultant's agent card (`agents/consultant.md`) documented the debrief subsystem in detail (sections `## Recall Discipline`, `## Event Timeline Emission`, `## Deck Brief Maintenance`) but said NOTHING about the auto-memory injection. Without an explicit disclaimer, the model — seeing both injections — defaulted to the more recently-mentioned auto-memory path and got blocked.
+
+**Detection method.** Live user report (2026-05-03). Reproduced in the user's journal-club project at `/Users/cfusco/Nextcloud/work/lab_meetings/20260504_Journal_club/`. Confirmed that the project's `.debrief/dialog.jsonl` and `output/timeline.jsonl` did not exist (the consultant had not been using the canonical CLIs), and the project's `~/.claude/projects/...` auto-memory directory did not exist either (the hook had blocked every attempt). Pre-fix regression test (`tests/regressions/test_bug_audit_92_auto_memory_disclaimer.py::test_auto_memory_disclaimer_section_exists`) asserted the section header — pre-fix this test failed; post-fix all 8 tests pass.
+
+**Fix summary.** A new `## Auto-Memory Disclaimer` section in `agents/consultant.md`, placed immediately before `## Recall Discipline` (so the carve-out is read first when the agent reaches the memory cluster). The section:
+
+1. Acknowledges the auto-memory injection by name and exact path shape (`~/.claude/projects/...`).
+2. Tells the consultant to ignore it for debrief sessions.
+3. Explains the hook block is BY DESIGN per BC-1.9 / `check-write-auth` — not a bug.
+4. Enumerates the canonical debrief memory surfaces in a table (dialog archive, event timeline, deck brief, audience roster, slide records) with their CLI write paths.
+5. Tells the consultant that on encountering a hook block of an out-of-project Write, it MUST NOT surface the block to the user as "memory failed" — it MUST re-route the action to the appropriate debrief CLI per the table.
+
+BC-5.24 added documenting the section structure and regression-test obligations. The user's actual journal-club session is unaffected by this fix (the consultant card update lands in the next session start) but no data is being lost in the meantime — the dialog archive captures everything implicitly via `append_dialog_turn`, and the rewriter will consolidate at PreCompact.
+
+**Normative requirements:** none new (BC-5.24 carries the binding contract).
+
+**Prior-Art for Rebuild:** *"when two memory subsystems coexist on the same agent context, you must explicitly disclaim one or the other."* The default behavior of "let the model figure it out" produces a confusing user experience: the model picks one path, gets blocked, and surfaces the block as a system failure. The fix is always a disclaimer-shaped agent-card section that names the conflicting injection and tells the agent to ignore it. The pattern generalizes: any time a debrief feature collides with a Claude Code default behavior (auto-memory, default tool selection, default model fallback), the agent card must disclaim the default explicitly. Future BUG-AUDITs in this shape are predictable: when Claude Code adds a new default behavior, debrief will need a sibling disclaimer.
+
+---
+
 *End of Debrief Stakeholder Specification v1.1*

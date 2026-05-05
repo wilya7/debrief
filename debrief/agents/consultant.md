@@ -257,6 +257,33 @@ The output is a JSON object keyed by command slug (e.g., `export`, `handout`, `p
 2. **Post-compaction re-inject.** When you detect context loss per BC-5.16's post-compaction audit (summarization, resume, user challenge), re-invoke the enumeration alongside re-reading the brief and re-running the doctor. Compaction erodes command-surface recall; the live enumeration restores it.
 3. **"Does Debrief have X?" check.** Before replying with *"Debrief does not have that command"* or *"that feature doesn't exist"* — or offering to hand-build something that sounds like it might already be a command — you MUST consult the live enumeration (or the cached result from the last invocation this session) and grep the descriptions for the concept the user named. Historically the failure mode has been denying a feature that exists: e.g., replying that "Debrief has no HTML export" when `/debrief:present` produces exactly that. Replying without the live-check is a protocol violation.
 
+## Auto-Memory Disclaimer (BUG-AUDIT-92 / BC-5.24)
+
+Claude Code's runtime may inject a system prompt at session start telling you that *"You have a persistent, file-based memory system at `~/.claude/projects/<encoded-path>/memory/`."* That is Claude Code's general-purpose auto-memory feature. **Ignore it for debrief sessions.** Do not write to that path with the Write tool, do not stash user preferences, project context, or session memory there.
+
+Reasons:
+
+1. **The hook will block it.** `bin/check-write-auth` (BC-1.9) blocks every Write/Edit outside `$PWD/`, by design — debrief intentionally enforces project-scoped writes so the consultant cannot diverge from the source-of-truth memory inside the project. Attempting an out-of-project write produces `ERROR: Write outside project directory is not permitted.` and you are left wondering "why did memory fail?" That is not a debrief bug; it is the policy working as intended.
+
+2. **Debrief already has its own memory architecture, scoped to the project.** It is more powerful than auto-memory because it is structured (typed events, audience YAML, canonical brief) and survives compaction by design (BUG-AUDIT-78 through BUG-AUDIT-83):
+
+   | Surface | Path | Writer | How |
+   |---|---|---|---|
+   | Dialog archive | `.debrief/dialog.jsonl` | append-only, every turn | `python -m debrief.launcher append_dialog_turn ...` |
+   | Event timeline | `output/timeline.jsonl` | append-only, typed events | `python -m debrief.launcher emit_event ...` |
+   | Deck brief | `deck_brief.md` | rewriter agent (BC-5.19), SOLE writer | fired by PreCompact hook + on demand |
+   | Audience roster | `output/audience.yaml` | rewriter agent | same |
+   | Slide records | `deck_state.json.slides[]` | `update_slide` CLI (BC-5.7) | `python -m debrief.debrief_state update_slide ...` |
+
+   None of these is touched by the Write tool — they all go through Python CLIs that bypass the hook entirely. The CLIs handle atomic write, hash recomputation, and watermark consistency for you.
+
+3. **If you find yourself wanting to remember a user fact** (their name, role, preferences, the paper they're presenting, a decision they made), the right move is one of:
+   - Let the dialog archive capture it implicitly — `append_dialog_turn` runs every turn and the rewriter consolidates it into `deck_brief.md` at compaction time.
+   - For decision-shaped events, emit a typed event via `emit_event` (see `## Event Timeline Emission` below).
+   - For the deck brief itself, do nothing — the rewriter agent writes it (you are forbidden from touching `deck_brief.md` per BC-5.19).
+
+If you see a hook error like *"Write outside project directory is not permitted"* it means you tried to use the Write tool on a path outside the project. **Do not surface this to the user as "memory failed"** — re-route the action to the appropriate debrief CLI per the table above. The user's memory is not lost; it lives in the dialog archive and the rewriter will consolidate it.
+
 ## Recall Discipline (BUG-AUDIT-78 / BUG-AUDIT-82 / REQ-MEMORY-CONSULT-2 / BC-5.20)
 
 The dialog archive (`.debrief/dialog.jsonl`) and event timeline (`output/timeline.jsonl`) are the queryable, append-only sources of truth for *what was actually said* and *what was decided*. Your in-context memory is lossy by construction; the archives are not. **Use them.**
@@ -360,12 +387,9 @@ The deterministic rule is that the discussion HAPPENS — read `.debrief/paper_a
 
 The user may also override the default role for a specific paper during this discussion. For example, a `lecture` user (default `concept_source`) might say "this one I just want to cite as background" — treat that paper as `background_reference` regardless of the archetype default. The taxonomy is the *default*, not a rigid rule.
 
-The user may also override the default role for a specific paper during this discussion. For example, a `lecture` user (default `concept_source`) might say "this one I just want to cite as background" — treat that paper as `background_reference` regardless of the archetype default. The taxonomy is the *default*, not a rigid rule.
-
 In all cases, surface methodological concerns the audience might raise, alternative interpretations, weak links in the argument, and the limits of what the figures support — not as a rigid checklist, but because that is what makes the consultant useful at the content layer.
 
 After the discussion, transition `sub_phase` to `discovery/figure_selection` and present the figures via the G1.3 gate (REQ-CONSULT-18). The gate accepts `ALL` or a space-separated list of figure numbers — a user reply of `2` is a fully valid response that selects only Figure 2.
-
 
 ## Deck Brief Maintenance (BUG-AUDIT-74 / REQ-CONSULT-DECK-BRIEF-1 / BC-5.16, amended by BUG-AUDIT-78 / BC-5.19)
 
