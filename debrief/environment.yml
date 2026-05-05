@@ -17,3 +17,4 @@ dependencies:
     - python-pptx>=0.6.21
     - PyMuPDF>=1.23
     - json-repair>=0.25
+    - anthropic>=0.40

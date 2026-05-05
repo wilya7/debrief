@@ -111,8 +111,8 @@ fi
 # Catches externally-modified or corrupted envs before any project state is
 # touched.
 # ---------------------------------------------------------------------------
-if ! python -c 'import playwright, pptx, fitz, json_repair' 2>/dev/null; then
-  echo "ERROR: debrief core dependencies (playwright, python-pptx, PyMuPDF, json-repair) are not importable in the debrief conda environment." >&2
+if ! python -c 'import playwright, pptx, fitz, json_repair, anthropic' 2>/dev/null; then
+  echo "ERROR: debrief core dependencies (playwright, python-pptx, PyMuPDF, json-repair, anthropic) are not importable in the debrief conda environment." >&2
   echo "This indicates the environment is corrupt or was externally modified." >&2
   echo "Recovery: run \`debrief --rebuild-env\` to recreate the environment from environment.yml." >&2
   exit 2

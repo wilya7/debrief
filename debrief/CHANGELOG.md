@@ -2,6 +2,25 @@
 
 All notable changes to debrief are documented in this file.
 
+## [Unreleased] - 2026-05-05
+
+### Anthropic SDK declared as dependency + actionable feedback on missing-SDK (BUG-AUDIT-93)
+
+User-reported via a child project's bug report: `/debrief:script` silently produced nothing on a fresh install. Root cause: `anthropic` Python SDK is lazy-imported at two sites in `launcher.py` (script-writer and rewriter) but was NOT declared in either `pyproject.toml` or `environment.yml`. The lazy-import correctly converted the missing-dependency state to a logged `ModuleNotFoundError` and exit 0 - but with no console output, the user saw a silent no-op. Diagnosis surfaced that the same root cause silently broke the rewriter on every default install, which means `deck_brief.md` and `output/audience.yaml` were never being synthesized.
+
+### Added (BUG-AUDIT-93)
+- `anthropic>=0.40` declared in BOTH `pyproject.toml` `[project.dependencies]` AND `environment.yml` pip section. New BC-1.18 enforces cross-file consistency.
+- `bin/debrief` step 5.5 smoke test (line 114) now imports `anthropic` alongside `playwright, pptx, fitz, json_repair`. A corrupt env is now caught at bootstrap, not at the first `/debrief:script` invocation.
+- Two helper functions in `launcher.py` (`_is_anthropic_module_error`, `_emit_anthropic_missing_stderr`) plus call-site logic that, when the lazy-import path raises `ModuleNotFoundError` for `anthropic`, emits a single actionable line to stderr naming the install fix.
+- 15 regression tests across two new test files for the dependency declaration + the stderr/exit-code behavior.
+
+### Changed (BUG-AUDIT-93)
+- `/debrief:script` (direct CLI invocation, `trigger == "/debrief:script"`) now exits **2** when the anthropic SDK is missing, instead of silently exiting 0. Cascades from the consultant's 4-step finalization (`deck-complete-finalization`, `/debrief:handout-cascade`) keep the exit-0 contract because the next step in the cascade must continue. The rewriter (`rewrite_brief`) always exits 0 unconditionally because PreCompact must never block compaction (REQ-MEMORY-REWRITE-4) - but it now also prints the actionable stderr line so the user knows the brief did not synthesize.
+- BC-3.18 and BC-3.20 amended with the new stderr + exit-code policy.
+
+### Fixed (BUG-AUDIT-93)
+- `/debrief:script` and the rewriter (PreCompact / `/debrief:refresh-brief` / `/debrief:quit`) silently failing on default installs because the anthropic SDK was never installed. The fix is purely additive - existing installs that have `anthropic` already (because the user manually `pip install`-ed it) are unaffected.
+
 ## [Unreleased] - 2026-05-03
 
 ### Auto-memory disclaimer (BUG-AUDIT-92)

@@ -1334,6 +1334,27 @@ def validate_script_voice_drift(
 # ---------------------------------------------------------------------------
 
 
+def _is_anthropic_module_error(exc: BaseException) -> bool:
+    """True when ``exc`` is the missing-anthropic-SDK ImportError (BUG-AUDIT-93)."""
+    return isinstance(exc, ModuleNotFoundError) and getattr(exc, "name", None) == "anthropic"
+
+
+def _emit_anthropic_missing_stderr(command: str) -> None:
+    """Print the actionable stderr line for missing anthropic SDK (BUG-AUDIT-93).
+
+    Called whenever a lazy-import path raises ``ModuleNotFoundError`` for
+    ``anthropic``. Pre-fix the consultant/script-writer/rewriter paths
+    logged the error to JSONL and exited 0, leaving the user without any
+    console signal that the deliverable had failed.
+    """
+    print(
+        f"{command}: anthropic SDK not installed in this env; "
+        f"install with `pip install 'anthropic>=0.40'` and retry. "
+        f"If the env was created by `bin/debrief`, run `debrief --rebuild-env`.",
+        file=sys.stderr,
+    )
+
+
 def call_script_writer_agent(
     model: str,
     system_prompt: str,
@@ -1606,6 +1627,14 @@ def main_script_writer(
             error_class=type(exc).__name__,
             error_message=str(exc),
         )
+        # BUG-AUDIT-93: surface missing-anthropic to stderr and exit non-zero
+        # on direct CLI invocation so the user does not see a silent failure.
+        # Cascades (deck-complete-finalization, /debrief:handout-cascade) keep
+        # exit 0 per REQ-SCRIPT-WRITER-2 — the next step in the cascade still
+        # runs, and the JSONL log captures the failure for later inspection.
+        if _is_anthropic_module_error(exc):
+            _emit_anthropic_missing_stderr("/debrief:script")
+            sys.exit(2 if trigger == "/debrief:script" else 0)
         sys.exit(0)
 
     # 8. Validate guardrails (3, 1, 5 are blockers; 4, 6 are warnings).
@@ -2177,6 +2206,12 @@ def main_rewrite_brief(
             error_class=type(exc).__name__,
             error_message=str(exc),
         )
+        # BUG-AUDIT-93: surface missing-anthropic to stderr so the user knows
+        # the rewriter has not produced deck_brief.md / audience.yaml. Exit
+        # remains 0 unconditionally per REQ-MEMORY-REWRITE-4 — PreCompact must
+        # never block compaction even when the rewriter cannot run.
+        if _is_anthropic_module_error(exc):
+            _emit_anthropic_missing_stderr("rewrite_brief")
         sys.exit(0)
 
     # 6. Validate brief structure.

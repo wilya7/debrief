@@ -7905,4 +7905,36 @@ BC-5.24 added documenting the section structure and regression-test obligations.
 
 ---
 
+### BUG-AUDIT-93: Undeclared `anthropic` SDK dependency silently breaks script-writer + rewriter on default install
+
+**Status:** Cycle 10 (2026-05-05). User-reported via a child project's bug report after invoking `/debrief:script` on a fresh install.
+
+**Problem.** `src/debrief/launcher.py` lazy-imports the `anthropic` SDK at two sites — `call_script_writer_agent` (line ~1348, used by the `script_writer` subcommand → `/debrief:script`) and `call_rewrite_agent` (line ~1983, used by the `rewrite_brief` subcommand → PreCompact hook, `/debrief:refresh-brief`, `/debrief:quit`). Neither `pyproject.toml` `[project.dependencies]` nor `environment.yml` pip section declared `anthropic`. So a default install (whether via `bin/debrief` bootstrapping environment.yml or via `pip install .` reading pyproject.toml) shipped a conda env without the SDK. Both subcommands silently failed: the lazy-import raised `ModuleNotFoundError`, the existing `try/except` block logged it to JSONL, and the function exited 0 with no console output. The user typed `/debrief:script`, saw nothing happen, and had no way to discover what was wrong without reading `.debrief/script_errors.jsonl` — which is unreasonable.
+
+The reporter found the script-writer symptom. The diagnosis exposed a more load-bearing issue: the rewriter has the same root cause, and the rewriter's silent failure means `deck_brief.md` and `output/audience.yaml` were never being synthesized on default installs. The empty `.debrief/dialog.jsonl` and missing `deck_brief.md` observed in the user's 2026-05-04 journal-club project were caused by this — not by the consultant failing to call the right CLIs (as initially suspected during the BUG-AUDIT-92 diagnosis), but by the rewriter's API call failing on every PreCompact / quit because `anthropic` was never installed.
+
+**Root cause.** Two-axis omission:
+
+1. **Missing dependency declaration.** Neither install spec lists `anthropic`. The lazy-import pattern is correct in principle (per the docstring, "so a missing SDK dependency surfaces as ImportError that the caller logs … rather than crashing on module import") but it MASKS a missing-dependency bug to the user — exit 0 + JSONL log + no console output looks identical to a successful no-op.
+
+2. **No actionable user feedback when the lazy-import fires.** Even if the user dug into `.debrief/script_errors.jsonl` and saw `"error_class": "ModuleNotFoundError", "error_message": "No module named 'anthropic'"`, they had no information about how to fix it. The contract didn't require the launcher to print anything to stderr.
+
+**Detection method.** External user report against a fresh install (2026-05-05): `bin/debrief` bootstrapped the env from `environment.yml`, but `which pip && pip show anthropic` returned `WARNING: Package(s) not found: anthropic`. Confirmed by inspection of both install specs. Pre-fix regression test (`tests/regressions/test_bug_audit_93_anthropic_dependency.py`) asserts both files declare the dep with matching minimum version; pre-fix all four assertions fail. Pre-fix regression test (`tests/regressions/test_bug_audit_93_anthropic_missing_stderr.py`) mocks `call_script_writer_agent` to raise `ModuleNotFoundError(name="anthropic")` and asserts (a) actionable stderr line is emitted, (b) JSONL log is still written, (c) exit code is 2 for direct invocation and 0 for cascades; pre-fix the stderr line is absent and the exit code is always 0.
+
+**Fix summary.** Three coordinated changes:
+
+1. **Declare the dependency** in BOTH install specs: `anthropic>=0.40` added to `pyproject.toml` `[project.dependencies]` and `environment.yml` pip section. Minimum version chosen for the stable Messages API surface (`Anthropic()`, `client.messages.create(model=..., max_tokens=..., system=..., messages=[...])`, `block.text` iteration). New BC-1.18 codifies the cross-file consistency requirement.
+
+2. **Extend `bin/debrief` step 5.5 smoke test** to import `anthropic` alongside the existing `playwright, pptx, fitz, json_repair` smoke. A corrupt env is now caught at bootstrap with the standardized §9.3.1 error rather than at the first `/debrief:script` invocation.
+
+3. **Improve user feedback on lazy-import failure.** Two new helpers in `launcher.py` (`_is_anthropic_module_error`, `_emit_anthropic_missing_stderr`); the script-writer and rewriter call sites now special-case `ModuleNotFoundError` for `anthropic` to: (a) emit a single actionable stderr line naming the install fix, and (b) for the script-writer, exit 2 when invoked directly (`trigger == "/debrief:script"`) so the non-zero exit signals failure visibly. Cascades (deck-complete-finalization, handout-cascade) keep exit 0 so the consultant's 4-step finalization continues. The rewriter always exits 0 (PreCompact must never block) but now also emits the stderr line so the user knows the brief failed to synthesize.
+
+BC-3.18 (rewriter CLI) and BC-3.20 (script-writer CLI) amended; BC-1.18 added.
+
+**Normative requirements:** none new (BC-1.18 carries the binding contract; the BC-3.18/3.20 amendments are clarifications).
+
+**Prior-Art for Rebuild:** *"a lazy-import that converts a missing dependency to a logged exit-0 is a UX bug-magnet — pair every lazy-import with a declared dependency and an actionable stderr line."* The lazy-import pattern is right when used to avoid heavy imports at module load, but it must not mask a missing-dependency state. Generalizing: every `try: import X except ImportError: log_and_continue` site needs three companions — (1) X declared in the install spec, (2) the smoke test imports X, (3) when the catch fires, stderr emits an actionable fix instruction. Otherwise the pattern produces a class of silent-failure bugs that are invisible to the user and only surface through forensic log inspection.
+
+---
+
 *End of Debrief Stakeholder Specification v1.1*

@@ -100,6 +100,22 @@ You may see the consultant report something like *"Hook blocked the memory write
 
 If you see this message, the consultant in newer plugin versions (post-BUG-AUDIT-92) will silently re-route the action to the appropriate debrief CLI. If you are on an older plugin and see it interrupt your flow, the safe response is "continue" - your project memory is fine.
 
+### Pre-v1.2 silent /debrief:script failure
+
+If you installed an older version of debrief (before BUG-AUDIT-93 fix) and `/debrief:script` exited silently with no output, the cause is almost certainly that the `anthropic` SDK was not declared as a dependency and is therefore missing from your conda env. This also affects the rewriter (the agent that synthesizes `deck_brief.md`). The fix in this version of debrief declares `anthropic>=0.40` in both `pyproject.toml` and `environment.yml` and the bootstrap smoke test now catches a missing SDK on `bin/debrief` startup. To recover an existing install:
+
+```bash
+debrief --rebuild-env
+```
+
+Or, if you prefer not to rebuild the whole env:
+
+```bash
+/Users/<you>/anaconda3/envs/debrief/bin/pip install 'anthropic>=0.40'
+```
+
+After install, retry `/debrief:script`. You may also want to run `/debrief:refresh-brief` once to populate any `deck_brief.md` that the rewriter previously failed to synthesize.
+
 ### Other troubleshooting
 
 **"Style config not yet locked" error:**
