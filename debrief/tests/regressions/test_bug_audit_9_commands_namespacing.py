@@ -71,6 +71,10 @@ _EXPECTED_COMMAND_FILES = {
     # + output/audience.yaml on demand. One of the three rewrite
     # triggers per REQ-MEMORY-REWRITE-2.
     "refresh-brief.md",
+    # BUG-AUDIT-94 (Cycle 11): /debrief:archive-paper retroactive paper
+    # archival when the consultant's automatic trigger missed the user's
+    # paper. Wraps the archive_paper launcher subcommand (BC-3.21).
+    "archive-paper.md",
 }
 
 

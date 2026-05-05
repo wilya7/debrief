@@ -331,9 +331,17 @@ When the user supplies a paper PDF path during discovery, invoke the analyzer de
 
 ### Trigger
 
-A `paper_analyzer` invocation MUST fire when the user's turn during discovery contains a path-shaped string ending in `.pdf` AND the file at that path exists. The trigger is independent of archetype — every archetype accepts papers (BUG-AUDIT-91 / BC-5.23). Multiple paths in a single turn fire one invocation per path, in the order they appear (multi-paper loop). The trigger is per-path, not per-turn.
+A `paper_analyzer` invocation MUST fire when ANY of the following holds in the user's discovery turn (BUG-AUDIT-94 / BC-5.11):
+
+1. **Path-shaped string ending in `.pdf` AND the file at that path exists.** This is the primary deterministic trigger. Multiple paths in a single turn fire one invocation per path, in document order (multi-paper loop).
+2. **Bare PDF filename (no directory) that resolves under common project locations.** When the user types `Smith2024.pdf` without a directory, attempt `<project_root>/Smith2024.pdf`, `~/Downloads/Smith2024.pdf`, and the user's stated paper-storage location (if any) before concluding the file does not exist. This catches drag-and-drop and shorthand references.
+3. **The user mentions a "paper", "PDF", or "preprint" they want to use** but no path-shaped string is present. In this case, the consultant MUST NOT assume the file is somewhere; instead, ASK the user explicitly: *"Please give me the file path or basename so I can run paper_analyzer. I cannot proceed past Step 5 / accept the paper without an analyzed file under `assets/reference/papers/`."* Do not silently proceed by accepting verbal descriptions of the paper — the figures and citations in the deck depend on the analyzer's output.
+
+The trigger is independent of archetype — every archetype accepts papers (BUG-AUDIT-91 / BC-5.23). The trigger is per-path, not per-turn.
 
 For archetypes with `paper_required: true` (`journal_club`, `thesis_discussion`), the consultant additionally MUST proactively demand the paper at Step 5 of the briefing, before any other archetype-specific question — see Step 5's archetype-specific bullets. For all other archetypes (`paper_required: false`), papers are optional and accepted only if offered.
+
+**Recovery path (BUG-AUDIT-94).** If the consultant realizes mid-session that a paper was discussed but `paper_analyzer` was never run (signals: `papers_provided` flag is `false` despite the dialog mentioning a paper, or `assets/reference/papers/` is empty despite figures appearing in slide drafts), the user SHOULD invoke `/debrief:archive-paper <path>` to retroactively archive. The consultant MUST surface this recovery option in the same turn it detects the gap, e.g., *"I see you've referenced figures from a paper but I never archived the source PDF. Run `/debrief:archive-paper <path-to-pdf>` and I'll catch up the state."*
 
 ### Command template
 
@@ -352,12 +360,26 @@ Where `<slug>` is derived from the PDF filename per BC-12.8 (`derive_paper_slug`
 - When the user signals readiness to pick figures (or when single-paper mode auto-advances after analysis + paper discussion): set `sub_phase = discovery/figure_selection`.
 - Exit `discovery/figure_selection` to `discovery/brief_review` (or directly to `style/style_dialog`) only after the figure list has been locked into slide briefs via the G1.3 gate.
 
-### Event emissions
+### Event emissions and state updates (post-success)
 
-Emit events immediately in the same turn the action occurs (per `## Event Timeline Emission` above):
+Immediately after each successful `paper_analyzer` invocation (exit 0), in the SAME turn, the consultant MUST perform BOTH of the following — neither is optional, neither is "best effort" (BUG-AUDIT-94 / BC-5.11):
 
-- After each successful analyzer invocation, emit `paper_attached` with payload `{"path": "<path>", "slug": "<slug>"}`.
-- After each figure selected for a slide brief, emit `figure_selected` with payload `{"slug": "<slide_slug>", "paper": "<path>", "figure_num": <N>}`.
+1. **Emit `paper_attached`** to `output/timeline.jsonl` per the `## Event Timeline Emission` section:
+
+   ```bash
+   python -m debrief.launcher emit_event --event paper_attached \
+     --payload-json '{"path": "<path>", "slug": "<slug>"}' --project-root .
+   ```
+
+2. **Set `papers_provided=true`** in `debrief_state.json` via the canonical CLI:
+
+   ```bash
+   python -m debrief.debrief_state update --set papers_provided=true --project-root .
+   ```
+
+After each figure is selected for a slide brief (per the G1.3 gate), emit `figure_selected` with payload `{"slug": "<slide_slug>", "paper": "<path>", "figure_num": <N>}`.
+
+If you cannot perform either step due to a tool failure, surface that explicitly to the user — do not silently proceed with `papers_provided=false`, because downstream G1.3 gating, slide-maker attribution, and the rewriter's brief synthesis all depend on these flags and events being correct.
 
 ### Multi-paper loop
 

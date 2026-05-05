@@ -68,6 +68,26 @@ debrief can ingest academic paper PDFs during discovery and extract their figure
 
 When you supply a paper PDF path during discovery, the consultant runs the analyzer regardless of archetype. The `paper_role` shapes *how* the paper is used downstream; the `paper_required` flag determines whether the consultant *proactively demands* one. You can also override the role for a specific paper during discussion - e.g., a lecture user can say "I just want to cite this one as background, not build a figure slide" and that paper becomes `background_reference` for this deck.
 
+### When paper handling goes off-script
+
+If the consultant accepts a paper but you later find that `assets/reference/papers/` is empty (the source PDF was never archived) or `output/timeline.jsonl` lacks a `paper_attached` event, the deterministic pipeline was bypassed - typically because the trigger detection missed your file (drag-and-drop, bare filename, or verbal mention without a path).
+
+**Recovery:** invoke the explicit retroactive command
+
+```
+/debrief:archive-paper /path/to/your-paper.pdf
+```
+
+This runs `paper_analyzer` directly, sets `papers_provided=true`, and emits `paper_attached`. It is idempotent - safe to run twice on the same PDF. After running, invoke `/debrief:refresh-brief` once so the rewriter picks up the new event into `deck_brief.md`.
+
+**Diagnosis:** to check the asset state of any project, run
+
+```
+debrief doctor --project-root . --asset-audit
+```
+
+The doctor reports drift between `assets/`, `output/timeline.jsonl`, and `debrief_state.json` — paper-figure-shaped files in the wrong location, missing events, flag mismatches, REQ-ASSET-1 slug-prefix violations.
+
 ### Single-figure case
 
 For `concept_source` archetypes (lecture, lab_meeting, seminar), the figure-selection gate (G1.3) accepts either `ALL` or a space-separated list of figure numbers. A reply of `2` selects only Figure 2 - the consultant will build one slide for that figure with proper attribution and **will not** propose additional figure slides "for completeness." Your selection is the contract.

@@ -4,6 +4,27 @@ All notable changes to debrief are documented in this file.
 
 ## [Unreleased] - 2026-05-05
 
+### Asset usage audit + paper archival recovery (BUG-AUDIT-94)
+
+User-reported via the 2026-05-05 audit: the journal-club project's source paper PDF was never archived to `assets/reference/papers/`, paper-derived figures landed in `assets/images/` (the user-image bucket), `papers_provided` flag stayed false, and `paper_attached` event was never emitted - the entire deterministic paper pipeline was bypassed in real-session usage. The user observed: *"the provided paper from which the figures were created was never saved in assets. There is a whole folder structure there that almost never gets used."*
+
+### Added (BUG-AUDIT-94)
+- New `/debrief:archive-paper <path-to-pdf>` command (BC-3.21). Explicit retroactive paper-archival path: runs `paper_analyzer`, sets `papers_provided=true`, emits `paper_attached` event. Idempotent. Exit codes 0/1/2/3 for success/missing-PDF/analyzer-failure/usage-error.
+- `commands/archive-paper.md` — user-facing documentation.
+- `debrief doctor --asset-audit` flag (BC-3.16 amendment). Detects asset-state drift: paper-figure-shaped files in `assets/images/` while `assets/reference/papers/` is empty; `papers_provided` flag inconsistency; missing `paper_attached` events; REQ-ASSET-1 slug-prefix violations. Adds an `asset_audit` field to the doctor's JSON output and exits 1 on drift.
+- 22 regression tests across launcher subcommand, audit helper, consultant-card content, and command-file presence.
+
+### Changed (BUG-AUDIT-94)
+- `agents/consultant.md` `## Paper Analyzer Invocation` § Trigger broadened to enumerate three detection signals: path-shaped string ending in `.pdf`; bare PDF filename resolved against project root + `~/Downloads/`; verbal mention of "paper"/"PDF"/"preprint" with explicit clarifying prompt. The consultant MUST NOT silently proceed when a verbal mention has no associated path - it asks the user explicitly.
+- `agents/consultant.md` post-success block now requires BOTH (a) emitting `paper_attached` via `python -m debrief.launcher emit_event` AND (b) updating `papers_provided=true` via `python -m debrief.debrief_state update`. Neither is optional. Tool failures must be surfaced visibly.
+- `agents/consultant.md` documents the `/debrief:archive-paper` recovery path: when the consultant detects mid-session drift (paper-figures in slides without paper-analyzer outputs), it surfaces the command to the user as the recovery action.
+- BC-3.21 added; BC-3.16 (doctor) amended; BC-5.11 (paper_analyzer invocation) amended.
+
+### Fixed (BUG-AUDIT-94)
+- The deterministic paper-handling pipeline (BC-5.11 / BC-12.* / BC-5.22) being silently bypassed in real-session usage. The fix is process-level (broadened triggers + recovery command + observability) since the underlying analyzer code was always correct - the gap was in detection robustness and post-bypass diagnostics.
+
+## [Unreleased] - 2026-05-05
+
 ### Anthropic SDK declared as dependency + actionable feedback on missing-SDK (BUG-AUDIT-93)
 
 User-reported via a child project's bug report: `/debrief:script` silently produced nothing on a fresh install. Root cause: `anthropic` Python SDK is lazy-imported at two sites in `launcher.py` (script-writer and rewriter) but was NOT declared in either `pyproject.toml` or `environment.yml`. The lazy-import correctly converted the missing-dependency state to a logged `ModuleNotFoundError` and exit 0 - but with no console output, the user saw a silent no-op. Diagnosis surfaced that the same root cause silently broke the rewriter on every default install, which means `deck_brief.md` and `output/audience.yaml` were never being synthesized.

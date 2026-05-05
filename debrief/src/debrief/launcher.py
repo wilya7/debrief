@@ -3076,14 +3076,262 @@ def _audit_brief(project_root: Path) -> BriefAuditReport:
     )
 
 
+def main_archive_paper(
+    pdf_path: Path,
+    project_root: Path,
+) -> None:
+    """Entry point for ``python -m debrief.launcher archive_paper
+    --pdf <path> --project-root <path>``.
+
+    Retroactive paper-archival path (BUG-AUDIT-94). The consultant SHOULD
+    run ``paper_analyzer`` automatically when the user provides a paper
+    PDF (BC-5.11), but the trigger detection has historically missed
+    drag-and-drop or oblique mentions. This subcommand provides an
+    explicit, idempotent recovery path: invoke ``paper_analyzer``
+    directly on the given PDF, set ``debrief_state.papers_provided`` to
+    True, and emit ``paper_attached`` to ``output/timeline.jsonl``.
+
+    Exit codes:
+      * 0 — success.
+      * 1 — PDF path missing or unreadable.
+      * 2 — ``paper_analyzer`` failed (env corruption, parse error, write
+        failure). The underlying error is propagated to stderr.
+      * 3 — usage error (no project_root, no pdf path).
+
+    See BC-3.21 and BUG-AUDIT-94.
+    """
+    project_root = project_root.resolve()
+    pdf_path = pdf_path.resolve()
+
+    if not pdf_path.is_file():
+        print(
+            f"archive_paper: PDF not found at {pdf_path}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if pdf_path.suffix.lower() != ".pdf":
+        print(
+            f"archive_paper: expected a .pdf file, got {pdf_path.suffix!r}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Lazy-import paper_analyzer (similar pattern to fitz / anthropic — keeps
+    # the launcher importable when the optional unit is unavailable).
+    try:
+        # Workspace layout: src/unit_12/paper_analyzer.py
+        # Delivered layout: src/debrief/paper_analyzer.py
+        try:
+            import paper_analyzer  # type: ignore[import]
+        except ModuleNotFoundError:
+            from debrief import paper_analyzer  # type: ignore[no-redef]
+    except ModuleNotFoundError as exc:
+        print(
+            f"archive_paper: paper_analyzer module not found: {exc}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    slug = paper_analyzer.derive_paper_slug(pdf_path)
+    print(f"archive_paper: archiving {pdf_path.name} as slug={slug!r}")
+
+    try:
+        paper_analyzer.main_paper_analyzer(
+            pdf_path=pdf_path,
+            paper_slug=slug,
+            project_root=project_root,
+        )
+    except SystemExit as exc:
+        # main_paper_analyzer uses sys.exit() for its own error codes; preserve
+        # them but remap to 2 (paper_analyzer failure) for our caller surface.
+        if exc.code not in (None, 0):
+            print(
+                f"archive_paper: paper_analyzer exited {exc.code}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
+    # Verify the analyzer actually wrote the expected artifacts before we
+    # update state. If the artifacts are missing, abort without flipping
+    # papers_provided — the user can re-run after fixing the underlying issue.
+    paper_dir = project_root / "assets" / "reference" / "papers" / slug
+    if not paper_dir.is_dir():
+        print(
+            f"archive_paper: expected output directory {paper_dir} was not created",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    # Update debrief_state.papers_provided = True via the canonical path.
+    try:
+        from debrief_state import read_debrief_state, write_debrief_state  # type: ignore[import]
+    except ModuleNotFoundError:
+        from debrief.debrief_state import (  # type: ignore[no-redef]
+            read_debrief_state,
+            write_debrief_state,
+        )
+    state = read_debrief_state(project_root)
+    state.papers_provided = True
+    write_debrief_state(project_root, state)
+
+    # Emit paper_attached event per BC-2.18 / consultant card.
+    append_timeline_event(
+        project_root,
+        event="paper_attached",
+        payload={"path": str(pdf_path), "slug": slug},
+    )
+
+    print(
+        f"archive_paper: success — paper archived to "
+        f"assets/reference/papers/{slug}/, paper_attached event emitted, "
+        f"papers_provided=True. Run /debrief:refresh-brief to consolidate."
+    )
+    sys.exit(0)
+
+
+# ---------------------------------------------------------------------------
+# Asset audit (BUG-AUDIT-94 / BC-3.16 amendment)
+# ---------------------------------------------------------------------------
+
+
+def _audit_assets(project_root: Path) -> dict:
+    """Audit the project's ``assets/`` tree against expected usage.
+
+    Returns a dict with the audit findings. Drift is detected when:
+
+    * paper-derived figures (filenames matching ``figure*`` or ``fig_*``)
+      appear in ``assets/images/`` while ``assets/reference/papers/`` is
+      empty — indicates ``paper_analyzer`` was bypassed.
+    * ``debrief_state.papers_provided`` is True but no paper directories
+      exist under ``assets/reference/papers/`` — state lies about reality.
+    * ``debrief_state.papers_provided`` is False but
+      ``assets/reference/papers/<slug>/`` directories exist — state lies
+      the other direction.
+    * ``output/timeline.jsonl`` lacks ``paper_attached`` events even
+      though paper directories exist — events were missed.
+    * ``assets/images/`` files lack the ``<slug>_`` prefix mandated by
+      REQ-ASSET-1 — ``asset_ingest`` was bypassed.
+
+    Returns a dict with keys: ``paper_directories``, ``paper_attached_event_count``,
+    ``papers_provided_flag``, ``orphan_paper_figures_in_images``,
+    ``unprefixed_image_files``, ``drift``, ``notes``.
+    """
+    notes: list[str] = []
+
+    images_dir = project_root / "assets" / "images"
+    papers_dir = project_root / "assets" / "reference" / "papers"
+
+    paper_directories: list[str] = []
+    if papers_dir.is_dir():
+        paper_directories = sorted(
+            p.name for p in papers_dir.iterdir() if p.is_dir()
+        )
+
+    image_files: list[Path] = []
+    if images_dir.is_dir():
+        image_files = sorted(p for p in images_dir.iterdir() if p.is_file() and not p.name.startswith("."))
+
+    # Heuristic: filenames matching common paper-figure shapes (case-insensitive
+    # prefix match; covers "figure2_panel_A.png", "fig_3.png", "panel_b.png",
+    # "Figure 1.png", etc.). Slightly broad — catches user-named files starting
+    # with "figure"/"fig"/"panel" too — but false positives only surface in the
+    # drift report where the user can confirm. False negatives (paper figures
+    # that DON'T start with these prefixes) are the bigger risk.
+    paper_figure_re = re.compile(r"^(figure|fig|panel)", re.IGNORECASE)
+    orphan_paper_figures: list[str] = []
+    if not paper_directories:
+        orphan_paper_figures = sorted(
+            p.name for p in image_files if paper_figure_re.match(p.name)
+        )
+
+    # REQ-ASSET-1: every file in assets/images/ MUST be ``<slug>_<original>``.
+    # The slug is derived from a deck slide slug (alphanumeric + underscores,
+    # starts with a letter). Files lacking a clear slug prefix are anomalous.
+    slug_prefix_re = re.compile(r"^[a-z][a-z0-9_]{0,49}_")
+    unprefixed_image_files = sorted(
+        p.name for p in image_files if not slug_prefix_re.match(p.name)
+    )
+
+    # paper_attached event count
+    paper_attached_count = 0
+    timeline_path = project_root / "output" / "timeline.jsonl"
+    if timeline_path.is_file():
+        for line in timeline_path.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if entry.get("event") == "paper_attached":
+                paper_attached_count += 1
+
+    # papers_provided flag
+    papers_provided: Optional[bool] = None
+    state_file = project_root / "debrief_state.json"
+    if state_file.is_file():
+        try:
+            state_dict = json.loads(state_file.read_text())
+            papers_provided = state_dict.get("papers_provided")
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # Drift detection
+    drift = False
+    if orphan_paper_figures:
+        drift = True
+        notes.append(
+            f"{len(orphan_paper_figures)} paper-figure-shaped file(s) in "
+            "assets/images/ but assets/reference/papers/ is empty — "
+            "paper_analyzer was likely bypassed. Consider running "
+            "`debrief archive_paper --pdf <path>` to retroactively archive."
+        )
+    if papers_provided is True and not paper_directories:
+        drift = True
+        notes.append(
+            "papers_provided=true in debrief_state but assets/reference/papers/ "
+            "has no paper directories — state lies."
+        )
+    if papers_provided is False and paper_directories:
+        drift = True
+        notes.append(
+            f"papers_provided=false but {len(paper_directories)} paper "
+            "director(ies) exist under assets/reference/papers/ — state lies."
+        )
+    if paper_directories and paper_attached_count == 0:
+        drift = True
+        notes.append(
+            f"{len(paper_directories)} paper director(ies) exist but no "
+            "paper_attached event in output/timeline.jsonl — event emission "
+            "was missed (BC-2.18)."
+        )
+    if unprefixed_image_files:
+        drift = True
+        notes.append(
+            f"{len(unprefixed_image_files)} file(s) in assets/images/ lack the "
+            "<slug>_ prefix mandated by REQ-ASSET-1 — asset_ingest was bypassed."
+        )
+
+    return {
+        "paper_directories": paper_directories,
+        "paper_attached_event_count": paper_attached_count,
+        "papers_provided_flag": papers_provided,
+        "orphan_paper_figures_in_images": orphan_paper_figures,
+        "unprefixed_image_files": unprefixed_image_files,
+        "drift": drift,
+        "notes": notes,
+    }
+
+
 def main_doctor(
     project_root: Path,
     *,
     reconstruct: bool = False,
     brief_audit: bool = False,
+    asset_audit: bool = False,
 ) -> None:
     """Entry point for ``python -m debrief.launcher doctor
-    --project-root <path> [--reconstruct]``.
+    --project-root <path> [--reconstruct] [--brief-audit] [--asset-audit]``.
 
     Prints a JSON report to stdout and a human-readable summary to
     stderr.
@@ -3094,7 +3342,7 @@ def main_doctor(
     * 1 — drift detected in report-only mode (scripts can key off this).
     * 2 — remediation attempted under ``--reconstruct`` but failed.
 
-    See BC-3.15 and BUG-AUDIT-75.
+    See BC-3.15, BC-3.16, and BUG-AUDIT-75 / BUG-AUDIT-83 / BUG-AUDIT-94.
     """
     project_root = project_root.resolve()
     report = detect_slide_state_drift(project_root)
@@ -3151,6 +3399,15 @@ def main_doctor(
         ):
             brief_drift = True
 
+    # BUG-AUDIT-94: --asset-audit extends the doctor with asset-state
+    # drift detection — paper-figure files in the wrong location, missing
+    # paper_attached events, papers_provided flag mismatch, etc.
+    asset_drift = False
+    if asset_audit:
+        asset_report = _audit_assets(project_root)
+        summary["asset_audit"] = asset_report
+        asset_drift = bool(asset_report.get("drift", False))
+
     print(json.dumps(summary, indent=2))
 
     if report.drift_detected:
@@ -3174,21 +3431,32 @@ def main_doctor(
         if brief_audit:
             for note in summary["brief_audit"]["notes"]:  # type: ignore[index]
                 print(f"  brief_audit: {note}", file=sys.stderr)
+        if asset_audit:
+            for note in summary["asset_audit"]["notes"]:  # type: ignore[index]
+                print(f"  asset_audit: {note}", file=sys.stderr)
         sys.exit(1)
 
-    if brief_drift:
-        print(
-            "debrief doctor: slides in sync; brief-audit DRIFT — "
-            "see brief_audit notes:",
-            file=sys.stderr,
-        )
-        for note in summary["brief_audit"]["notes"]:  # type: ignore[index]
-            print(f"  - {note}", file=sys.stderr)
+    if brief_drift or asset_drift:
+        if brief_drift and asset_drift:
+            headline = "slides in sync; brief-audit DRIFT and asset-audit DRIFT"
+        elif brief_drift:
+            headline = "slides in sync; brief-audit DRIFT"
+        else:
+            headline = "slides in sync; asset-audit DRIFT"
+        print(f"debrief doctor: {headline} — see notes:", file=sys.stderr)
+        if brief_drift:
+            for note in summary["brief_audit"]["notes"]:  # type: ignore[index]
+                print(f"  brief_audit: {note}", file=sys.stderr)
+        if asset_drift:
+            for note in summary["asset_audit"]["notes"]:  # type: ignore[index]
+                print(f"  asset_audit: {note}", file=sys.stderr)
         sys.exit(1)
 
     msg = f"debrief doctor: OK — {report.matched_count} slide(s) in sync."
     if brief_audit:
         msg += " Brief audit: clean."
+    if asset_audit:
+        msg += " Asset audit: clean."
     print(msg, file=sys.stderr)
     sys.exit(0)
 
@@ -3576,18 +3844,59 @@ def main_new() -> None:
                 "report. Brief-side drift is reported via exit code 1."
             ),
         )
+        _parser.add_argument(
+            "--asset-audit",
+            action="store_true",
+            help=(
+                "BUG-AUDIT-94: also audit the assets/ tree for paper-handling "
+                "drift — paper-figure-shaped files in the wrong location, "
+                "missing paper_attached events, papers_provided flag mismatch, "
+                "REQ-ASSET-1 slug-prefix violations. Adds an `asset_audit` "
+                "field to the JSON report. Asset drift is reported via exit "
+                "code 1."
+            ),
+        )
         _args = _parser.parse_args(sys.argv[2:])
         main_doctor(
             _args.project_root,
             reconstruct=_args.reconstruct,
             brief_audit=_args.brief_audit,
+            asset_audit=_args.asset_audit,
         )
+    elif subcommand == "archive_paper":
+        # BC-3.21 / BUG-AUDIT-94: explicit retroactive paper-archival path
+        # for cases where the consultant's automatic trigger detection
+        # missed the user's paper.
+        import argparse as _ap
+
+        _parser = _ap.ArgumentParser(
+            prog="debrief.launcher archive_paper",
+            description=(
+                "Archive a paper PDF retroactively: run paper_analyzer, "
+                "set debrief_state.papers_provided=true, emit "
+                "paper_attached event."
+            ),
+        )
+        _parser.add_argument(
+            "--pdf",
+            type=Path,
+            required=True,
+            help="Path to the paper PDF to archive.",
+        )
+        _parser.add_argument(
+            "--project-root",
+            type=Path,
+            default=Path.cwd(),
+        )
+        _args = _parser.parse_args(sys.argv[2:])
+        main_archive_paper(_args.pdf, _args.project_root)
     else:
         print(f"Unknown subcommand: {subcommand!r}", file=sys.stderr)
         print(
             "Usage: python -m debrief.launcher [new|preflight|"
             "ensure_project|ensure_settings|doctor|commands|recall|"
-            "rewrite_brief|emit_event|script_writer] [project_root]",
+            "rewrite_brief|emit_event|script_writer|archive_paper] "
+            "[project_root]",
             file=sys.stderr,
         )
         sys.exit(1)

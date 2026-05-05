@@ -141,6 +141,10 @@ EXPECTED_COMMAND_FILES = {
     # + output/audience.yaml on demand. One of the three rewrite
     # triggers per REQ-MEMORY-REWRITE-2.
     "refresh-brief.md",
+    # BUG-AUDIT-94 (Cycle 11): /debrief:archive-paper retroactive paper
+    # archival when the consultant's automatic trigger missed the user's
+    # paper. Wraps the archive_paper launcher subcommand (BC-3.21).
+    "archive-paper.md",
 }
 
 # Expected command names (filenames without the .md extension).
@@ -157,7 +161,7 @@ class TestCommandsDiscoveryPointer:
             "BC-1.2 / BUG-AUDIT-9: plugin root must contain a commands/ directory."
         )
 
-    def test_commands_directory_contains_exactly_nine_files(self) -> None:
+    def test_commands_directory_contains_expected_files(self) -> None:
         commands_dir = _unit("commands")
         actual = {p.name for p in commands_dir.iterdir() if p.is_file()}
         assert actual == EXPECTED_COMMAND_FILES, (

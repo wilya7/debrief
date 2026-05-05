@@ -7937,4 +7937,45 @@ BC-3.18 (rewriter CLI) and BC-3.20 (script-writer CLI) amended; BC-1.18 added.
 
 ---
 
+### BUG-AUDIT-94: Asset-folder usage gaps — paper bypass + missing observability
+
+**Status:** Cycle 11 (2026-05-05). User-reported via the audit on the journal-club project at `/Users/cfusco/Nextcloud/work/lab_meetings/20260504_Journal_club/`: the source paper PDF was never archived to `assets/reference/papers/`, paper-derived figures landed in `assets/images/` (the user-image bucket — REQ-ASSET-1), `debrief_state.papers_provided` stayed `false`, and the `paper_attached` event was never emitted. The whole `assets/reference/papers/` folder was empty even though the consultant produced a journal-club deck around figures from the paper.
+
+**Problem.** Even after BUG-AUDIT-89 added the `## Paper Analyzer Invocation` section with deterministic plumbing, real-session usage produced an entirely different outcome from the spec'd path. Symptoms from the live project:
+
+- `assets/reference/papers/` **empty** — `paper_analyzer.copy_pdf_to_archive` never ran.
+- `assets/images/figure2_panel_*.png` populated — figures placed manually or by the slide-maker, bypassing both `paper_analyzer.save_figure` (which would have written to `assets/reference/papers/<slug>/figures/`) AND `asset_ingest` (which would have prefixed each filename with the slide slug per REQ-ASSET-1).
+- `debrief_state.papers_provided=false` — downstream G1.3 gate logic, slide-maker attribution rules, and the rewriter's brief synthesis all rely on this flag.
+- `output/timeline.jsonl` lacks both `paper_attached` and `figure_selected` events — the rewriter has no decision trail.
+
+The user's observation: *"the provided paper from which the figures were created was never saved in assets. There is a whole folder structure there that almost never gets used."* Audit confirmed: among the seven `assets/<X>/` subdirectories (`style.css`, `images/`, `math/`, `fonts/`, `reference/`, `vendor/`), `math/` and `fonts/` are correct-when-empty (math/ is a v2.0 placeholder per Section 24.X, fonts/ is needed only when `style.css` references local fonts), `vendor/` is correct-when-populated (BUG-AUDIT-16 fix), but `reference/papers/` is silently empty when it should be populated, and `images/` accumulates files that should have been routed elsewhere.
+
+**Root cause.** Three coordinated gaps:
+
+1. **Trigger detection is too narrow.** BC-5.11's primary trigger is "path-shaped string ending in `.pdf` AND the file exists." When the user provides a paper via drag-and-drop, by typing a bare filename like `Smith2024.pdf`, or by referring to "the paper" without a path, the trigger does not fire. There is no fallback or clarifying prompt — the consultant silently proceeds without invoking the analyzer.
+
+2. **No retroactive recovery path.** Once the consultant has skipped `paper_analyzer` in the discovery turn, there is no command the user can run to fix the omission. The state stays inconsistent: figures appear in slides without being archived, citations cannot reference the source PDF, the rewriter's brief lacks paper provenance.
+
+3. **No observability.** `debrief doctor` audits slide-state drift (BUG-AUDIT-75) and brief-state drift (BUG-AUDIT-83) but says nothing about asset-state drift. A project where paper handling silently went off-script reports "OK" from the doctor — providing false reassurance.
+
+**Detection method.** 2026-05-05 audit on the user's journal-club project. Direct filesystem inspection: `find assets/ -type f | head` showed paper-figure-named files in `assets/images/` and an empty `assets/reference/papers/`. State inspection: `papers_provided=false`. Timeline inspection: no `paper_attached` events. Pre-fix regression test (`tests/regressions/test_bug_audit_94_asset_audit.py::TestAssetAuditHelper::test_orphan_paper_figures_in_images_detected`) constructs a minimal project replicating the symptoms and asserts the new `_audit_assets` helper detects them; pre-fix all 22 tests in this suite fail (no `archive_paper` subcommand, no asset-audit helper, no broadened trigger, no recovery clause).
+
+**Fix summary.** Four coordinated changes:
+
+1. **New `/debrief:archive-paper <path>` command** (BC-3.21). The launcher gains an `archive_paper` subcommand that calls `paper_analyzer.main_paper_analyzer` directly, then sets `papers_provided=true` and emits `paper_attached`. Idempotent. Provides the recovery path the consultant card now references.
+
+2. **Trigger robustness in `## Paper Analyzer Invocation`** (BC-5.11 amendment). The trigger description now enumerates three detection paths: path-shaped string ending in `.pdf`; bare filename resolved against project root, `~/Downloads/`, and user-stated paper-storage; verbal mention of "paper"/"PDF"/"preprint" with explicit clarifying prompt. The consultant MUST NOT silently proceed when a verbal mention has no associated path; it asks the user explicitly. The section also documents the recovery path: if the consultant detects mid-session drift (paper-figures in slides without paper-analyzer outputs), it surfaces `/debrief:archive-paper` to the user.
+
+3. **Explicit `papers_provided=true` + `paper_attached` post-success block** in the consultant card. The post-success block now requires BOTH `python -m debrief.launcher emit_event --event paper_attached ...` AND `python -m debrief.debrief_state update --set papers_provided=true ...` — neither is optional. The consultant must surface a tool failure visibly rather than silently proceeding with `papers_provided=false`.
+
+4. **`debrief doctor --asset-audit` mode** (BC-3.16 amendment). New flag detects: orphan paper-figures in `assets/images/` with empty `assets/reference/papers/`; `papers_provided` flag inconsistency vs. paper directory presence; missing `paper_attached` events when paper directories exist; REQ-ASSET-1 slug-prefix violations. Adds an `asset_audit` field to the JSON output and exits 1 on drift.
+
+BC-3.21 added; BC-3.16 (doctor) amended; BC-5.11 (paper_analyzer invocation) amended. New command file at `commands/archive-paper.md`. 22 regression tests across all four pillars.
+
+**Normative requirements:** none new (BC-3.21 carries the binding contract for the new subcommand; BC-3.16 and BC-5.11 amendments are clarifications + extensions).
+
+**Prior-Art for Rebuild:** *"deterministic plumbing without observability is a half-fix; if the system can silently take a non-spec path, you need a doctor that catches it."* BUG-AUDIT-89's `## Paper Analyzer Invocation` section pinned the deterministic flow but had no enforcement: when the model judged that the trigger didn't apply (drag-and-drop, verbal mention), there was no way to detect the bypass after the fact. The fix pattern: every deterministic flow needs a paired doctor check that audits the *outcome* (correct file in correct location, correct flag, correct event emitted). Generalizing: when adding a new agent-driven workflow, ALSO add a doctor audit that verifies its filesystem and state side-effects. The doctor does not enforce the flow at runtime, but it makes the bypass visible to the user and to future maintainers.
+
+---
+
 *End of Debrief Stakeholder Specification v1.1*
