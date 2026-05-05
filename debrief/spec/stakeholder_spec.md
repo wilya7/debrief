@@ -1217,12 +1217,12 @@ Each archetype pre-configures a set of defaults that the Consultant uses as the 
   The time is recorded in `deck_brief.md` Content Signals as `allocated_time: "<N>min"`. The Consultant uses it to constrain the narrative arc — proposing fewer, punchier groups for short talks and more detailed groups for longer ones.
 - **REQ-CONSULT-17:** If the user provides one or more academic paper PDFs during discovery (for journal club presentations), the Consultant MUST invoke the paper analyzer module (`debrief.paper_analyzer`) to extract content from each PDF. The extraction pipeline:
 
-  1. **Parse the PDF** — extract full text, section structure, figure captions, and figure images (using PyMuPDF (imported as `fitz`)).
+  1. **Parse the PDF** — extract full text, section structure, figure captions, figure images, and metadata (using PyMuPDF (imported as `fitz`)). Metadata extraction prefers the PDF's metadata dictionary (`title`, `author`, `subject`) and falls back to conservative page-1 text heuristics when those fields are absent or producer-noise (e.g., `LaTeX with hyperref`, `PDF Producer`). Heuristics intentionally err toward `None` when no plausible value is found rather than surfacing wrong guesses in REQ-CONSULT-18's citation line. *(BUG-AUDIT-87.)*
   2. **Identify key figures** — match figure references in text to extracted images. Rank by citation frequency and section location (results figures > supplementary figures).
-  3. **Extract claims** — for each key figure, extract the main finding/claim from the surrounding text and caption.
-  4. **Reformat figures** — crop whitespace from extracted figure images, save to `assets/reference/papers/<paper_slug>/figures/fig_<N>.png`. These are raster images at the source PDF's resolution.
+  3. **Extract claims** — for each key figure, extract the main finding/claim from the surrounding text and caption. The claim text MUST be persisted to the output analysis document (`## Figure Claims` section, one line per figure) so downstream consumers — the consultant when planning slide groups, the slide-maker when authoring figure slides, the script-writer when building presenter prose — can read the claim without re-parsing the PDF. *(BUG-AUDIT-85.)*
+  4. **Reformat figures** — crop whitespace from extracted figure images, save to `assets/reference/papers/<paper_slug>/figures/fig_<N>.png`. These are raster images at the source PDF's resolution. When multiple figure captions appear on the same page, the page's images MUST be distributed across the captions in document order: the i-th caption on the page receives the i-th image. If the page has fewer images than captions, the trailing captions receive no image and appear in the analysis markdown without an extracted figure file. *(BUG-AUDIT-86.)*
 
-  The module writes its output to `.debrief/paper_analysis_<paper_slug>.md` — a structured document with: paper metadata (title, authors, journal, year), key figures with captions and claims, and a suggested narrative arc.
+  The module writes its output to `.debrief/paper_analysis_<paper_slug>.md` — a structured document with: paper metadata (title, authors, journal, year), key figures with captions, per-figure claims, and a suggested narrative arc.
 
   The imported PDFs are copied to `assets/reference/papers/<paper_slug>/`.
 
@@ -7651,6 +7651,80 @@ External-document context (paper PDFs for journal_club, thesis PDFs for thesis_d
 - **REQ-SCRIPT-WRITER-4:** The consultant's `## Export Transition` section in `agents/consultant.md` MUST be amended to propose, at deck-complete, a four-step finalization sequence: (1) `/debrief:refresh-brief` to ensure the brief reflects everything discussed; (2) `/debrief:script` to generate the speaker script; (3) `/debrief:export` for the deck PDF; (4) `/debrief:handout` for the leave-behind. The user MAY accept the four-step sequence, request a subset, or run the four slash commands individually. Each step has its own failure recovery (script failure logs but does not block subsequent steps; handout precondition triggers auto-cascade if missing per BC-11.16 amendment). No new `/debrief:finalize` slash command is added — orchestration stays in the consultant where it belongs.
 
 **Prior-Art for Rebuild:** "the rewriter pattern is reusable — once we built the hybrid agent-card invocation in BUG-AUDIT-80, the second instance (script-writer) is a one-day port instead of a redesign." The architectural cost of new memory-consuming agents drops sharply once the pattern exists. This is the dividend BUG-AUDIT-78's RFC + BUG-AUDIT-80's implementation paid forward — every future agent that consumes the dialog/timeline/brief can mirror the rewriter's shape (agent-card + wrapping CLI + Anthropic API direct call + validators + exit-0-always failure logging) with minimal new design work.
+
+---
+
+### BUG-AUDIT-85: Per-figure claims silently dropped from `paper_analysis_<slug>.md`
+
+**Status:** Cycle 1 of the journal-club / paper-handling audit (2026-05-03). Phase 1 of the BUG-AUDIT-84 deferred external-documents work — claims are the field downstream consumers need first.
+
+**Problem.** `extract_figure_claims` correctly extracts the 1–3-sentence claim that follows each figure caption in the paper, but `write_paper_analysis` accepted the resulting `claims: dict[int, str]` parameter and never wrote it. The output `.debrief/paper_analysis_<paper_slug>.md` contained only captions and a captions-derived narrative arc; per-figure claims were silently swallowed.
+
+This made REQ-CONSULT-18's intent — *"each key figure as a standalone image slide ... with the extracted claim as the key message"* — impossible to satisfy. The consultant could not surface the paper's stated finding for a figure because the analyzer's claim output was discarded before it ever reached disk. The 94 unit_12 tests passed because none of them asserted that claim text appeared in the markdown — they asserted file existence, atomic-write hygiene, caption format, and metadata sections only.
+
+**Root cause.** A function-body omission in `src/unit_12/paper_analyzer.py write_paper_analysis`: the function signature took `claims` but the body iterated `ranked_figures` only, building captions and arc text, never reading `claims`. Mypy did not catch it because the parameter is consumed by the caller-side type system; the unused parameter was syntactically valid.
+
+**Detection method.** Static review of `paper_analyzer.py` against REQ-CONSULT-17 step 3 + REQ-CONSULT-18 ("extracted claim as the key message"). Confirmed by grep: `claims` appeared once in the function (the parameter declaration) and zero times in the body. Pre-fix regression (`tests/regressions/test_bug_audit_85_claims_persistence.py::TestNoSilentDrop::test_extracted_claim_actually_persisted`) wrote a distinctive payload as a claim and read the markdown — payload absent.
+
+**Fix summary.** `write_paper_analysis` now emits a `## Figure Claims` section between `## Key Figures` and `## Suggested Narrative Arc`. One line per ranked figure, in document order, format `**Figure N.** <claim>` per BC-12.11. When the extracted claim is empty (no sentences followed the caption on the same page), the line renders the literal placeholder `**Figure N.** _(no claim text extracted)_` so the absence is visible to the consultant and slide-maker rather than silently dropped. REQ-CONSULT-17 step 3 amended to mandate persistence. BC-12.11 added.
+
+**Normative requirements:** none new (REQ-CONSULT-17 step 3 amendment is clarification, not a new requirement). BC-12.11 in `blueprint_contracts.md` carries the format contract.
+
+**Prior-Art for Rebuild:** *"a parameter that the caller passes but the callee never reads is a silent data-loss bug, and only end-to-end tests catch it."* The unit-level tests for this function asserted everything except whether the data made it from input to output. Generalizing: any data-flow contract — `extract_X` → `write_X_to_disk` → `read_back_X` — needs at least one end-to-end test that puts a distinctive payload in and asserts it comes out. The mock-heavy unit_12 suite (FINDING-IMPL-5 in the 2026-05-03 audit) is the broader version of the same pattern; Cycle 6 lands real-PDF fixtures.
+
+---
+
+### BUG-AUDIT-86: Figure-image distribution across captions on the same page
+
+**Status:** Cycle 2 of the journal-club / paper-handling audit (2026-05-03). Phase 2 of the BUG-AUDIT-84 deferred external-documents work — figure files are the second downstream input the slide-maker needs.
+
+**Problem.** `extract_figure_images` walked the figure-captions list and, for each caption, ran `page.get_images(full=True)` on the caption's page and selected `images[0][0]` — always the first image on the page. When two captions shared a page (extremely common in two-column journals — Figure 1 top-of-column, Figure 2 bottom-of-column), both captions received the same xref and `save_figure` produced two PNGs with identical contents. The journal-club workflow's correctness assumption — *one figure per fig_N.png file* — was silently violated whenever the source paper used a multi-figure-per-page layout.
+
+The user's tomorrow lab-meeting case (presenting only Figure 2 of a paper) was particularly at risk: if Figure 1 and Figure 2 share a page, fig_2.png would actually contain Figure 1's image, and the lab meeting would show the wrong figure with the right label.
+
+**Root cause.** Single-line bug in `src/unit_12/paper_analyzer.py extract_figure_images`: the loop iterated captions and naively used `images[0][0]` per page without tracking which images on that page had already been consumed by prior captions. The accompanying comment claimed "(largest or first-listed)" but the implementation was unconditional first-listed.
+
+**Detection method.** Static review identified the alias bug. Pre-fix regression test (`tests/regressions/test_bug_audit_86_figure_image_distribution.py::TestNoXrefAliasing`) constructs a mock document with one page carrying two distinct image xrefs, runs the function over two captions on that page, and asserts that the two captions' resulting pixmaps are distinct objects with distinct xrefs. Pre-fix: same xref for both. Post-fix: distinct xrefs in document order.
+
+**Fix summary.** Group captions by `page_index` while preserving each caption's original index. Walk each page once, distributing images across captions on that page in document order: the i-th caption on page p receives the i-th image from `page.get_images(full=True)`. If a page has fewer images than captions, the trailing captions receive `pixmap=None`. The output list is rebuilt in original input order so the API contract (input order = output order) holds. BC-12.9 amended; REQ-CONSULT-17 step 4 amended.
+
+This is a narrow per-page distribution fix; multi-panel detection (a single figure rendered as N separate sub-images on the page) is intentionally deferred to Cycle 6 / BUG-AUDIT-87 which lands real-PDF fixtures and can detect the multi-panel signature empirically. For now, on a page with more images than captions, the extra images are ignored — preserving the contract that one caption gets exactly one pixmap.
+
+**Normative requirements:** none new (REQ-CONSULT-17 step 4 amendment is clarification). BC-12.9 carries the per-page distribution rule.
+
+**Prior-Art for Rebuild:** *"when a function's per-iteration state should depend on prior iterations within the same group, group explicitly first."* The pre-fix loop was group-blind: it iterated captions in flat order and re-ran `page.get_images()` every time, paying no attention to which captions shared a page. Once the loop was rewritten to group-by-page, the correct distribution emerged naturally. This refactor pattern (group-first → distribute-within-group) generalizes to anything where N items map to M resources keyed on a shared attribute.
+
+---
+
+### BUG-AUDIT-87: Paper metadata heuristics, crop fallback, and real-PDF fixtures
+
+**Status:** Cycle 6 (combined: PAPER-IMPL-3 + PAPER-IMPL-4 + PAPER-IMPL-5) of the journal-club / paper-handling audit (2026-05-03). Closes the implementation-side findings from the audit before the agent-prompt and structural cycles begin.
+
+**Problem.**
+- **(a) Metadata.** `extract_paper_metadata` always set `journal=None` and read `title` and `authors` only from the PDF metadata dictionary, which is frequently empty or producer-noise (`LaTeX with hyperref`, `Adobe Acrobat`, etc.). REQ-CONSULT-18's mandated citation line (*"Figure from [Authors], [Year], [Journal]"*) typically rendered `Figure from Unknown, YYYY, Unknown` — a fully-formed citation with no information content.
+- **(b) Crop.** `crop_whitespace`'s sub-pixmap construction was `pixmap.set_origin(0, 0).__class__(pixmap, rect)`. PyMuPDF versions vary on whether `set_origin` returns the pixmap or `None`; when it returned `None`, the chained `.__class__` raised `AttributeError` and the surrounding `try/except` silently no-cropped — the figure was saved with full page whitespace.
+- **(c) Test substrate.** All 94 unit_12 tests used `MagicMock` for `fitz`; no test ran the analyzer end-to-end against a real PDF. This is what allowed BUG-AUDIT-85 (claims data-loss) and BUG-AUDIT-86 (image alias) to ship undetected. FINDING-IMPL-5 in the audit identified the fixture gap as a root cause.
+
+**Root cause.**
+- (a) The function literally never wrote to `journal`. PDF-metadata fallback for `title` and `authors` had no heuristic backstop. Producer-noise was treated as a valid author string.
+- (b) Misuse of PyMuPDF's API: `Pixmap(src, irect)` is the documented sub-pixmap constructor and was available all along.
+- (c) Test substrate was 100% mock — the right shape for unit tests in isolation, but no end-to-end coverage to catch data-flow contract bugs (a parameter passed in must come out the other end).
+
+**Detection method.**
+- (a) Static review of `extract_paper_metadata` confirmed `journal` was assigned at declaration and never reassigned. Pre-fix regression `tests/regressions/test_bug_audit_87_metadata_heuristics.py::TestJournalHeuristic::test_subject_field_used_when_present` constructs a doc with `subject="Nature Neuroscience"` — pre-fix, journal was `None`; post-fix, `Nature Neuroscience`.
+- (b) Pre-fix regression `tests/regressions/test_bug_audit_87_metadata_heuristics.py::TestCropFitzFallback::test_crop_uses_fitz_pixmap_constructor_directly` patches `fitz.Pixmap` to a recording factory and asserts it is called with the source pixmap and the content's bounding rect. Pre-fix the call shape was different (used `__class__` chain); post-fix it's a direct two-argument call.
+- (c) New end-to-end test `tests/regressions/test_bug_audit_87_real_pdf_end_to_end.py` generates a synthetic 2-page paper with `fitz` at fixture-setup time and runs `main_paper_analyzer` against it. Asserts: analysis markdown contains all canonical sections (`## Metadata`, `## Key Figures`, `## Figure Claims`, `## Suggested Narrative Arc`); metadata fields recovered (title, authors, journal, year); both figure captions present; both claim sentences persisted (the BUG-AUDIT-85 invariant); per-figure PNG files exist (the BUG-AUDIT-86 invariant); source PDF archived under `assets/reference/papers/<slug>/`.
+
+**Fix summary.**
+- (a) `extract_paper_metadata` rewritten with a three-layer cascade: PDF metadata dict → producer-noise filter → page-1 heuristic. Heuristic functions `_heuristic_title`, `_heuristic_authors`, `_heuristic_journal` use conservative shape rules (line length, capitalization, separator markers, recognized journal-name fragments). The function returns `None` for any field where no layer produced a plausible value — wrong guesses propagate into citations, so absence is preferable. New regex `_KNOWN_PRODUCER_NOISE` filters common producer strings out of the author/subject fields. Defensive coercion (`_coerce_meta`) tolerates non-string values from PyMuPDF (or loose unit-test mocks).
+- (b) `crop_whitespace` fitz-active path changed from `pixmap.set_origin(0, 0).__class__(pixmap, rect)` to `fitz.Pixmap(pixmap, rect)`. The all-white pixmap fallback (BC-12.7) is preserved unchanged.
+- (c) `tests/regressions/test_bug_audit_87_real_pdf_end_to_end.py` provides a programmatic real-PDF fixture (no external assets, no licensing) that exercises the full pipeline and asserts data flows from PDF input to disk artifacts. This closes FINDING-IMPL-5 from the 2026-05-03 audit.
+
+REQ-CONSULT-17 step 1 amended; BC-12.7 amended; BC-12.12 added.
+
+**Normative requirements:** none new (REQ-CONSULT-17 step 1 amendment is clarification). BC-12.12 carries the heuristic contract.
+
+**Prior-Art for Rebuild:** *"a feature without an end-to-end test is provisional, regardless of how thorough the unit tests look."* The 94 unit_12 tests covered the function shapes meticulously and missed three real bugs because none of them connected input PDF to output disk artifacts. Adding even one programmatic end-to-end test (a synthetic PDF generated with `fitz` itself) caught the data-flow contracts that mocks left invisible. The pattern generalizes: any module that reads from one boundary (filesystem, network, parser) and writes to another deserves at least one end-to-end fixture, not as a replacement for unit tests but as an anchor against silent contract violations between the layers.
 
 ---
 

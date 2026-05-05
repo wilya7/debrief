@@ -196,39 +196,55 @@ def extract_figure_images(
 ) -> list[dict[str, Any]]:
     """Extract figure images for each caption entry.
 
-    For each caption, opens the page at caption["page_index"], fetches
-    images via page.get_images(), and builds a fitz.Pixmap.  If no images
-    are found on the page, pixmap is set to None.
+    BC-12.9 per-page distribution rule (BUG-AUDIT-86). When multiple captions
+    appear on the same page, the images on that page are distributed across
+    the captions in document order: caption[0] on the page gets image[0],
+    caption[1] gets image[1], etc. If a page has fewer images than captions,
+    the trailing captions receive pixmap=None. This replaces the prior
+    behaviour where every caption on a shared page received the same
+    ``images[0][0]`` reference and downstream save_figure produced identical
+    PNGs for distinct figures.
 
-    Returns list of {"figure_num": int, "pixmap": ..., "page_index": int}.
+    Returns list of {"figure_num": int, "pixmap": ..., "page_index": int}
+    in the SAME ORDER as the input ``figure_captions``.
     """
     import fitz  # type: ignore[import]
 
-    results: list[dict[str, Any]] = []
+    # Group captions by page, keeping each caption's original index so we can
+    # restore input order in the output list.
+    captions_by_page: dict[int, list[tuple[int, dict[str, Any]]]] = {}
+    for orig_idx, caption in enumerate(figure_captions):
+        captions_by_page.setdefault(caption["page_index"], []).append(
+            (orig_idx, caption)
+        )
+
+    pixmap_by_orig_idx: dict[int, Any] = {}
     with fitz.open(str(pdf_path)) as doc:
-        for caption in figure_captions:
-            page_index: int = caption["page_index"]
-            figure_num: int = caption["figure_num"]
+        for page_index, captions_on_page in captions_by_page.items():
             page = doc[page_index]
             images = page.get_images(full=True)
-            pixmap: Any = None
-            if images:
-                # Use the first (largest or first-listed) image
-                xref = images[0][0]
-                try:
-                    pixmap = fitz.Pixmap(doc, xref)
-                    # Convert CMYK/other to RGB if needed
-                    if pixmap.n > 4:
-                        pixmap = fitz.Pixmap(fitz.csRGB, pixmap)
-                except Exception:
-                    pixmap = None
-            results.append(
-                {
-                    "figure_num": figure_num,
-                    "pixmap": pixmap,
-                    "page_index": page_index,
-                }
-            )
+            for slot, (orig_idx, _caption) in enumerate(captions_on_page):
+                pixmap: Any = None
+                if slot < len(images):
+                    xref = images[slot][0]
+                    try:
+                        pixmap = fitz.Pixmap(doc, xref)
+                        # Convert CMYK/other to RGB if needed
+                        if pixmap.n > 4:
+                            pixmap = fitz.Pixmap(fitz.csRGB, pixmap)
+                    except Exception:
+                        pixmap = None
+                pixmap_by_orig_idx[orig_idx] = pixmap
+
+    results: list[dict[str, Any]] = []
+    for orig_idx, caption in enumerate(figure_captions):
+        results.append(
+            {
+                "figure_num": caption["figure_num"],
+                "pixmap": pixmap_by_orig_idx.get(orig_idx),
+                "page_index": caption["page_index"],
+            }
+        )
     return results
 
 
@@ -343,14 +359,17 @@ def crop_whitespace(
     if max_x < 0:
         return pixmap
 
-    # Try to use fitz.Pixmap sub-region if fitz is available
+    # BC-12.7 (BUG-AUDIT-87): use the documented fitz.Pixmap(src, irect)
+    # sub-pixmap constructor directly. The prior implementation chained
+    # set_origin(...).__class__(...), which silently no-cropped on PyMuPDF
+    # versions where set_origin returns None.
     try:
         import fitz  # type: ignore[import]
 
         rect = fitz.IRect(min_x, min_y, max_x + 1, max_y + 1)
-        return pixmap.set_origin(0, 0).__class__(pixmap, rect)
+        return fitz.Pixmap(pixmap, rect)
     except Exception:
-        # Fall back: return original if cropping API unavailable
+        # Last-resort fallback if fitz.Pixmap construction fails
         return pixmap
 
 
@@ -452,39 +471,189 @@ def extract_figure_claims(
     return claims
 
 
+_KNOWN_PRODUCER_NOISE = re.compile(
+    r"^(?:PDF Producer|LaTeX(?:\s+with\s+\w+)?|pdfTeX-\S+|Microsoft® Word|"
+    r"Adobe(?:\s+\w+)?|MiKTeX-\S+|Skia/PDF\s*m\d+)$",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_filename_title(value: str) -> bool:
+    """True when the PDF metadata 'title' field is actually a filename."""
+    return value.lower().endswith(".pdf") or (
+        " " not in value.strip() and "_" in value
+    )
+
+
+def _heuristic_title(pages: list[str]) -> Optional[str]:
+    """Pick the first line of page 1 that plausibly looks like a paper title.
+
+    Heuristic: the first non-blank line that is ≥6 words, ≥20 chars, not
+    all-uppercase (which would be a section header like "ABSTRACT"), and
+    does not start with a digit-and-period pattern (which would be a
+    numbered section like "1. Introduction"). Returns None if no line
+    matches within the first 10 non-blank lines.
+    """
+    if not pages:
+        return None
+    seen = 0
+    for raw_line in pages[0].splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        seen += 1
+        if seen > 10:
+            break
+        if len(line) < 20:
+            continue
+        if len(line.split()) < 6:
+            continue
+        if line.upper() == line and re.search(r"[A-Z]", line):
+            continue  # all-uppercase → likely a section header
+        if re.match(r"^\d+(?:\.\d+)*\.\s", line):
+            continue  # "1. Introduction" / "2.1 Methods"
+        return line
+    return None
+
+
+def _heuristic_authors(pages: list[str], title: Optional[str]) -> Optional[str]:
+    """Find an author-list-shaped line near the top of page 1.
+
+    Heuristic: among the first 12 non-blank lines of page 1, find a line
+    that (a) contains at least one comma OR the substring " and ", (b) does
+    not contain a verb-shaped marker (the small heuristic stoplist below),
+    (c) is not the title line, (d) is ≤220 characters, and (e) contains at
+    least two capitalized words (likely names). Returns None when no line
+    matches.
+    """
+    if not pages:
+        return None
+    stoplist = re.compile(
+        r"\b(?:abstract|introduction|results?|methods?|discussion|conclusion|"
+        r"figure|fig\.|table|received|accepted|published|copyright)\b",
+        re.IGNORECASE,
+    )
+    seen = 0
+    for raw_line in pages[0].splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        seen += 1
+        if seen > 12:
+            break
+        if title and line == title:
+            continue
+        if len(line) > 220:
+            continue
+        if "," not in line and " and " not in line:
+            continue
+        if stoplist.search(line):
+            continue
+        capitalized_words = re.findall(r"\b[A-Z][A-Za-z'\-]+", line)
+        if len(capitalized_words) >= 2:
+            return line
+    return None
+
+
+def _heuristic_journal(pages: list[str], pdf_subject: Optional[str]) -> Optional[str]:
+    """Try PDF metadata subject field, then a small page-1 pattern scan.
+
+    The subject field is the strongest signal — many publishers fill it
+    with the journal name or a "<Journal>, vol X" string. When subject is
+    absent, fall back to a permissive scan: look at the first 5 non-blank
+    lines for a short line that contains one of a small set of recognizable
+    journal-name fragments. This is intentionally conservative — we prefer
+    None over a wrong guess.
+    """
+    if pdf_subject:
+        cleaned = pdf_subject.strip()
+        if cleaned and not _KNOWN_PRODUCER_NOISE.match(cleaned):
+            return cleaned
+
+    if not pages:
+        return None
+    fragments = re.compile(
+        r"\b(?:Nature|Science|Cell|PLoS|PLOS|eLife|BMC|Journal|Proceedings|"
+        r"Reports?|Letters?|Reviews?|Trends?|Neuron|Lancet|JAMA|"
+        r"Biorxiv|Medrxiv|Frontiers|EMBO|FEBS)\b"
+    )
+    seen = 0
+    for raw_line in pages[0].splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        seen += 1
+        if seen > 5:
+            break
+        if len(line) > 120:
+            continue
+        if fragments.search(line):
+            return line
+    return None
+
+
 def extract_paper_metadata(
     pdf_path: Path,
     pages: list[str],
 ) -> dict[str, Optional[str]]:
-    """Extract metadata from PDF metadata dict and first-page text.
+    """Extract metadata via PDF metadata dict + first-page text heuristics.
 
-    Returns dict with keys: title, authors, journal, year.
-    All values may be None if not found.
+    Returns dict with keys: title, authors, journal, year. All values may
+    be None if neither the PDF metadata nor the heuristics produce a
+    plausible value. Heuristics are intentionally conservative — better to
+    leave a field None than to surface a wrong guess in REQ-CONSULT-18's
+    citation line. (BUG-AUDIT-87.)
     """
     import fitz  # type: ignore[import]
 
-    title: Optional[str] = None
-    authors: Optional[str] = None
-    journal: Optional[str] = None
-    year: Optional[str] = None
+    def _coerce_meta(value: Any) -> Optional[str]:
+        """Reduce a PDF-metadata value to either a stripped str or None.
+
+        PyMuPDF normally returns str/None, but we accept any object: only
+        true str values pass through; anything else (incl. MagicMock from
+        loosely-constructed unit tests) is treated as absent.
+        """
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped or None
+        return None
+
+    pdf_title: Optional[str] = None
+    pdf_author: Optional[str] = None
+    pdf_subject: Optional[str] = None
 
     with fitz.open(str(pdf_path)) as doc:
-        meta = doc.metadata or {}
-        title = meta.get("title") or None
-        raw_author = meta.get("author") or None
-        if raw_author:
-            authors = raw_author
+        raw_meta = doc.metadata
+        meta = raw_meta if isinstance(raw_meta, dict) else {}
+        pdf_title = _coerce_meta(meta.get("title"))
+        pdf_author = _coerce_meta(meta.get("author"))
+        pdf_subject = _coerce_meta(meta.get("subject"))
 
-    # Try to extract year from first-page text
+    # Title: prefer PDF metadata unless it's empty or a filename.
+    title: Optional[str]
+    if pdf_title and not _looks_like_filename_title(pdf_title):
+        title = pdf_title
+    else:
+        title = _heuristic_title(pages)
+
+    # Authors: prefer PDF metadata unless it's producer-noise.
+    authors: Optional[str]
+    if pdf_author and not _KNOWN_PRODUCER_NOISE.match(pdf_author):
+        authors = pdf_author
+    else:
+        authors = _heuristic_authors(pages, title)
+
+    journal: Optional[str] = _heuristic_journal(pages, pdf_subject)
+
+    year: Optional[str] = None
     if pages:
-        first_page = pages[0]
-        year_match = re.search(r"\b(19|20)\d{2}\b", first_page)
+        year_match = re.search(r"\b(?:19|20)\d{2}\b", pages[0])
         if year_match:
             year = year_match.group(0)
 
     return {
-        "title": title if title else None,
-        "authors": authors if authors else None,
+        "title": title or None,
+        "authors": authors or None,
         "journal": journal,
         "year": year,
     }
@@ -510,10 +679,17 @@ def write_paper_analysis(
       1. <caption>
       2. <caption>
       ...
+      ## Figure Claims
+      **Figure 1.** <claim>
+      **Figure 2.** <claim>
+      ...
       ## Suggested Narrative Arc
       <arc text>
 
-    Each figure line matches: ^(?P<n>\\d+)\\. (?P<caption>.+)$
+    Each Key Figures line matches: ^(?P<n>\\d+)\\. (?P<caption>.+)$ (BC-12.10).
+    Each Figure Claims line matches: ^\\*\\*Figure (?P<n>\\d+)\\.\\*\\* (?P<claim>.+)$
+    (BC-12.11). Empty claims render as the literal placeholder
+    "_(no claim text extracted)_" so absence is visible.
     Uses write-to-.tmp then os.rename atomic protocol.
     """
     debrief_dir = project_root / ".debrief"
@@ -542,6 +718,21 @@ def write_paper_analysis(
     for seq_num, fig in enumerate(ranked_figures, start=1):
         caption = fig.get("caption", "")
         lines.append(f"{seq_num}. {caption}")
+
+    # BC-12.11: Figure Claims block. One line per ranked figure in document
+    # order. Empty/missing claims render as the visible placeholder so the
+    # consultant and slide-maker see absence rather than a silently dropped row.
+    lines.append("")
+    lines.append("## Figure Claims")
+    for fig in ranked_figures:
+        figure_num = fig.get("figure_num")
+        if figure_num is None:
+            continue
+        claim_text = (claims.get(figure_num, "") or "").strip()
+        if claim_text:
+            lines.append(f"**Figure {figure_num}.** {claim_text}")
+        else:
+            lines.append(f"**Figure {figure_num}.** _(no claim text extracted)_")
 
     lines.append("")
     lines.append("## Suggested Narrative Arc")
