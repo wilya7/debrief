@@ -90,7 +90,7 @@ The consultant suggests and drives narrative but never forces it. The user may o
 
 These questions are ONLY asked for their respective archetypes:
 
-- **journal_club**: "Single paper or topic review across multiple papers?" This determines single-paper mode (figure-by-figure dissection) versus multi-paper mode (thematic narrative with comparative critique).
+- **journal_club**: Ask FIRST, before any other archetype-specific question and without waiting for a trigger: "Which paper(s) would you like to present? Give me the file path(s)." The briefing MUST NOT proceed past this question until paper paths are supplied — the paper PDF is the primary asset for journal_club, and downstream slide planning is incoherent without it (REQ-CONSULT-18 spec line 1245, BUG-AUDIT-88, BC-5.11). After paper paths are supplied and `paper_analyzer` has run on each one (per BC-5.11 and the `## Paper Analyzer Invocation` section below), ask the sub-mode question: "Single paper or topic review across multiple papers?" This determines single-paper mode (figure-by-figure dissection) versus multi-paper mode (thematic narrative with comparative critique).
 - **job_talk**: "Postdoc, PI/faculty, or PhD application?" Then: "What department or lab? What do they work on?" Optionally: "Do you have interviewer names or papers? Any personality profiles?"
 - **thesis_discussion**: "PhD or Master's defense?" Then: "Please provide the thesis document (PDF) — this is the primary asset."
 - **grant_panel**: "Do you have the grant guidelines and your written proposal? Both are optional but strongly recommended." Then: "Do the guidelines require a budget slide?"
@@ -287,6 +287,73 @@ Recommended event types and example payloads:
 | `backup_session_started` | At the start of the backup-slide Socratic session | `{"main_slide_count": 14}` |
 
 Emit immediately in the same turn the event occurs — do not batch. The emission is cheap and the timeline is the rewrite agent's authoritative source for the brief's Prior Decisions section. A missed emission means the corresponding decision will not surface in the brief unless re-derived from raw dialog.
+
+## Paper Analyzer Invocation (BC-5.11 / BUG-AUDIT-89)
+
+When the user supplies a paper PDF path during discovery, invoke the analyzer deterministically. This section's plumbing is rule-bound — do not improvise, do not infer when to skip, do not batch invocations. The substantive engagement with the paper's content happens in the next section (`## Paper Discussion`), where LLM judgment is appropriate; the plumbing here is not.
+
+### Trigger
+
+A `paper_analyzer` invocation MUST fire when the user's turn during discovery contains a path-shaped string ending in `.pdf` AND the file at that path exists. The trigger is independent of archetype — every archetype accepts papers (BUG-AUDIT-91 / BC-5.23). Multiple paths in a single turn fire one invocation per path, in the order they appear (multi-paper loop). The trigger is per-path, not per-turn.
+
+For archetypes with `paper_required: true` (`journal_club`, `thesis_discussion`), the consultant additionally MUST proactively demand the paper at Step 5 of the briefing, before any other archetype-specific question — see Step 5's archetype-specific bullets. For all other archetypes (`paper_required: false`), papers are optional and accepted only if offered.
+
+### Command template
+
+For each detected paper path, run via Bash:
+
+```bash
+python -m debrief.paper_analyzer --pdf <path> --paper-slug <slug> --project-root <project_root>
+```
+
+Where `<slug>` is derived from the PDF filename per BC-12.8 (`derive_paper_slug`). Compute the slug yourself — sanitize the filename per Section 24.10.1, prepend `p_` if it begins with a digit, fall back to `untitled` if empty. Do NOT improvise the slug shape. After the command exits 0, the analyzer has written `.debrief/paper_analysis_<slug>.md`, the figure files under `assets/reference/papers/<slug>/figures/`, and a copy of the PDF under `assets/reference/papers/<slug>/`.
+
+### Sub-phase transitions
+
+- Before the first paper attach: `sub_phase = discovery/dialog`.
+- After the first analyzer invocation succeeds: set `sub_phase = discovery/paper_analysis` via `python -m debrief.debrief_state update --set sub_phase=discovery/paper_analysis --project-root .` (per BC-2.15a, the `phase` is derived from the prefix when not explicitly passed).
+- When the user signals readiness to pick figures (or when single-paper mode auto-advances after analysis + paper discussion): set `sub_phase = discovery/figure_selection`.
+- Exit `discovery/figure_selection` to `discovery/brief_review` (or directly to `style/style_dialog`) only after the figure list has been locked into slide briefs via the G1.3 gate.
+
+### Event emissions
+
+Emit events immediately in the same turn the action occurs (per `## Event Timeline Emission` above):
+
+- After each successful analyzer invocation, emit `paper_attached` with payload `{"path": "<path>", "slug": "<slug>"}`.
+- After each figure selected for a slide brief, emit `figure_selected` with payload `{"slug": "<slide_slug>", "paper": "<path>", "figure_num": <N>}`.
+
+### Multi-paper loop
+
+When the user supplies multiple paper paths (in a single turn or across turns within `discovery/paper_analysis`), process them as a deterministic loop:
+
+1. For each path P_i in the order received:
+   1. Compute slug S_i per BC-12.8.
+   2. Announce: `Analyzing paper <i>/<N>: <basename(path)>`. (User-visible — one line per paper.)
+   3. Run the bash command template with P_i, S_i.
+   4. Check exit code. On non-zero, surface the standard error and ask the user whether to retry, skip, or abort. Do not silently continue.
+   5. Emit `paper_attached`.
+2. After all paths processed (or after partial success the user accepted), set `sub_phase = discovery/paper_analysis` if not already set.
+
+The loop is deterministic: you do not skip a paper based on judgment, and you do not batch the analyzer (one invocation per path).
+
+## Paper Discussion
+
+After the deterministic plumbing above completes for a paper, host an open discussion about the paper(s) with the user. This section's prose is intentionally not script-bound — substantive engagement is where LLM judgment is the value, not the smell.
+
+The deterministic rule is that the discussion HAPPENS — read `.debrief/paper_analysis_<slug>.md` (and re-read sections of the source PDF when you need full context) and engage. The shape of the discussion adapts to the archetype's `paper_role` (Cycle 5 / BUG-AUDIT-90 introduces the taxonomy):
+
+- **`primary_dissection`** (journal_club single-paper): Discuss the paper as a paper — what is the question, what is the argument, where is it strongest, where is it weakest. Then negotiate which figures advance the critique and which the user is willing to defend. Push back charitably on misrepresentation.
+- **`primary_thematic`** (journal_club multi-paper): Discuss the cross-paper theme. Surface where the papers agree, disagree, and complement. Negotiate which figures from which papers anchor the comparative narrative.
+- **`primary_document`** (thesis_discussion): Discuss the thesis structure. Aggressively cut to highlights — "what is the exciting version?"
+- **`concept_source`** (lecture, lab_meeting, seminar, custom): Discuss which concepts in the paper(s) the user wants to teach or borrow. Map each candidate concept to a learning objective or talking point. The user may want a single specific figure (e.g., "I just want to show Figure 2 of this paper") — that is a fully valid `concept_source` case. Do not over-design the slide deck around extracted figures the user did not ask for.
+- **`background_reference`** (conference_talk, job_talk, grant_panel, investor_pitch): Discuss which papers should be cited and where. Do not auto-generate figure slides; references go on relevant content slides as citations.
+
+The user may also override the default role for a specific paper during this discussion. For example, a `lecture` user (default `concept_source`) might say "this one I just want to cite as background" — treat that paper as `background_reference` regardless of the archetype default. The taxonomy is the *default*, not a rigid rule.
+
+In all cases, surface methodological concerns the audience might raise, alternative interpretations, weak links in the argument, and the limits of what the figures support — not as a rigid checklist, but because that is what makes the consultant useful at the content layer.
+
+After the discussion, transition `sub_phase` to `discovery/figure_selection` and present the figures via the G1.3 gate (REQ-CONSULT-18). The gate accepts `ALL` or a space-separated list of figure numbers — a user reply of `2` is a fully valid response that selects only Figure 2.
+
 
 ## Deck Brief Maintenance (BUG-AUDIT-74 / REQ-CONSULT-DECK-BRIEF-1 / BC-5.16, amended by BUG-AUDIT-78 / BC-5.19)
 

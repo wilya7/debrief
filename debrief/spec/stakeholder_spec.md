@@ -7728,4 +7728,60 @@ REQ-CONSULT-17 step 1 amended; BC-12.7 amended; BC-12.12 added.
 
 ---
 
+### BUG-AUDIT-88: Journal-club paper-first imperative — spec↔consultant alignment
+
+**Status:** Cycle 3 of the journal-club / paper-handling audit (2026-05-03). The smallest-scope cycle in the queue: a single agent-card amendment + matching contract clause.
+
+**Problem.** Spec line 1245 (REQ-CONSULT-18) mandates: *"When `archetype` is `journal_club`, the Consultant MUST ask for paper PDFs as its first question, without waiting for a trigger: 'Which paper(s) would you like to present? Give me the file path(s).' This overrides the normal progressive disclosure gate for the journal club trigger."* `agents/consultant.md` Step 5's `journal_club` bullet only contained the sub-mode question (*"Single paper or topic review across multiple papers?"*) — the imperative ask was missing entirely. Compare `thesis_discussion` (line 95) which DOES carry an explicit imperative (*"Please provide the thesis document (PDF) — this is the primary asset."*).
+
+The consultant therefore had no instruction to demand the paper, and the journal-club workflow — defined by the paper as primary asset — was at the mercy of model judgment to fill the gap. Per the user's "deterministic over LLM judgment" rule, structural decisions where a spec rule exists should be encoded literally in the prompt, not delegated to the model.
+
+**Root cause.** Spec drift: REQ-CONSULT-18's paper-first override (added to the spec at some prior point) was never reflected back into the agent prompt. The spec and the agent card disagreed on the journal-club opening move.
+
+**Detection method.** 2026-05-03 audit Layer 0 — direct comparison of spec line 1245 with `agents/consultant.md` Step 5 line 93. Pre-fix regression `tests/regressions/test_bug_audit_88_journal_club_imperative.py::test_consultant_card_contains_journal_club_imperative_verbatim` greps the agent card for the literal substring; pre-fix it was absent. Two additional tests pin (a) the imperative lives inside the `journal_club` bullet (not elsewhere), and (b) it precedes the sub-mode question.
+
+**Fix summary.** `agents/consultant.md` Step 5 `journal_club` bullet rewritten to:
+1. Open with the literal imperative from spec line 1245 (*"Which paper(s) would you like to present? Give me the file path(s)."*).
+2. State that the briefing MUST NOT proceed past this question until paper paths are supplied.
+3. Cross-reference `## Paper Analyzer Invocation` (Cycle 4 / BUG-AUDIT-89) for the deterministic post-attach invocation, and BC-5.11 for the contract.
+4. Preserve the existing sub-mode question, asked only after paper paths are supplied.
+
+BC-5.11 amended to require the literal imperative substring in the agent card and to forbid proceeding past Step 5 without paper paths. Regression test enforces literal-substring presence and ordering.
+
+**Normative requirements:** none new. BC-5.11's amendment is the binding contract; the agent card amendment is the implementation.
+
+**Prior-Art for Rebuild:** *"every spec-mandated phrase the consultant must say belongs in the agent card as a literal substring with a regression test asserting its presence."* This is the same pattern BUG-AUDIT-66's `## Alternative Dispatch Prompts` established — prompt drift is a CRITICAL regression, and the only way to prevent it is to test the agent card itself. Generalizing: when the spec contains a phrase a code agent must utter (whether for compliance, deterministic UX, or contract observance), that phrase becomes a literal-substring test against the agent card. The audit-doc convention "agents/consultant.md MUST contain ..." should always pair with the substring-grep regression that enforces it.
+
+---
+
+### BUG-AUDIT-89: Paper-analyzer invocation sections — deterministic shell + open paper-discussion
+
+**Status:** Cycle 4 of the journal-club / paper-handling audit (2026-05-03). Closes FINDING-SEQ-2 (no explicit invocation trigger), FINDING-SEQ-3 (sub_phase values dead), and FINDING-SEQ-4 (multi-paper handling unspecified). Splits the agent-card additions into a deterministic shell and an open content-discussion layer per the user's 2026-05-03 refinement.
+
+**Problem.** The 2026-05-03 audit's Layer 0 surfaced three sequencing gaps:
+
+- (FINDING-SEQ-2) BC-5.11 mandates the consultant invoke `python -m debrief.paper_analyzer ...` when the user provides a paper PDF, but `agents/consultant.md` had no trigger condition, no command template, no sub_phase transition instruction, and no event-emission instruction. Whether and when the analyzer fired was a model judgment call after compaction.
+- (FINDING-SEQ-3) The sub_phase enum (line 210) lists `discovery/paper_analysis` and `discovery/figure_selection` but neither had entry/exit semantics, behavior description, or gate prompt. Dead state values.
+- (FINDING-SEQ-4) The journal_club `multi_paper` sub-mode existed as a label only — no operational guidance on elicitation, per-paper invocation loop, error handling, cross-paper merging, or order.
+
+The user (2026-05-03) refined: the structural plumbing for these transitions stays deterministic — fixed bash command, fixed sub_phase strings, fixed event names, fixed multi-paper loop. Inside the resulting sub_phase the consultant must run an *open* Socratic discussion shaping narrative — paper interpretation, figure selection rationale, what to highlight or cut — without being railed into a checklist. The two concerns require different regression-test discipline: the shell is grep-pinnable, the discussion is intent-only.
+
+**Root cause.** Underspecified consultant prompt against fully specified contracts. The contracts (BC-5.11, BC-2.15a sub_phase, BC-2.18 timeline emission) all existed and the analyzer module worked end-to-end (Cycles 1, 2, 6 — BUG-AUDIT-85, 86, 87) — but the agent prompt that drives the user-facing flow had no operational instructions to actually invoke them.
+
+**Detection method.** 2026-05-03 audit's Layer 0 walk; pre-fix consultant.md was grep-tested for command template, sub_phase strings, and event names — none present in any operational section. Pre-fix regression test (`tests/regressions/test_bug_audit_89_consultant_paper_sections.py`) asserts the section headers and deterministic substrings; pre-fix all 12 of these tests fail, post-fix all pass.
+
+**Fix summary.** Two new sections added to `agents/consultant.md` between `## Event Timeline Emission` and `## Deck Brief Maintenance`:
+
+1. **`## Paper Analyzer Invocation`** — deterministic shell. Five subsections: Trigger (path-shape detection rule), Command template (literal `python -m debrief.paper_analyzer --pdf` substring + slug-derivation reference), Sub-phase transitions (literal `discovery/dialog`, `discovery/paper_analysis`, `discovery/figure_selection` strings), Event emissions (literal `paper_attached`, `figure_selected` event names), and Multi-paper loop (per-path processing in document order, no batching, exit-code-aware error handling).
+
+2. **`## Paper Discussion`** — open Socratic engagement. Header pinned literally; six `paper_role` values (introduced fully in Cycle 5 / BUG-AUDIT-90) named explicitly so the discussion shape branches deterministically by role; substantive prose intentionally not pinned. Includes the explicit single-figure case (the user's tomorrow lab-meeting scenario: "I just want to show Figure 2 of this paper") as a fully valid `concept_source` reply.
+
+BC-5.22 added documenting the section structure and regression-test obligations. The regression test enforces (a) headers exist in order, (b) all deterministic substrings present in the invocation section, (c) all six `paper_role` values appear in the discussion section, (d) `discovery/figure_selection` appears in both sections (the transition into the gate from the discussion).
+
+**Normative requirements:** none new (BC-5.22 in `blueprint_contracts.md` carries the binding contract; existing REQ-CONSULT-17/18 are unchanged in scope at this cycle — Cycle 5 / BUG-AUDIT-90 generalizes them).
+
+**Prior-Art for Rebuild:** *"determinism applies to structure, not to substantive discussion."* The user's refinement here generalizes beyond the paper-analyzer case: agent-card sections often need a deterministic shell (transitions, commands, event emissions, sub_phase strings — testable via literal-substring grep) wrapping an open content layer (where LLM judgment is the value, not the smell — verified only by section-header presence). When designing future agent-card additions, separate the two concerns: pin the rails, leave the prose. A regression test that pins discussion prose word-for-word over-specifies the agent and discourages substantive engagement; a regression test that pins zero substrings under-specifies the rails and lets compaction erode the deterministic plumbing. BC-5.22's two-tier structure is the template.
+
+---
+
 *End of Debrief Stakeholder Specification v1.1*
