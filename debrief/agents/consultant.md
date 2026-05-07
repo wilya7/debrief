@@ -574,7 +574,40 @@ If any step fails — Task dispatch error, blocker validation rejection (one of 
 
 ### Credential model
 
-This dispatch uses Claude Code's session credential for the model call. **`ANTHROPIC_API_KEY` is NOT required for `/debrief:script` or `deck-complete-finalization`** — that's the architectural fix from BUG-AUDIT-102. The third trigger, `/debrief:handout-cascade`, remains on the legacy direct-SDK path requiring `ANTHROPIC_API_KEY`; cycle 103 cleanup decides whether to retire the cascade or refactor it. Until then, OAuth-only users who hit the cascade should run `/debrief:script` manually.
+This dispatch uses Claude Code's session credential for the model call. **`ANTHROPIC_API_KEY` is NOT required for `/debrief:script` or `deck-complete-finalization`** — that's the architectural fix from BUG-AUDIT-102. The legacy `/debrief:handout-cascade` trigger (subprocess auto-cascade from `/debrief:handout`) was retired in BUG-AUDIT-103 — see `## Handout Generation Dispatch` below for the replacement.
+
+## Handout Generation Dispatch (BUG-AUDIT-103 / BC-5.16c)
+
+`/debrief:handout` requires `<project_root>/speaker_script.md` to exist. The pre-103 design had `main_handout` auto-cascade to the script-writer when the script was missing; that auto-cascade ran inside the handout subprocess and required `ANTHROPIC_API_KEY` (the subprocess has no Claude Code session). BUG-AUDIT-103 lifted the auto-cascade up to your orchestration layer — you check the precondition and run the script-generation dispatch BEFORE invoking handout. The convenience is preserved; the credential model moves to where Task is available.
+
+### Precondition self-heal
+
+When the user invokes `/debrief:handout`, your FIRST action is a Bash check:
+
+```bash
+[[ -f speaker_script.md ]] && echo "script_present" || echo "script_missing"
+```
+
+- If `script_present`: proceed to the handout dispatch (next subsection).
+- If `script_missing`: run the BUG-AUDIT-102 four-step Task-dispatch chain to generate the script (per `## Script Generation Dispatch` above with `--trigger /debrief:script`), then re-check. If the script generation fails (validators reject, Task error), surface a one-line summary to the user and ABORT the handout dispatch — do not invoke `main_handout` against a missing-script project. Suggested phrasing: *"Could not auto-generate `speaker_script.md` for the handout: <reason>. Run `/debrief:script` to retry, then re-run `/debrief:handout`."*
+
+### Dispatch protocol
+
+After the precondition is satisfied, invoke handout via Bash:
+
+```bash
+python -m debrief.utility_skills handout --mode <2up|4up> --project-root . [--include-backup]
+```
+
+This is the existing handout invocation. The handout subprocess does NOT call the model — it renders slides + script into PDF via Playwright. No auth required for this step.
+
+### Failure handling
+
+If the handout subprocess fails (exit 2 with missing-script — should be unreachable post-self-heal — or any other error), surface the stderr message verbatim to the user. The handout subprocess exits 2 (not 0) on missing-script per BC-11.16's BUG-AUDIT-103 amendment, so you'll see the failure clearly.
+
+### Credential model
+
+This dispatch uses Claude Code's session credential for the precondition self-heal (the script-generation Task dispatch). The handout subprocess itself makes no model call. **`ANTHROPIC_API_KEY` is NOT required for `/debrief:handout`.** The legacy `/debrief:handout-cascade` trigger (when explicitly passed to `python -m debrief.launcher script_writer`) still uses the legacy direct-SDK path and requires `ANTHROPIC_API_KEY` plus the `sdk_fallback` extras install (`pip install '.[sdk_fallback]'` per BC-1.18a). That trigger is no longer auto-invoked from anywhere in canonical flows.
 
 ## Deck Brief Maintenance (BUG-AUDIT-74 / REQ-CONSULT-DECK-BRIEF-1 / BC-5.16, amended by BUG-AUDIT-78 / BC-5.19)
 

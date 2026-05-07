@@ -1,21 +1,35 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Carlo Fusco and Leonardo Restivo
-"""Regression tests for BUG-AUDIT-93: declared-dependency on anthropic SDK.
+"""Regression tests for BUG-AUDIT-93 — INVERTED by BUG-AUDIT-103.
 
-Pre-fix, ``src/debrief/launcher.py`` lazy-imported ``anthropic`` at two
-sites (``call_script_writer_agent``, ``call_rewrite_agent``) but neither
-``pyproject.toml`` nor ``environment.yml`` declared the dependency. A
-default install (``bin/debrief`` bootstrapping via environment.yml, or
-``pip install .`` reading pyproject.toml) left the conda env without the
-SDK; both ``/debrief:script`` and the rewriter (PreCompact + manual)
-silently failed.
+Original (BUG-AUDIT-93) contract: ``anthropic>=0.40`` was REQUIRED in
+both ``pyproject.toml`` ``[project.dependencies]`` AND
+``environment.yml``'s pip section, and the ``bin/debrief`` step 5.5
+smoke test imported it. The mandate was correct at BUG-AUDIT-93 time
+because every canonical rewriter and script-writer trigger hit the SDK
+on its critical path.
 
-This test pins:
-  (a) ``anthropic>=0.40`` is declared in pyproject.toml [project.dependencies]
-  (b) ``anthropic>=0.40`` is declared in environment.yml pip section
-  (c) the minimum version is consistent across both files
-  (d) ``bin/debrief`` step 5.5 smoke test imports ``anthropic`` so a corrupt
-      env is caught at bootstrap, not at the first /debrief:script invocation.
+BUG-AUDIT-101 + BUG-AUDIT-102 moved those triggers to Task-dispatch via
+the consultant. After cycle 102, the SDK is reachable only on legacy
+direct-CLI paths. BUG-AUDIT-103 demoted ``anthropic`` to an optional
+``[project.optional-dependencies]`` extras dep with key ``sdk_fallback``,
+removed it from ``environment.yml``, and dropped it from the
+``bin/debrief`` smoke test.
+
+This test file's CONTRACT is therefore inverted by BUG-AUDIT-103 — same
+filename for git-history-traceability, opposite assertions:
+
+  (a) ``anthropic`` is NOT in ``pyproject.toml`` ``[project.dependencies]``.
+  (b) ``anthropic>=0.40`` IS in ``pyproject.toml``
+      ``[project.optional-dependencies]`` under the ``sdk_fallback`` key.
+  (c) ``environment.yml``'s pip section does NOT contain ``anthropic``.
+  (d) ``bin/debrief`` step 5.5 smoke test does NOT import ``anthropic``.
+
+The original BUG-AUDIT-93 stderr-emission tests in
+``test_bug_audit_93_anthropic_missing_stderr.py`` are unchanged and
+continue to validate the legacy-path behavior — those code paths still
+exist and still emit the actionable stderr line when invoked
+explicitly without the SDK installed.
 """
 
 from __future__ import annotations
@@ -33,9 +47,6 @@ def _is_workspace_layout() -> bool:
 
 
 def _pyproject_path() -> Path:
-    # pyproject.toml is delivered-only by design (BC-1.17 / BUG-AUDIT-1) — no
-    # workspace copy. In workspace runs we still locate it via the sibling
-    # delivered repo so the test enforces the contract end-to-end.
     if _is_workspace_layout():
         return _PROJECT_ROOT.parent / "debrief1.0-repo" / "debrief" / "pyproject.toml"
     return _PROJECT_ROOT / "pyproject.toml"
@@ -57,110 +68,98 @@ _ANTHROPIC_LINE_RE = re.compile(
     r"""anthropic\s*>=\s*(?P<version>\d+\.\d+(?:\.\d+)?)""",
     re.IGNORECASE,
 )
-_MIN_VERSION = (0, 40)
-
-
-def _parse_min_version(line: str) -> tuple[int, ...]:
-    m = _ANTHROPIC_LINE_RE.search(line)
-    assert m, f"line does not match anthropic>=X.Y pattern: {line!r}"
-    return tuple(int(p) for p in m.group("version").split("."))
 
 
 # ---------------------------------------------------------------------------
-# pyproject.toml
+# pyproject.toml — inverted: not in required deps, IS in optional
 # ---------------------------------------------------------------------------
 
 
-def test_pyproject_declares_anthropic_dependency() -> None:
+def test_pyproject_does_not_declare_anthropic_in_required_dependencies() -> None:
+    """BUG-AUDIT-103 / BC-1.18a: anthropic is NO LONGER in [project.dependencies]."""
     content = _pyproject_path().read_text()
-    # The anthropic line must appear within the [project] dependencies list,
-    # not in a [tool.X] section. Find the [project] block and grep within.
+    # Carve out the [project] block (everything from [project] to the
+    # next top-level [section]).
     project_start = content.find("[project]")
+    assert project_start >= 0, "[project] section not found"
     next_section = content.find("\n[", project_start + 1)
-    project_block = content[project_start:next_section] if next_section >= 0 else content[project_start:]
-    assert _ANTHROPIC_LINE_RE.search(project_block), (
-        "pyproject.toml [project.dependencies] must declare anthropic>=0.40 "
-        "per BC-1.18 / BUG-AUDIT-93"
+    project_block = (
+        content[project_start:next_section] if next_section >= 0 else content[project_start:]
+    )
+    # The [project] block should NOT contain `anthropic>=...`.
+    assert _ANTHROPIC_LINE_RE.search(project_block) is None, (
+        "BC-1.18a (BUG-AUDIT-103): anthropic must NOT appear in "
+        "[project.dependencies]; it has been demoted to "
+        "[project.optional-dependencies].sdk_fallback."
     )
 
 
-def test_pyproject_anthropic_minimum_version() -> None:
+def test_pyproject_declares_anthropic_in_optional_dependencies() -> None:
+    """BUG-AUDIT-103 / BC-1.18a: anthropic IS in [project.optional-dependencies]
+    under the ``sdk_fallback`` extras key."""
     content = _pyproject_path().read_text()
-    m = _ANTHROPIC_LINE_RE.search(content)
-    assert m
-    version = tuple(int(p) for p in m.group("version").split("."))
-    assert version >= _MIN_VERSION, (
-        f"pyproject.toml requires anthropic>={'.'.join(map(str, _MIN_VERSION))} "
-        f"or newer; got >={m.group('version')}"
+    opt_start = content.find("[project.optional-dependencies]")
+    assert opt_start >= 0, (
+        "BC-1.18a (BUG-AUDIT-103): pyproject.toml must contain a "
+        "[project.optional-dependencies] section."
+    )
+    next_section = content.find("\n[", opt_start + 1)
+    opt_block = (
+        content[opt_start:next_section] if next_section >= 0 else content[opt_start:]
+    )
+    # Must define an `sdk_fallback` extras key.
+    assert "sdk_fallback" in opt_block, (
+        "BC-1.18a (BUG-AUDIT-103): [project.optional-dependencies] must "
+        "define an `sdk_fallback` extras key."
+    )
+    # And it must list anthropic>=0.40.
+    assert _ANTHROPIC_LINE_RE.search(opt_block) is not None, (
+        "BC-1.18a (BUG-AUDIT-103): the sdk_fallback extras must include "
+        "anthropic>=0.40."
     )
 
 
 # ---------------------------------------------------------------------------
-# environment.yml
+# environment.yml — inverted: not in pip section
 # ---------------------------------------------------------------------------
 
 
-def test_environment_yml_declares_anthropic() -> None:
+def test_environment_yml_does_not_declare_anthropic() -> None:
+    """BUG-AUDIT-103 / BC-1.18a: environment.yml's pip section must NOT
+    list anthropic. Users who want the SDK install with
+    ``pip install '.[sdk_fallback]'`` after the conda env is built."""
     content = _environment_yml_path().read_text()
-    # Must be inside the pip section.
     pip_idx = content.find("- pip:")
     assert pip_idx >= 0, "environment.yml must contain a pip section"
     pip_block = content[pip_idx:]
-    assert _ANTHROPIC_LINE_RE.search(pip_block), (
-        "environment.yml pip section must declare anthropic>=0.40 "
-        "per BC-1.18 / BUG-AUDIT-93"
-    )
-
-
-def test_environment_yml_anthropic_minimum_version() -> None:
-    content = _environment_yml_path().read_text()
-    pip_idx = content.find("- pip:")
-    pip_block = content[pip_idx:]
-    m = _ANTHROPIC_LINE_RE.search(pip_block)
-    assert m
-    version = tuple(int(p) for p in m.group("version").split("."))
-    assert version >= _MIN_VERSION
-
-
-# ---------------------------------------------------------------------------
-# Cross-file consistency
-# ---------------------------------------------------------------------------
-
-
-def test_pyproject_and_environment_yml_anthropic_versions_match() -> None:
-    """The two install specs must agree on the minimum version (BC-1.18)."""
-    py_match = _ANTHROPIC_LINE_RE.search(_pyproject_path().read_text())
-    yml_match = _ANTHROPIC_LINE_RE.search(_environment_yml_path().read_text())
-    assert py_match and yml_match
-    assert py_match.group("version") == yml_match.group("version"), (
-        f"pyproject.toml requires anthropic>={py_match.group('version')} but "
-        f"environment.yml requires anthropic>={yml_match.group('version')}"
+    assert _ANTHROPIC_LINE_RE.search(pip_block) is None, (
+        "BC-1.18a (BUG-AUDIT-103): anthropic must NOT appear in "
+        "environment.yml's pip section."
     )
 
 
 # ---------------------------------------------------------------------------
-# bin/debrief smoke test (step 5.5)
+# bin/debrief smoke test (step 5.5) — inverted: anthropic NOT imported
 # ---------------------------------------------------------------------------
 
 
-def test_bin_debrief_smoke_test_imports_anthropic() -> None:
-    """bin/debrief step 5.5 smoke test MUST import anthropic so a corrupt
-    env is caught at bootstrap, not at the first /debrief:script invocation
-    (which would otherwise log silently and exit 0 per REQ-SCRIPT-WRITER-2).
-    """
+def test_bin_debrief_smoke_test_does_not_import_anthropic() -> None:
+    """BC-1.16 (BUG-AUDIT-103 amendment): the smoke test imports
+    ``playwright, pptx, fitz, json_repair`` only — back to its
+    pre-BUG-AUDIT-93 shape. anthropic is no longer required to be
+    importable at bootstrap because cycles 101/102 retired the SDK
+    from the canonical user flows."""
     content = _bin_debrief_path().read_text()
-    # The smoke test is a single python -c invocation listing the imports.
-    smoke_re = re.compile(
-        r"python\s+-c\s+'import\s+([^']+)'",
-    )
+    smoke_re = re.compile(r"python\s+-c\s+'import\s+([^']+)'")
     matches = smoke_re.findall(content)
     assert matches, "bin/debrief must contain a python -c smoke import line"
-    # Find the smoke that includes 'fitz' (the canonical step-5.5 line).
     fitz_smoke = [m for m in matches if "fitz" in m]
     assert fitz_smoke, (
         "bin/debrief step 5.5 smoke test (the one importing fitz) not found"
     )
     imports = {x.strip() for x in fitz_smoke[0].split(",")}
-    assert "anthropic" in imports, (
-        "bin/debrief step 5.5 smoke test MUST import anthropic per BC-1.18"
+    assert "anthropic" not in imports, (
+        "BC-1.16 (BUG-AUDIT-103): bin/debrief step 5.5 smoke test must NOT "
+        "import anthropic; the smoke list is "
+        "{playwright, pptx, fitz, json_repair} only."
     )

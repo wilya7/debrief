@@ -4,6 +4,83 @@ All notable changes to debrief are documented in this file.
 
 ## [Unreleased] - 2026-05-07
 
+### `anthropic` SDK demoted to optional dep + handout-cascade lifted to consultant (BUG-AUDIT-103)
+
+Final piece of the BUG-AUDIT-101/-102 OAuth-everywhere arc. Two coordinated changes that complete the migration off the `ANTHROPIC_API_KEY` requirement for canonical user flows:
+
+### Added (BUG-AUDIT-103)
+- `[project.optional-dependencies] sdk_fallback = ["anthropic>=0.40"]` in `pyproject.toml`. Users who explicitly want the legacy direct-SDK paths install with `pip install '.[sdk_fallback]'`.
+- `agents/consultant.md` `## Handout Generation Dispatch` section (BC-5.16c). Documents the precondition self-heal: when the user invokes `/debrief:handout`, the consultant FIRST checks for `speaker_script.md` and runs the BUG-AUDIT-102 four-step Task-dispatch chain to generate the script if absent, THEN proceeds with handout. Convenience preserved; credential model moved up to where Task is available.
+- 12 regression tests across `main_handout`'s no-auto-cascade source check, exit-2-on-missing-script behavior, consultant card section content (4 dimensions: section exists, cites BUG-AUDIT, documents self-heal, states credential model), `commands/handout.md` updates.
+
+### Changed (BUG-AUDIT-103)
+- `anthropic>=0.40` REMOVED from `pyproject.toml` `[project.dependencies]` and from `environment.yml`'s pip section. It now lives only under `[project.optional-dependencies] sdk_fallback`.
+- `bin/debrief` step 5.5 smoke test imports list reverted to its pre-BUG-AUDIT-93 shape: `playwright, pptx, fitz, json_repair`. `anthropic` is no longer required to be importable at bootstrap.
+- `main_handout` (`src/unit_11/utility_skills.py`): the in-subprocess auto-cascade to `main_script_writer` is RETIRED. When `speaker_script.md` is missing, the function exits 2 with `"speaker_script.md is missing. Run /debrief:script first, then retry /debrief:handout."`. The consultant orchestration layer handles the precondition self-heal per BC-5.16c.
+- `commands/handout.md` documents the new flow.
+- BC-1.18 (anthropic-as-required-dep) RETIRED. New BC-1.18a codifies the optional-dep + extras-install contract. BC-1.16 (smoke-test imports) amended. BC-3.20 amended (handout-cascade trigger no longer auto-invoked, retained for backward compat). BC-11.16 amended (speaker_script.md precondition is now hard, exit 2 not 0).
+- README troubleshooting section: the auth-error entry I added in the BUG-AUDIT-95-100 docs cycle is replaced with a "Legacy SDK paths and the optional `sdk_fallback` extras" subsection. The historical BUG-AUDIT-93 troubleshooting entry is removed.
+- Dependencies section in README: `anthropic` moved from the required-Python-packages table to a new "Optional dependencies" subsection.
+- `tests/regressions/test_bug_audit_93_anthropic_dependency.py` is INVERTED: same filename for git-history-traceability, opposite assertions. Now checks that `anthropic` is NOT in required deps, IS in `[project.optional-dependencies] sdk_fallback`, NOT in `environment.yml` pip section, NOT in the smoke test.
+- `tests/regressions/test_bug_audit_84_sub_c_handout_finalize.py` `TestHandoutPreconditionAutoCascade` class adapted: the two pre-103 auto-cascade tests are retired in favor of the new BUG-AUDIT-103 contract (no auto-cascade, exit 2 on missing script).
+
+### Fixed (BUG-AUDIT-103)
+- OAuth-only Claude Code users have a complete API-key-free workflow end-to-end: PreCompact (capture-only), `/debrief:refresh-brief`, `/debrief:quit` flush, session-start sentinel-detected refresh, `/debrief:script`, `deck-complete-finalization` cascade, `/debrief:handout` (consultant self-heals when script missing), and the export/handout deliverables. The previously-residual `/debrief:handout-cascade` trigger no longer auto-fires from a subprocess context where Task-dispatch is unavailable.
+
+---
+
+## [Unreleased] - 2026-05-07
+
+### Script-writer converted from direct-SDK to Task-dispatch (BUG-AUDIT-102)
+
+Mirrors BUG-AUDIT-101's architectural fix, applied to the script-writer. The pre-fix hybrid invocation pattern (BC-5.21) had the launcher subprocess call the Anthropic SDK directly, requiring `ANTHROPIC_API_KEY`. OAuth-only Claude Code users hit the same auth failure as the rewriter did pre-101.
+
+### Added (BUG-AUDIT-102)
+- `python -m debrief.launcher build_script_prompt` (BC-3.20b). Emits the structured user-message body (deck brief + audience + timeline + truncated dialog + slides + existing speaker_script as co-writer baseline) to stdout for the consultant to feed into a Task dispatch. Same 200K-token-cap dialog truncation as today's launcher. Read-only; no model call. Exit 1 only when zero approved main slides.
+- `python -m debrief.launcher write_script --trigger <t>` (BC-3.20c). Reads the agent's markdown from `.debrief/draft/refresh_script.md`, runs the same six guardrails as the legacy synthesis path (3 blockers — structure, traceability, roster-mentions; 2 warnings — length-budget, voice-drift), backup-before-overwrite per BC-11.20, atomically writes `speaker_script.md`, emits `script_done` timeline event, removes draft. Always exits 0 (REQ-SCRIPT-WRITER-2 unchanged).
+- `agents/consultant.md` `## Script Generation Dispatch` section (BC-5.16b) prescribing the four-step Task-dispatch protocol for `/debrief:script` and `deck-complete-finalization`.
+- 19 regression tests across build_script_prompt CLI (success + no-approved-main-slides + usage-message), write_script CLI (write+event success, invalid-script log+exit 0, missing-draft log+exit 0, backup-before-overwrite), consultant card section content, script-writer agent card retired BC-3.20a prose check, commands/script.md content checks.
+
+### Changed (BUG-AUDIT-102)
+- `agents/script-writer.md`: BC-3.20a "direct Task-tool dispatch unsupported" prose RETIRED; replaced with description of the new canonical Task-dispatch chain.
+- BC-3.20 (script_writer CLI) further amended: synthesis path retired for in-session triggers; cascade trigger retained for backward compat.
+- BC-5.21 (script-writer agent) amended for Task-dispatchability.
+- `commands/script.md` describes the new four-step flow.
+
+### Fixed (BUG-AUDIT-102)
+- `/debrief:script` and the `deck-complete-finalization` cascade now work for OAuth-only Claude Code users without `ANTHROPIC_API_KEY`. The Task-dispatch step uses Claude Code's session credential (empirically stable across releases; not contractually documented per the subagent docs, but the BUG-AUDIT-101 prior-art file documents the `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR` fallback path).
+
+---
+
+## [Unreleased] - 2026-05-07
+
+### Rewriter converted from direct-SDK to Task-dispatch (BUG-AUDIT-101)
+
+User-reported: an OAuth-authenticated Claude Code user (the standard paid-subscription path) cannot use the rewriter at any of its triggers because the launcher subprocess called the Anthropic SDK directly, requiring `ANTHROPIC_API_KEY`. Cycle 101 routes the rewriter through the consultant's Task tool for in-session triggers and turns PreCompact into a capture-only path with synthesis deferred to next session start. PreCompact runtime is now data-preservation-only — no model call, no auth.
+
+### Added (BUG-AUDIT-101)
+- `python -m debrief.launcher build_rewrite_prompt` (BC-3.18a). Emits the structured rewriter user-message body (deck_brief on bootstrap + dialog archive + event timeline) to stdout for the consultant to feed into a Task dispatch. Read-only; no model call.
+- `python -m debrief.launcher write_brief --trigger <t>` (BC-3.18b). Reads the agent's markdown from `.debrief/draft/refresh_brief.md`, runs the same brief-structure + roster-YAML validators as the legacy synthesis path, atomically dual-writes `deck_brief.md` + `output/audience.yaml`, updates rewrite metadata, removes draft and `.brief_stale` sentinel on success. Always exits 0 (REQ-MEMORY-REWRITE-4 unchanged).
+- `.debrief/.brief_stale` sentinel (BC-3.18c). PreCompact writes this JSON sentinel after capturing dialog turns; the consultant detects it on next session start and runs the deferred synthesis via Task-dispatch.
+- `agents/consultant.md` `## Brief Refresh Dispatch` section (BC-5.16a) prescribing the four-trigger Task-dispatch protocol (session start sentinel-detected, /debrief:refresh-brief, /debrief:quit flush; PreCompact handles itself).
+- `templates/project_claude.md` step 2.5: sentinel check on session start.
+- 17 regression tests across PreCompact-capture-only behavior (in-process + subprocess-no-API-key paths), build_rewrite_prompt CLI, write_brief CLI (4 paths), consultant card section content, project_claude template content, rewriter card no-hybrid claim.
+
+### Changed (BUG-AUDIT-101)
+- `main_rewrite_brief --trigger PreCompact` is now capture-only: appends transcript turns to `.debrief/dialog.jsonl`, writes the `.brief_stale` sentinel, exits 0. **No SDK instantiation. No `ANTHROPIC_API_KEY` lookup. No auth.**
+- BC-3.18 (rewrite_brief CLI) amended: PreCompact path is capture-only; synthesis retired for in-session triggers (consultant orchestrates via build_rewrite_prompt + Task + write_brief).
+- BC-5.19 (rewriter agent) amended for Task-dispatchability. The pre-101 hybrid invocation pattern (launcher reads card + calls SDK directly) is retired for synthesis.
+- `agents/rewriter.md` reframed as Task-dispatchable.
+- `commands/refresh-brief.md` describes the new four-step flow.
+- One existing BUG-AUDIT-80 test adapted: `test_api_failure_logs_error_exits_0` moved from `--trigger PreCompact` (now capture-only) to `--trigger /debrief:refresh-brief` (legacy synthesis path retained for backward compat during transition).
+
+### Fixed (BUG-AUDIT-101)
+- OAuth-only Claude Code users with no `ANTHROPIC_API_KEY` can use the rewriter end-to-end. PreCompact is fast and reliable (no API call). The synthesis happens at session-start when the consultant has a live Task surface to dispatch into.
+
+---
+
+## [Unreleased] - 2026-05-07
+
 ### Handout parser tolerance + degradation warning (BUG-AUDIT-100)
 
 Field-reported via the journal-club orchestrating session: `/debrief:handout` produced PDFs with `(no notes available)` in every slide cell despite a well-formed `speaker_script.md` in the project. Root cause: `_load_speaker_script`'s regexes only matched the script-writer agent's strict canonical form (`## Slide N: <title>` + `**Slug:** \`<slug>\``), and the user's hand-finalized script used em-dash separators and italic slug markers with budget metadata — both valid markdown but rejected by the parser. The handout exited 0 with no warning; the user discovered the degradation only by opening the PDF.

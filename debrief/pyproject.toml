@@ -17,8 +17,18 @@ dependencies = [
     "python-pptx>=0.6.21",
     "PyMuPDF>=1.23",
     "json-repair>=0.25",
-    "anthropic>=0.40",
 ]
+
+# Optional dependencies (BUG-AUDIT-103 / BC-1.18a). The `anthropic` SDK is no
+# longer required for any canonical user flow — cycles 101 and 102 routed the
+# rewriter and script-writer through Claude Code's Task tool, which uses the
+# session credential (OAuth or API key). The SDK is only used by legacy
+# direct-CLI paths (`python -m debrief.launcher script_writer` invoked
+# directly, the `--trigger /debrief:handout-cascade` choice,
+# `main_rewrite_brief`'s synthesis branch). Users who want those paths install
+# with `pip install '.[sdk_fallback]'`.
+[project.optional-dependencies]
+sdk_fallback = ["anthropic>=0.40"]
 
 # NOTE: Intentionally NO [project.scripts] entry.
 # bin/debrief is the single entry point (spec §9.4 line 683, BC-1.17). A

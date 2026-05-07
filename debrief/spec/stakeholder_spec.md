@@ -8323,4 +8323,65 @@ BC-3.20 (script_writer CLI) amended — the synthesis path for `/debrief:script`
 
 ---
 
+### BUG-AUDIT-103: Handout-cascade lifted to consultant orchestration; `anthropic` SDK demoted from required to optional dependency — OAuth users have a complete API-key-free workflow
+
+**Status:** Cycle 13 (2026-05-07). Final piece of the BUG-AUDIT-101/102 OAuth-everywhere arc. With cycles 101 and 102 in place, two of the three rewriter triggers and two of the three script-writer triggers route through Task-dispatch. The residual auth-key-required path is `/debrief:handout-cascade` — fired inside the handout subprocess when `speaker_script.md` is missing. This cycle moves that cascade up into the consultant's orchestration so the auto-script-generation convenience is preserved without requiring an API key, then demotes `anthropic` from required to optional dependency.
+
+**Problem.** Three remaining gaps after cycles 101 and 102:
+
+1. **Handout's auto-cascade still runs SDK in subprocess.** When `/debrief:handout` is invoked and `speaker_script.md` is missing, `main_handout` calls `main_script_writer` via Python import inside its own subprocess. That subprocess has no Claude Code session to dispatch into, so the SDK call requires `ANTHROPIC_API_KEY`. OAuth-only users hit this when running handout standalone (without the consultant's 4-step finalization sequence which already runs script first). The user sees the BUG-AUDIT-98 stderr line and a degraded handout — solvable by manually running `/debrief:script` first, but the auto-cascade convenience is lost.
+
+2. **`anthropic` is still a required dependency.** BC-1.18 (BUG-AUDIT-93) mandated `anthropic>=0.40` in both `pyproject.toml` `[project.dependencies]` and `environment.yml`'s pip section. The smoke test in `bin/debrief` step 5.5 imports it. After cycles 101/102, the SDK is only used by the legacy synthesis paths (`main_rewrite_brief`'s post-PreCompact branch, `main_script_writer`) and the BUG-AUDIT-98 auth-error helpers — all reachable only via direct CLI invocation, never via the canonical user-facing flows. Keeping it as a required dependency forces every user to install it even when they'll never invoke a code path that uses it.
+
+3. **README and BC-1.18 tell users they need an API key.** The cycle-95-100 docs audit added an auth-error troubleshooting entry ("`/debrief:script` exits with 'authentication failed'") that, post-101/102, is misleading: the canonical paths don't fail this way anymore. Users reading the README still see "you need ANTHROPIC_API_KEY for `/debrief:script`" framing.
+
+**Root cause.** Three coordinated holdovers from cycles 101/102 that didn't fully disentangle the SDK requirement from the user's typical workflow:
+
+1. **Handout's auto-cascade was a UX-convenience design (run handout standalone and get a script auto-generated).** The convenience itself is good; it just lived in the wrong place. Moving it to consultant orchestration preserves the convenience while moving the credential model up to where Task-dispatch is available.
+
+2. **`anthropic` was made required by BUG-AUDIT-93 because the launcher's lazy-import would silently fail on a fresh install without the dep declared.** Post-101/102, the lazy-import sites are dead code in the canonical workflow, so the dep no longer needs to be required. Users who explicitly invoke the legacy SDK paths (e.g., `python -m debrief.launcher script_writer` directly, or set up their own auto-cascade scripting) need the SDK; users who go through the consultant don't.
+
+3. **The auth-error troubleshooting entry was written when ALL rewriter/script-writer triggers ran through the SDK.** Post-101/102 it's relevant only for users who explicitly invoke the legacy paths.
+
+**Detection method.** This cycle is plan-driven cleanup, not user-reported. The three changes are: (a) the consultant card gains a `## Handout Generation Dispatch` section with the precondition-check + auto-script-generation chain; (b) `pyproject.toml` and `environment.yml` move `anthropic` from required to optional/extras; (c) README is updated. Pre-fix regression tests assert (post-fix): `main_handout` no longer auto-cascades to `main_script_writer`; `pyproject.toml` does NOT list `anthropic` as required but DOES list it under `[project.optional-dependencies]`; `environment.yml` does NOT list `anthropic` in its pip section; `bin/debrief` smoke test does NOT import `anthropic`; consultant card has the new dispatch section; the BUG-AUDIT-93 dependency-declaration tests are inverted to match.
+
+**Fix summary.** Three coordinated changes:
+
+1. **Consultant-orchestrated handout cascade (Option D).** `main_handout`'s subprocess-internal auto-cascade is RETIRED. The function's precondition for missing `speaker_script.md` becomes hard: print `"speaker_script.md is missing. Run /debrief:script first, then retry /debrief:handout."` to stderr and exit code 2. The consultant agent card gains a `## Handout Generation Dispatch` section (BC-5.16c) that prescribes a precondition check BEFORE invoking handout: when the user runs `/debrief:handout`, the consultant FIRST checks for `speaker_script.md` and, if absent, runs the BUG-AUDIT-102 four-step Task-dispatch chain (`build_script_prompt` → `Task(script-writer)` → heredoc → `write_script`) to generate the script, THEN invokes the handout. From the user's perspective, single-command convenience is preserved; from the architecture's perspective, the cascade has moved from subprocess-bound to session-bound, so OAuth credentials cover it.
+
+   The legacy `--trigger /debrief:handout-cascade` choice in `main_script_writer`'s argparse is RETAINED for backward compatibility — anyone explicitly invoking the legacy CLI with that trigger value still gets the legacy direct-SDK path. `main_handout` simply no longer calls into it.
+
+2. **`anthropic` demoted from required to optional.** Both `pyproject.toml` and `environment.yml` change:
+   - `pyproject.toml` `[project.dependencies]` removes `anthropic>=0.40`. A new `[project.optional-dependencies]` table adds `sdk_fallback = ["anthropic>=0.40"]`. Users who want the legacy SDK paths can `pip install '.[sdk_fallback]'` after install.
+   - `environment.yml`'s pip section removes `anthropic>=0.40`.
+   - `bin/debrief` step 5.5 smoke test (BC-1.16, BUG-AUDIT-93 amendment) removes `anthropic` from its required-imports list. The smoke test now imports `playwright, pptx, fitz, json_repair` — back to its pre-BUG-AUDIT-93 shape.
+   - BC-1.18 (anthropic-as-required-dep) is RETIRED. New BC-1.18a codifies the optional-dep + extras-install contract.
+
+3. **README + CHANGELOG cleanup.** The auth-error troubleshooting entry added in the cycle-95-100 docs audit is rewritten: it now applies only to users who explicitly invoke the legacy SDK paths (e.g., direct `python -m debrief.launcher script_writer` calls). The BUG-AUDIT-93 troubleshooting entry ("Pre-v1.2 silent /debrief:script failure") is rewritten as historical context. The Dependencies section reflects `anthropic` as an optional/extras dependency. New CHANGELOG entries for cycles 101, 102, 103.
+
+**Trigger surface (post-fix, OAuth user perspective):**
+
+| Trigger | Auth requirement |
+|---|---|
+| `PreCompact` hook | none (capture-only — BC-3.18c) |
+| `/debrief:refresh-brief` | Claude Code session credential (Task-dispatch — BC-5.16a) |
+| `/debrief:quit` flush | same |
+| Session-start sentinel-detected refresh | same |
+| `/debrief:script` | Claude Code session credential (Task-dispatch — BC-5.16b) |
+| `deck-complete-finalization` cascade | same |
+| `/debrief:handout` (with script present) | none (handout has no model call) |
+| `/debrief:handout` (with script missing) | Claude Code session credential (consultant orchestrates the chain — BC-5.16c) |
+
+For an OAuth-only Claude Code user with NO `ANTHROPIC_API_KEY` set, every canonical workflow runs end-to-end. The legacy direct-SDK paths (`python -m debrief.launcher script_writer` direct, the `/debrief:handout-cascade` trigger explicitly passed) are preserved as documented dead-code-with-tests for users who want them; those users `pip install '.[sdk_fallback]'` to enable.
+
+BC-1.16 (smoke test imports) amended; BC-1.18 (anthropic-as-required-dep) RETIRED; new BC-1.18a (anthropic-as-optional-dep + extras); BC-3.20 (script_writer CLI) further amended (handout-cascade trigger no longer auto-invoked from `main_handout`); new BC-5.16c (consultant `## Handout Generation Dispatch`); BC-11.16 (handout precondition) amended.
+
+**Normative requirements:** none new (REQ-MEMORY-REWRITE-1..4, REQ-SCRIPT-WRITER-1..4, REQ-HAND-1..6 all unchanged in semantics).
+
+**Prior-Art for Rebuild:** *"a 'required' dependency in a plugin's environment.yml is a tax on every user — make it optional unless every code path needs it."* Required-deps make sense when every install will exercise the dep; optional/extras-deps make sense when only specific opt-in code paths need it. BUG-AUDIT-93 made `anthropic` required because the lazy-import sites were on canonical paths; BUG-AUDIT-101/102 moved those paths to Task-dispatch, retiring the canonical SDK use. The pattern: **when a code path is restructured to no longer need a dependency, the dep should follow the path** — required → optional, or removed entirely. Generalizing: every "required" dependency is an architectural claim that the dep is on a hot path; when the hot path changes, the claim should be re-examined.
+
+A second prior-art point: **subprocess-internal cascades are an anti-pattern when a session-bound orchestrator exists.** The handout's auto-cascade was a clever single-process convenience, but it bound the convenience to the subprocess's credential model. Moving the cascade up to the consultant — where Task-dispatch is available — preserves the convenience without binding it to a credential the user may not have. Generalizing: any "this command auto-fixes a missing input" convenience should be implemented at the highest available orchestration layer, not at the lowest subprocess layer. The orchestrator's credentials are richer; the subprocess's are constrained.
+
+---
+
 *End of Debrief Stakeholder Specification v1.1*

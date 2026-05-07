@@ -1489,45 +1489,31 @@ def main_handout(
         ]
         approved = approved + approved_backup
 
-    # BC-11.16 amendment (BUG-AUDIT-84 Sub-cycle C): speaker_script.md
-    # MUST exist. If absent, auto-cascade /debrief:script first, then
-    # re-check. The cascade NEVER blocks (script-writer always exits 0
-    # per REQ-SCRIPT-WRITER-2); if the script is still absent after
-    # the cascade (e.g. API outage logged to script_errors.jsonl), the
-    # handout is skipped with a stderr message — exit 0, do not block.
+    # BC-11.16 (BUG-AUDIT-103 amendment): speaker_script.md MUST exist.
+    # The pre-103 auto-cascade — main_handout importing and invoking
+    # main_script_writer from its subprocess — has been RETIRED. The
+    # script-precondition self-heal is now lifted up to the consultant
+    # orchestration layer per BC-5.16c (`## Handout Generation
+    # Dispatch`): the consultant checks for speaker_script.md BEFORE
+    # invoking handout, runs the BUG-AUDIT-102 four-step Task-dispatch
+    # chain to generate the script if absent, then proceeds. The
+    # subprocess-internal auto-cascade required ANTHROPIC_API_KEY
+    # (subprocess has no Claude Code session); the consultant-level
+    # self-heal uses Task-dispatch (no API key needed for OAuth users).
+    #
+    # When this missing-script branch fires here, it means either (a)
+    # a direct subprocess call from outside the consultant, or (b) a
+    # race between the consultant's check and the invoke. In both
+    # cases, exit 2 with a clear message — the canonical workflow
+    # never reaches this branch.
     script_path = project_root / "speaker_script.md"
     if not script_path.is_file():
         print(
-            "speaker_script.md is missing — running /debrief:script first.",
+            "speaker_script.md is missing. Run /debrief:script first, "
+            "then retry /debrief:handout.",
             file=sys.stderr,
         )
-        try:
-            from launcher import main_script_writer  # type: ignore[import]
-
-            try:
-                main_script_writer(
-                    project_root, trigger="/debrief:handout-cascade"
-                )
-            except SystemExit:
-                # main_script_writer exits 0 always; absorb so the
-                # cascade is transparent to the handout caller.
-                pass
-        except ImportError as exc:
-            print(
-                f"Cannot auto-cascade /debrief:script: {exc}. "
-                "Run '/debrief:script' manually before '/debrief:handout'.",
-                file=sys.stderr,
-            )
-            sys.exit(0)
-
-        if not script_path.is_file():
-            print(
-                "speaker_script.md still missing after auto-cascade — "
-                "handout skipped. See .debrief/script_errors.jsonl for "
-                "the script-writer failure.",
-                file=sys.stderr,
-            )
-            sys.exit(0)
+        sys.exit(2)
 
     # BC-11.16 step (3) / BC-11.7: environment check.
     if importlib.util.find_spec("playwright") is None:

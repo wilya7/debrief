@@ -202,80 +202,68 @@ def _seed_handout_project(tmp_path: Path) -> None:
 
 
 class TestHandoutPreconditionAutoCascade:
-    """BC-11.16 amendment: main_handout invokes main_script_writer
-    when speaker_script.md is missing."""
+    """BC-11.16 amendment: main_handout requires speaker_script.md.
 
-    def test_missing_script_triggers_cascade(
+    BUG-AUDIT-103 amendment: the in-subprocess auto-cascade is RETIRED.
+    `main_handout` no longer imports or calls `main_script_writer`. The
+    script-precondition self-heal lives at the consultant orchestration
+    layer (BC-5.16c). When `speaker_script.md` is missing,
+    `main_handout` exits 2 with a clear stderr message — not 0 with a
+    silent skip. The two pre-103 tests in this class are RETIRED in
+    favor of the new BUG-AUDIT-103 contract; the third test
+    (existing-script-no-cascade) is preserved as a no-op-equivalent
+    check that asserts main_handout does NOT touch the script-writer.
+    """
+
+    def test_missing_script_exits_2_with_message(
         self, tmp_path: Path
     ) -> None:
+        """BC-11.16 (BUG-AUDIT-103 amendment): missing speaker_script.md
+        causes main_handout to exit 2 with a 'Run /debrief:script first'
+        stderr message. The pre-103 auto-cascade is gone."""
         _seed_handout_project(tmp_path)
-        cascade_calls: list[dict] = []
+        # Sentinel: if main_handout still imports main_script_writer and
+        # invokes it, this raise would fire and fail the test.
+        if hasattr(launcher, "main_script_writer"):
+            sentinel_calls: list[int] = []
 
-        def _fake_writer(project_root, *, trigger, **kw) -> None:
-            # Simulate a successful cascade: write the script.
-            cascade_calls.append({
-                "project_root": project_root,
-                "trigger": trigger,
-            })
-            (project_root / "speaker_script.md").write_text(
-                "# Speaker Script\n\n## Slide 1: Intro\n\n"
-                "**Slug:** `intro`\n\n"
-                "### Key talking points\n\nPoints.\n\n"
-                "### Transition\n\nNext.\n\n"
-                "### Estimated speaking time\n\n~1 minute\n\n---\n",
-                encoding="utf-8",
+            def _explode(*a, **kw):
+                sentinel_calls.append(1)
+                raise AssertionError(
+                    "BUG-AUDIT-103 regression: main_handout must NOT "
+                    "invoke main_script_writer. The auto-cascade is "
+                    "retired; precondition is hard."
+                )
+
+            with patch.object(launcher, "main_script_writer", side_effect=_explode):
+                with pytest.raises(SystemExit) as ei:
+                    utility_skills.main_handout("2up", tmp_path)
+            assert sentinel_calls == [], (
+                "main_handout invoked main_script_writer despite "
+                "BUG-AUDIT-103's hard-precondition contract."
             )
-            raise SystemExit(0)
-
-        # Mock playwright so we don't actually launch Chromium.
-        with patch.object(launcher, "main_script_writer", side_effect=_fake_writer):
-            with patch.object(utility_skills, "main_script_writer", side_effect=_fake_writer, create=True):
-                import playwright.sync_api as _pw_mod
-                with patch.object(_pw_mod, "sync_playwright") as _pw_sp:
-                    ctx = _pw_sp.return_value.__enter__.return_value
-                    browser = ctx.chromium.launch.return_value
-                    page = browser.new_page.return_value
-
-                    def _fake_pdf(path: str) -> None:
-                        Path(path).write_bytes(b"%PDF-1.4 test bytes")
-
-                    page.pdf.side_effect = _fake_pdf
-                    try:
-                        utility_skills.main_handout("2up", tmp_path)
-                    except SystemExit:
-                        pass
-
-        assert len(cascade_calls) == 1
-        assert cascade_calls[0]["trigger"] == "/debrief:handout-cascade"
-        # The handout proceeded to write a PDF.
-        pdfs = list((tmp_path / "output" / "handouts").glob("handout_v*.pdf"))
-        assert len(pdfs) == 1
-
-    def test_cascade_failure_skips_handout_with_exit_0(
-        self, tmp_path: Path
-    ) -> None:
-        """When the cascade returns without writing speaker_script.md
-        (e.g. API outage in the script-writer), the handout exits 0
-        with a stderr message and writes no PDF — consultant NEVER
-        blocked."""
-        _seed_handout_project(tmp_path)
-
-        def _fake_writer(project_root, *, trigger, **kw) -> None:
-            # Simulate cascade failure: log error, exit 0, no script.
-            (project_root / ".debrief").mkdir(parents=True, exist_ok=True)
-            (project_root / ".debrief" / "script_errors.jsonl").write_text(
-                '{"error_class":"RuntimeError"}\n', encoding="utf-8"
-            )
-            raise SystemExit(0)
-
-        with patch.object(launcher, "main_script_writer", side_effect=_fake_writer):
+        else:
             with pytest.raises(SystemExit) as ei:
                 utility_skills.main_handout("2up", tmp_path)
-        assert ei.value.code == 0
-        # No PDF written — handout was skipped.
-        out_dir = tmp_path / "output" / "handouts"
-        if out_dir.exists():
-            assert not list(out_dir.glob("handout_v*.pdf"))
+        assert ei.value.code == 2, (
+            f"BC-11.16 (BUG-AUDIT-103): missing speaker_script.md must "
+            f"exit 2, not 0; got {ei.value.code}"
+        )
+
+    def test_main_handout_does_not_import_main_script_writer(
+        self, tmp_path: Path
+    ) -> None:
+        """BC-11.16 (BUG-AUDIT-103): the auto-cascade import is gone.
+        Inspect main_handout's module source (not the test runtime —
+        we already mock launcher above) for the `from launcher import
+        main_script_writer` line that pre-103 used."""
+        import inspect
+        src = inspect.getsource(utility_skills.main_handout)
+        assert "from launcher import main_script_writer" not in src, (
+            "BUG-AUDIT-103 regression: main_handout still imports "
+            "main_script_writer for the auto-cascade. The cascade is "
+            "retired; the import should be gone."
+        )
 
     def test_existing_script_skips_cascade(self, tmp_path: Path) -> None:
         """When speaker_script.md already exists, the handout does

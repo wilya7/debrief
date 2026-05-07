@@ -495,22 +495,6 @@ You may see the consultant report something like *"Hook blocked the memory write
 
 If you see this message, the consultant in newer plugin versions (post-BUG-AUDIT-92) will silently re-route the action to the appropriate debrief CLI. If you are on an older plugin and see it interrupt your flow, the safe response is "continue" — your project memory is fine.
 
-### Pre-v1.2 silent /debrief:script failure
-
-If you installed an older version of debrief (before BUG-AUDIT-93 fix) and `/debrief:script` exited silently with no output, the cause is almost certainly that the `anthropic` SDK was not declared as a dependency and is therefore missing from your conda env. This also affects the rewriter (the agent that synthesizes `deck_brief.md`). The fix in this version of debrief declares `anthropic>=0.40` in both `pyproject.toml` and `environment.yml` and the bootstrap smoke test now catches a missing SDK on `bin/debrief` startup. To recover an existing install:
-
-```bash
-debrief --rebuild-env
-```
-
-Or, if you prefer not to rebuild the whole env:
-
-```bash
-/Users/<you>/anaconda3/envs/debrief/bin/pip install 'anthropic>=0.40'
-```
-
-After install, retry `/debrief:script`. You may also want to run `/debrief:refresh-brief` once to populate any `deck_brief.md` that the rewriter previously failed to synthesize.
-
 ### Paper PDF not archived / `assets/reference/papers/` is empty
 
 The deterministic paper pipeline was bypassed — typically because the trigger detection missed your file (drag-and-drop, bare filename, or verbal mention without a path). Recovery:
@@ -522,28 +506,22 @@ The deterministic paper pipeline was bypassed — typically because the trigger 
 
 See "When paper handling goes off-script" above.
 
-### `/debrief:script` exits with "authentication failed"
+### Legacy SDK paths and the optional `sdk_fallback` extras
 
-Post–BUG-AUDIT-98, when `/debrief:script` (or the rewriter) cannot authenticate to the Anthropic API, you'll see a one-line stderr message of the form:
+As of BUG-AUDIT-101 / -102 / -103, the canonical user flows (`/debrief:refresh-brief`, `/debrief:script`, `/debrief:handout`, the deck-complete-finalization cascade, the PreCompact hook with deferred synthesis) all route through Claude Code's `Task` tool and use **Claude Code's session credential** (OAuth or whatever you authenticated with). **No `ANTHROPIC_API_KEY` is required for any of these.**
 
+The launcher retains a few **legacy direct-SDK paths** as documented dead-code-with-tests:
+- `python -m debrief.launcher script_writer` invoked directly (with no consultant orchestration).
+- `python -m debrief.launcher rewrite_brief --trigger /debrief:refresh-brief` invoked directly (the consultant uses `build_rewrite_prompt` + `Task` + `write_brief` instead).
+- `python -m debrief.launcher script_writer --trigger /debrief:handout-cascade` invoked directly (the pre-103 auto-cascade — `main_handout` no longer auto-invokes this; the consultant handles the precondition self-heal at orchestration time).
+
+These legacy paths exist for users who explicitly want SDK direct calls (e.g., CI environments where Task isn't available) or as fallback if Claude Code's `Task` OAuth-inheritance behavior changes upstream. They require the `anthropic` SDK, which is now an **optional/extras dep** (BC-1.18a). To enable them:
+
+```bash
+pip install '.[sdk_fallback]'
 ```
-/debrief:script: anthropic API authentication failed; set ANTHROPIC_API_KEY in the environment and retry. Details logged to .debrief/script_errors.jsonl.
-```
 
-Direct invocation of `/debrief:script` exits with code 2 in that case so the failure is visible; cascades from the deck-complete-finalization sequence keep exit 0 so the next step (e.g., handout) still runs.
-
-**Recovery:**
-
-1. Check that `ANTHROPIC_API_KEY` is set in the environment from which Claude Code launches:
-   ```bash
-   echo $ANTHROPIC_API_KEY | head -c 10
-   ```
-   If empty, export it (e.g., in your shell profile) and restart Claude Code so the new value is inherited by the conda subprocess.
-2. If the key is set but invalid, the SDK raises an `AuthenticationError` (HTTP 401). Same recovery — set a valid key.
-3. Inspect `.debrief/script_errors.jsonl` (or `.debrief/rewrite_errors.jsonl` for the rewriter) for the captured failure detail.
-4. After fixing the credential, re-run `/debrief:script` (or `/debrief:refresh-brief` for the rewriter).
-
-Pre–BUG-AUDIT-98 versions silently exited 0 with no console output on auth failure. If you're on an older plugin and `/debrief:script` is silent, the actual cause is likely auth — read `.debrief/script_errors.jsonl`.
+Then set `ANTHROPIC_API_KEY` in the environment from which you invoke them. The BUG-AUDIT-93 / BUG-AUDIT-98 missing-module + auth-error stderr lines still fire on the legacy paths if the SDK is missing or the credential is invalid; they're not user-visible on canonical paths.
 
 ### Handout shows "(no notes available)" on every slide
 
@@ -612,7 +590,16 @@ To remove debrief from a project:
 | `python-pptx` | >=0.6.21 | PPTX assembly from rendered slides |
 | `PyMuPDF` | >=1.23 | PDF parsing and figure extraction (paper_analyzer) |
 | `json-repair` | >=0.25 | Fault-tolerant JSON parsing for LLM-generated state |
-| `anthropic` | >=0.40 | Anthropic SDK — used by the rewriter and script-writer agents (BUG-AUDIT-93) |
+
+### Optional dependencies
+
+The `anthropic` Python SDK was a required dependency in v1.x but was demoted to optional in BUG-AUDIT-103 once the rewriter and script-writer were routed through Claude Code's `Task` tool (cycles 101–102). It is **not** installed by default. Users who want the legacy direct-SDK paths (e.g., `python -m debrief.launcher script_writer` invoked directly) install with:
+
+```bash
+pip install '.[sdk_fallback]'
+```
+
+The `sdk_fallback` extras key adds `anthropic>=0.40`. Most users do not need to install it — the canonical user flows do not call the SDK directly.
 
 ### System dependencies (user-installed)
 
