@@ -2,6 +2,129 @@
 
 All notable changes to debrief are documented in this file.
 
+## [Unreleased] - 2026-05-07
+
+### Handout parser tolerance + degradation warning (BUG-AUDIT-100)
+
+Field-reported via the journal-club orchestrating session: `/debrief:handout` produced PDFs with `(no notes available)` in every slide cell despite a well-formed `speaker_script.md` in the project. Root cause: `_load_speaker_script`'s regexes only matched the script-writer agent's strict canonical form (`## Slide N: <title>` + `**Slug:** \`<slug>\``), and the user's hand-finalized script used em-dash separators and italic slug markers with budget metadata — both valid markdown but rejected by the parser. The handout exited 0 with no warning; the user discovered the degradation only by opening the PDF.
+
+### Added (BUG-AUDIT-100)
+- `_emit_handout_degradation_warning` helper that fires when `_load_speaker_script` returns `None` (zero matches) OR placeholder ratio ≥ 50%. Emits a one-line stderr warning naming the count, the diagnosed reason (one of: `speaker_script.md is missing` / `... is empty` / `... matched zero sections` / `slug/title mismatch`), and the expected grammar.
+- `.debrief/handout_warnings.jsonl` log — appended one JSON entry per degraded run, recording timestamp, mode, total/placeholder counts, script presence, parsed-section count, and the first unmatched `## Slide` header line for diagnosis.
+- `_first_unmatched_handout_header` helper exposed for the JSONL log + future tooling.
+- 19 regression tests across header tolerance (4 separators), slug tolerance (3 marker shapes + trailing metadata), field-scenario end-to-end (full 11-slide em-dash + italic script), strict-grammar regression (BUG-AUDIT-68 cases still parse), and warning emission (4 trigger paths).
+
+### Changed (BUG-AUDIT-100)
+- Header regex relaxed from `r"^##\s+Slide\s+\d+\s*(?:\(backup\))?\s*:\s*(.+?)\s*$"` to `r"^##\s+Slide\s+\d+\s*(?:\(backup\))?\s*[:—–\-]\s*(.+?)\s*$"` — accepts `:`, em-dash (U+2014), en-dash (U+2013), or hyphen as the separator.
+- Slug regex relaxed from `r"^\*\*Slug:\*\*\s*\`([^\`]+)\`\s*$"` to `r"^\s*\*?\*?\s*Slug:\s*\*?\*?\s*\`([^\`]+)\`"` — accepts bold (`**Slug:**`), italic (`*Slug:`), or plain (`Slug:`) marker styles, and tolerates trailing content after the backticked slug (no `$` anchor).
+- BC-11.15a amended with the new tolerant grammar; new BC-11.15c codifies the degradation-warning emission contract.
+
+### Fixed (BUG-AUDIT-100)
+- The exact field scenario (em-dash headers + italic slug markers with `· Budget: 0:20`) now parses cleanly. Re-running `/debrief:handout` against the user's project produces 22 mappings (11 slugs + 11 titles) with full notes content per cell.
+
+---
+
+## [Unreleased] - 2026-05-07
+
+### `doctor --phase-audit` mode + Doctor Discipline section (BUG-AUDIT-99)
+
+Field-reported via the journal-club orchestrating session: after 11 approved slides were authored, `debrief_state.phase` stayed at `"discovery"`. `/debrief:view` then branched on `phase != "production"` and emitted *"No slides yet. The view becomes available once slide production begins in Phase 3."* despite real slides on disk. Phase advancement is consultant-driven by design (no automatic trigger), but there was no audit to detect when it had been skipped — and no prescribed routine for the consultant to catch its own drift.
+
+### Added (BUG-AUDIT-99)
+- `debrief doctor --phase-audit` mode (BC-3.16 amendment). Detects three drift signals: approved slides exist but `phase == "discovery"`; `style_locked` is True but `phase == "discovery"` and `sub_phase != "discovery/style_analysis"`; `phase == "production"` but `sub_phase == "production/group_planning"` despite approved slides. Each drift entry in the JSON `notes` field includes a copy-pasteable `python -m debrief.debrief_state update --set sub_phase=... --project-root <path>` recovery command. Reported via exit code 1, mirroring `--brief-audit` and `--asset-audit`.
+- `_audit_phase` helper in `launcher.py`.
+- New `## Doctor Discipline` section in `agents/consultant.md` (BC-5.25). Prescribes routine `doctor` invocation at four run-points: at session start (compaction recovery), after every successful slide-maker dispatch returns, before any read-state command (`/debrief:view`, `/debrief:export`, `/debrief:script`), and before phase transitions. Documents the surface-then-apply recovery loop (read drift report → surface to user → apply recovery command → re-run doctor → proceed).
+- 14 regression tests covering argparse registration, drift detection (each of three signals + 3 clean-state cases), `main_doctor` exit-code integration, and consultant-card discipline content.
+
+### Changed (BUG-AUDIT-99)
+- BC-3.16 amended with the new audit mode; BC-5.25 added codifying the Doctor Discipline contract for `agents/consultant.md`.
+
+### Fixed (BUG-AUDIT-99)
+- The user's exact field scenario: `_audit_phase` now flags 11-approved-slides + `phase=="discovery"` and surfaces the recovery command in the doctor's `notes`. With the new Doctor Discipline section, the consultant runs the audit automatically before `/debrief:view` would otherwise misreport "no slides yet."
+
+---
+
+## [Unreleased] - 2026-05-07
+
+### Anthropic auth-error stderr + script-writer agent-card constraint (BUG-AUDIT-98)
+
+Field-reported via the same journal-club session: `/debrief:script` exited silently with no output when `ANTHROPIC_API_KEY` was unset. Root cause: BUG-AUDIT-93 wired actionable stderr emission for the missing-SDK case (`ModuleNotFoundError`) but the classifier `_is_anthropic_module_error` only catches that one exception class. Anthropic's `Anthropic()` constructor raises `TypeError` ("Could not resolve authentication method") when no credential is in the environment, and `AuthenticationError` (HTTP 401) when a credential is invalid — both fell through the classifier into the silent `sys.exit(0)` branch. The user saw a successful run that produced no `speaker_script.md`.
+
+### Added (BUG-AUDIT-98)
+- `_is_anthropic_auth_error` classifier detecting two cases without hard-importing the SDK: (1) `TypeError` whose stringified message contains `"could not resolve authentication"` (case-insensitive), (2) any exception whose class name is `"AuthenticationError"`.
+- `_emit_anthropic_auth_missing_stderr(command, *, log_path)` emitter — single actionable line: `"<command>: anthropic API authentication failed; set ANTHROPIC_API_KEY in the environment and retry. Details logged to <log_path>."`. Parameterised log path accommodates `.debrief/script_errors.jsonl` (script-writer) and `.debrief/rewrite_errors.jsonl` (rewriter).
+- New BC-3.20a codifies the script-writer agent-card invocation-mode constraint: `agents/script-writer.md` documents that `python -m debrief.launcher script_writer` (via the consultant's Bash tool) is the canonical invocation, and direct `Task`-tool dispatch with a free-form prompt is unsupported.
+- 16 regression tests covering classifier (6 cases), emitter (2 contexts), end-to-end script-writer flow (4 trigger/exception combinations), unrelated errors stay silent, rewriter exits 0 unconditionally, and agent-card constraint sentence is present.
+
+### Changed (BUG-AUDIT-98)
+- BC-3.18 (rewriter CLI) and BC-3.20 (script-writer CLI) further amended with the auth-error stderr branch — preserving BUG-AUDIT-93's exit-code asymmetry: direct `/debrief:script` exits 2 on auth failure; cascades exit 0; rewriter always exits 0 (PreCompact must never block compaction).
+- `agents/script-writer.md` `## Inputs` section gains an opening note clarifying the canonical invocation. Free-form `Task`-tool dispatch produces empty output by design (the source-traceability guardrail rejects claims without structured input blocks); the new note tells the caller to invoke via the launcher CLI.
+
+### Fixed (BUG-AUDIT-98)
+- `/debrief:script` and `/debrief:refresh-brief` now produce a clear stderr line on auth failure naming `ANTHROPIC_API_KEY` and the JSONL log path. No more silent exit 0 on the most common Anthropic failure mode.
+
+---
+
+## [Unreleased] - 2026-05-07
+
+### `update_slide` CLI implementation (BUG-AUDIT-97)
+
+Field-reported via the same session: after 11 slides were authored, `deck_state.slides[]` was `[]`. The consultant agent card (`agents/consultant.md:33`, BC-5.17 / REQ-CONSULT-SLIDE-WT-1) instructs the consultant to register every GREEN-QA slide via `python -m debrief.debrief_state update_slide …` in the same turn. The consultant followed the documented protocol verbatim, but the CLI did not exist — `debrief_state.py`'s argparse dispatcher registered only `update` and `append_ledger`. Every slide-registration call produced `argparse: invalid choice: 'update_slide'` and the slide write-through silently failed.
+
+### Added (BUG-AUDIT-97)
+- `python -m debrief.debrief_state update_slide --slug <slug> [--title <text>] [--status {draft|approved|needs_revision|discarded}] [--backup ...] [--content-summary ...] [--visual-approach ...] [--design-choices ...] [--forks-not-taken ...] [--user-recommendations ...] [--qa-passed ...] [--accepted-violations <json>] [--group-id ...] [--user-assets <json>] [--has-math ...] [--project-root <path>]` — upserts a `SlideRecord` in `deck_state.json`. Partial update on existing slugs (only passed fields touched); create on new slugs (`--title` required for creates). Auto-sets `last_modified`. JSON parsing for list-shaped fields. Atomic write via `write_deck_state`. New BC-2.20 codifies the contract.
+- `SLIDE_STATUS_VALUES` frozenset constant and `_coerce_bool` helper.
+- 13 regression tests across subcommand registration, create path, update path, validation (status enum + JSON shape), JSON-parsing for list fields, last_modified auto-update, and idempotence.
+
+### Changed (BUG-AUDIT-97)
+- Argparse dispatcher in `debrief_state.py` extended from 2 subcommands (`update`, `append_ledger`) to 3 (`update_slide` added).
+- BC-5.17 (consultant slide-record write-through) clarified — the previously-broken `…` placeholder in the documented invocation now points at a concrete contract.
+
+### Fixed (BUG-AUDIT-97)
+- The consultant's documented slide-registration protocol works end-to-end. Pre-fix: 0 of 11 slides registered. Post-fix: every GREEN-QA call lands a real `SlideRecord` in the same turn, closing the BUG-AUDIT-75 write-through gap.
+
+---
+
+## [Unreleased] - 2026-05-07
+
+### `bin/debrief --rebuild-env` robustness — surface stderr, post-check by listing, retire `--force` (BUG-AUDIT-96)
+
+Field-reported via the journal-club session: `debrief --rebuild-env` failed with `ERROR: Failed to remove the debrief conda env. Run \`conda env remove -n debrief --force\` manually, then retry \`debrief --rebuild-env\`.` The user followed the hint and got `conda: error: unrecognized arguments: --force` — the `--force` flag was removed from `conda env remove` between conda 22.x and 25.x, so on `conda 25.7.0` the suggested manual command does not exist. Plus, the script suppressed conda's actual stderr via `2>/dev/null`, so the real failure mode was invisible.
+
+### Added (BUG-AUDIT-96)
+- BC-1.20 codifies the `--force`-free + stderr-surfacing + post-check-by-listing trio.
+- 8 regression tests across no-`--force`-anywhere, no-stderr-suppression on `conda env remove` lines, recovery-hint references `rm -rf "$(conda info --base)/envs/debrief"`, post-check via `conda env list | grep -qx debrief` exists in both branches, and echo-escape rendering is correct.
+
+### Changed (BUG-AUDIT-96)
+- `bin/debrief` `--rebuild-env` branch and partial-env cleanup branch (a) drop the `2>/dev/null` redirect on `conda env remove` so conda's actual error message reaches the user, (b) verify env absence post-remove via `conda env list | awk '{print $1}' | grep -qx debrief` rather than trusting the remove's exit code (which differs across conda versions), (c) replace the stale `conda env remove -n debrief --force` recovery hint with `rm -rf "$(conda info --base)/envs/debrief"` — a filesystem operation that doesn't depend on conda CLI flag stability.
+- Spec recovery hints in §24.4 (4 places) and §9.4 (1 place) updated to the new `rm -rf` form. The historical BUG-AUDIT-3b transcript at §24.4 retained verbatim as a record of the pre-fix state.
+
+### Fixed (BUG-AUDIT-96)
+- Users who hit a partial-env or rebuild-env failure now see conda's stderr (so they can diagnose the real cause) and a recovery hint that actually works on modern conda.
+
+---
+
+## [Unreleased] - 2026-05-07
+
+### `bin/debrief` preflight subcommand validation (BUG-AUDIT-95)
+
+Field-reported via the journal-club session: the user invoked `debrief` (no args) in a non-project directory intending to start a new project, expecting the spec'd `"No project found in the current directory. Run 'debrief new' to create one."` error. Instead they got the §9.3.1 env-corruption error and a `debrief --rebuild-env` recovery hint (a 5–15 minute env rebuild). The user's actual mistake was forgetting the `new` subcommand; the env error misrouted them entirely.
+
+Root cause: `bin/debrief` step 5.5 (post-activation smoke test) ran before step 9 (subcommand dispatch). Any non-pristine env state — including the post-BUG-AUDIT-93 case where `environment.yml` declared `anthropic` but the user's existing env hadn't been rebuilt yet — triggered the env-corruption error first, regardless of what subcommand the user typed.
+
+### Added (BUG-AUDIT-95)
+- BC-1.19 codifies the preflight-before-env-checks ordering contract.
+- A "Preflight subcommand validation" block in `bin/debrief` (delimited by `# BEGIN preflight subcommand validation` / `# END preflight subcommand validation`), running immediately after the `--rebuild-env` handler and before step 1 (conda detection). Uses only bash builtins (`[[ ]]`, `case`) — no conda or Python invocation.
+- 14 regression tests across structural assertions (preflight precedes smoke test, precedes conda detection, follows `--rebuild-env`, contains the canonical error strings, uses only bash builtins, late dispatch retains the same strings as defense-in-depth fallback) and behavioral end-to-end (no-args + no project emits the spec'd error; unknown subcommand emits usage; bare invocation in a project falls through to env activation; `new` falls through to env activation).
+
+### Changed (BUG-AUDIT-95)
+- Spec §24.4 reordered to introduce step 0.5 (preflight subcommand validation) explicitly. The error strings emitted by the preflight are byte-identical to the corresponding strings in the late case-dispatch (step 9) so any future code path that bypasses the preflight still produces consistent output.
+
+### Fixed (BUG-AUDIT-95)
+- Users who type `debrief` (no args) in a non-project directory now get `ERROR: No project found in the current directory. Run 'debrief new' to create one.` and exit 1 — without conda activation, without the smoke test, without misrouting through the env-rebuild flow. Same for unknown subcommands: `Usage: debrief [new|--rebuild-env]` and exit 1, before any env work.
+
+---
+
 ## [Unreleased] - 2026-05-05
 
 ### Asset usage audit + paper archival recovery (BUG-AUDIT-94)

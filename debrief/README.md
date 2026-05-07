@@ -10,7 +10,7 @@ What debrief actually does:
 - **Project-scoped memory.** The dialog archive (`.debrief/dialog.jsonl`), event timeline (`output/timeline.jsonl`), deck brief (`deck_brief.md`), and audience roster (`output/audience.yaml`) survive context compaction. The `rewriter` agent consolidates them automatically.
 - **Deliverables.** Versioned deck PDF, print-optimized handout PDF, presenter speaker script, and a browser-based full-screen presentation mode.
 - **12 namespaced slash commands** (`/debrief:slide`, `/debrief:style`, `/debrief:export`, `/debrief:handout`, `/debrief:script`, `/debrief:present`, `/debrief:view`, `/debrief:save`, `/debrief:restore`, `/debrief:refresh-brief`, `/debrief:archive-paper`, `/debrief:quit`).
-- **`debrief doctor` diagnostics** with three audit modes: slide-state, brief-state, asset-state.
+- **`debrief doctor` diagnostics** with four audit modes: slide-state, brief-state, asset-state, phase-state.
 
 ---
 
@@ -433,7 +433,18 @@ A complete debrief session produces these artifacts:
 | Archived papers | `assets/reference/papers/<slug>/<original.pdf>` | `paper_analyzer` | Source PDFs — never modified. |
 | Extracted figures | `assets/reference/papers/<slug>/figures/fig_<N>.png` | `paper_analyzer` | Cropped per-figure PNGs at source resolution. |
 
-Snapshots (`/debrief:save --label <name>`) are stored under `.debrief/snapshots/` and contain a copy of `deck_state.json`, `ledger.jsonl`, and the current `slides/` HTML. `/debrief:restore --label <name>` rolls those three surfaces back; everything else (style, brief, assets, output) is left untouched.
+Snapshots (`/debrief:save [label]`) are stored under `output/snapshots/<label>/` and contain a copy of `deck_state.json` and `ledger.jsonl` only — the slide HTML files, brief, style, speaker script, and assets are NOT included. `/debrief:restore <label>` rolls back only those two files; on restore, any `slides/*.html` whose slug is no longer in the restored `deck_state.json` is also swept (deleted as orphan).
+
+### Save and Restore — when to use, what's covered
+
+Save and restore are a **deck-content rollback** mechanism, deliberately scoped narrower than a full project archive. Use them as a checkpoint discipline around risky changes to the slide manifest.
+
+- **Use `/debrief:save [label]` before risky restructuring** of deck content — bulk slide reordering, mass discards, or large revisions you want a way out of. Without an explicit label, the snapshot is named with a `YYYYMMDD_HHMMSS` timestamp. Custom labels are sanitized (lowercased, alphanumerics + `_` + `-`, max 50 chars) per BC-11.9; collisions get a `_2`, `_3`, ... suffix.
+- **Use `/debrief:restore` (no argument) to list available snapshots**, or `/debrief:restore <label>` to roll back. Every restore is itself reversible: before overwriting, the command auto-saves your current state as `pre_restore_<timestamp>` so you can restore back to it if you regret the rollback.
+- **What restore does NOT touch** (deliberate scope from REQ-RESTORE-3): `CLAUDE.md`, `debrief_state.json`, `style_config.json`, `style_guide.md`, `deck_brief.md`, `.debrief/`, `assets/`, `output/` (except the auto-save it writes). Style decisions, the canonical brief, dialog history, papers, and prior export folders all survive a restore — only deck content (slide manifest + optionally the ledger) rolls back.
+- **For a full project archive** (e.g., end-of-project bundle including slides, scripts, briefs, exports, and assets), use a regular `tar` of the project directory excluding `output/snapshots/` itself. Save/restore is not the right tool for that — it's a content-rollback checkpoint, not a backup.
+
+Full contracts: `commands/save.md`, `commands/restore.md`, spec REQ-SAVE-1/2/3 and REQ-RESTORE-1/2/3/4, blueprint BC-11.9 / BC-11.10 / BC-11.11 / BC-11.12, BUG-AUDIT-22 (rationale for the rename from `/debrief:reset` to `/debrief:restore`).
 
 ---
 
@@ -445,13 +456,14 @@ Snapshots (`/debrief:save --label <name>`) are stored under `.debrief/snapshots/
 debrief doctor --project-root .
 ```
 
-Three audit modes (composable):
+Four audit modes (composable):
 
 | Flag | What it checks | Drift signals |
 |---|---|---|
 | (default) | Slide-state — `slides/*.html` files vs. `deck_state.json` slide records | orphan HTML files, orphan SlideRecord entries |
 | `--brief-audit` | Memory architecture — brief presence + structure + roster YAML validity + watermark alignment + rewrite staleness | invalid brief, invalid roster, drift between dialog-archive watermark and last rewrite |
 | `--asset-audit` | Asset usage — paper handling, REQ-ASSET-1 slug-prefix compliance, event/state consistency | paper-figure-shaped files in `assets/images/` while `assets/reference/papers/` is empty; `papers_provided` flag mismatch; missing `paper_attached` events; image files lacking `<slug>_` prefix |
+| `--phase-audit` | Phase advancement — `debrief_state.phase` / `sub_phase` against `deck_state.slides[]` and `style_locked` | approved slides exist but `phase == "discovery"`; style locked but `phase == "discovery"` and `sub_phase` not advanced; `phase == "production"` but `sub_phase` stuck at `production/group_planning` despite approved slides |
 
 Exit codes:
 
@@ -465,7 +477,9 @@ Combine flags for a comprehensive check:
 debrief doctor --project-root . --brief-audit --asset-audit
 ```
 
-`--reconstruct` is the only remediation flag. It applies to slide-state drift only — appends minimal draft `SlideRecord` entries for orphan HTML files. Brief-side and asset-side drift are read-only by design; remediation requires explicit user action (e.g., `/debrief:refresh-brief` or `/debrief:archive-paper`).
+`--reconstruct` is the only remediation flag. It applies to slide-state drift only — appends minimal draft `SlideRecord` entries for orphan HTML files. Brief-side, asset-side, and phase-side drift are read-only by design; remediation requires explicit user action (e.g., `/debrief:refresh-brief`, `/debrief:archive-paper`, or `python -m debrief.debrief_state update --set sub_phase=...`).
+
+**Routine invocation (BC-5.25 Doctor Discipline).** The consultant runs `doctor` automatically at four prescribed run-points: at session start (compaction recovery), after every successful slide-maker dispatch returns, before any read-state command (`/debrief:view`, `/debrief:export`, `/debrief:script`), and before phase transitions. When drift is reported, the consultant surfaces a one-line summary to you, applies the recovery command from the audit's `notes`, and re-runs `doctor` to confirm clean before proceeding. You can run `doctor` yourself at any time as a sanity check — the consultant's routine invocation is additive, not exclusive.
 
 ---
 
@@ -508,6 +522,47 @@ The deterministic paper pipeline was bypassed — typically because the trigger 
 
 See "When paper handling goes off-script" above.
 
+### `/debrief:script` exits with "authentication failed"
+
+Post–BUG-AUDIT-98, when `/debrief:script` (or the rewriter) cannot authenticate to the Anthropic API, you'll see a one-line stderr message of the form:
+
+```
+/debrief:script: anthropic API authentication failed; set ANTHROPIC_API_KEY in the environment and retry. Details logged to .debrief/script_errors.jsonl.
+```
+
+Direct invocation of `/debrief:script` exits with code 2 in that case so the failure is visible; cascades from the deck-complete-finalization sequence keep exit 0 so the next step (e.g., handout) still runs.
+
+**Recovery:**
+
+1. Check that `ANTHROPIC_API_KEY` is set in the environment from which Claude Code launches:
+   ```bash
+   echo $ANTHROPIC_API_KEY | head -c 10
+   ```
+   If empty, export it (e.g., in your shell profile) and restart Claude Code so the new value is inherited by the conda subprocess.
+2. If the key is set but invalid, the SDK raises an `AuthenticationError` (HTTP 401). Same recovery — set a valid key.
+3. Inspect `.debrief/script_errors.jsonl` (or `.debrief/rewrite_errors.jsonl` for the rewriter) for the captured failure detail.
+4. After fixing the credential, re-run `/debrief:script` (or `/debrief:refresh-brief` for the rewriter).
+
+Pre–BUG-AUDIT-98 versions silently exited 0 with no console output on auth failure. If you're on an older plugin and `/debrief:script` is silent, the actual cause is likely auth — read `.debrief/script_errors.jsonl`.
+
+### Handout shows "(no notes available)" on every slide
+
+Post–BUG-AUDIT-100, if a `/debrief:handout` run produces a PDF where every slide cell shows `(no notes available)` despite a real `speaker_script.md` in the project, the handout's parser failed to match your script's grammar. Indicators:
+
+- A stderr warning at the end of the handout run: `WARNING: N/N handout slides used the '(no notes available)' placeholder. <reason>. Expected grammar: '## Slide N: <title>' (':', em-dash, en-dash, or hyphen separator) with 'Slug: \`<slug>\`' marker (optionally bold or italic).`
+- A JSON entry in `.debrief/handout_warnings.jsonl` recording mode, slide count, placeholder count, and the first unmatched `## Slide` line.
+
+**Accepted grammar (BC-11.15a, amended).** The handout parser accepts:
+
+- Header separator: `:`, em-dash (`—`), en-dash (`–`), or hyphen (`-`). Example: `## Slide 1 — Title + frame` parses identically to `## Slide 1: Title + frame`.
+- Slug marker: `**Slug:** \`<slug>\`` (bold), `*Slug: \`<slug>\`*` (italic), or plain `Slug: \`<slug>\``. Trailing metadata after the backticked slug (e.g., `· Budget: 0:20`) is tolerated.
+
+**Recovery:**
+
+1. If you hand-authored the script and used a header shape outside the accepted set, edit the offending headers to one of the accepted forms. The first unmatched header is named in the JSONL entry above, so you don't have to scan the whole file.
+2. If `speaker_script.md` was generated by `/debrief:script`, regenerating it will produce the canonical strict form which always parses: `/debrief:script` (or `/debrief:refresh-brief` first, then `/debrief:script`).
+3. Re-run `/debrief:handout` after fixing.
+
 ### Other troubleshooting
 
 **"Style config not yet locked" error:**
@@ -526,7 +581,7 @@ Ensure the debrief conda environment is active. The `jq` utility is required by 
 On first use, Playwright may need to download its browser binaries. This happens automatically; ensure you have internet access for the initial setup.
 
 **Stale state across sessions:**
-Run `debrief doctor --project-root . --brief-audit --asset-audit` to identify drift. The doctor's JSON output names the specific surface that's out of sync.
+Run `debrief doctor --project-root . --brief-audit --asset-audit --phase-audit` to identify drift. The doctor's JSON output names the specific surface that's out of sync; each `notes` entry includes a copy-pasteable recovery command.
 
 ---
 
