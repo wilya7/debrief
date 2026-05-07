@@ -1815,6 +1815,327 @@ def main_script_writer(
 
 
 # ---------------------------------------------------------------------------
+# BUG-AUDIT-102: script-writer Task-dispatch CLIs.
+#
+# `main_build_script_prompt` and `main_write_script` split the legacy
+# `main_script_writer` synthesis path so the consultant can dispatch the
+# model call via Claude Code's `Task` tool (using the session's OAuth
+# credential) instead of via the launcher's direct SDK call. The
+# `/debrief:handout-cascade` trigger remains on the legacy
+# `main_script_writer` direct-SDK path until cycle 103 cleanup. See
+# BUG-AUDIT-102 spec entry for the full rationale.
+# ---------------------------------------------------------------------------
+
+_SCRIPT_DRAFT_REL = ".debrief/draft/refresh_script.md"
+
+
+def main_build_script_prompt(project_root: Path) -> None:
+    """Entry point for ``python -m debrief.launcher build_script_prompt
+    --project-root <path>`` (BC-3.20b / BUG-AUDIT-102).
+
+    Reads project state (brief + audience + timeline + dialog + slides
+    + existing speaker_script as co-writer baseline) and emits the
+    structured user-message body to stdout, with the same 200K-token
+    dialog truncation as today's launcher.
+
+    Read-only. No model call. No file writes.
+
+    Exit codes: 0 on success; 1 only when the deck has zero approved
+    main (non-backup) slides — the same precondition that today's
+    `main_script_writer` enforces (the script-writer's prompt has
+    nothing to script otherwise).
+    """
+    project_root = project_root.resolve()
+
+    brief_path = project_root / _DECK_BRIEF_REL
+    deck_brief_text = ""
+    if brief_path.is_file():
+        try:
+            deck_brief_text = brief_path.read_text(encoding="utf-8")
+        except OSError:
+            deck_brief_text = ""
+
+    audience_yaml_text = read_audience_yaml(project_root)
+    timeline = read_event_timeline(project_root)
+    dialog = read_dialog_archive(project_root)
+
+    try:
+        from debrief_state import read_deck_state  # type: ignore[import]
+        deck_state = read_deck_state(project_root)
+    except Exception:  # noqa: BLE001
+        # Same precondition shape as main_script_writer's deck_state
+        # read failure: log nothing, exit non-zero, the caller decides
+        # what to do. The consultant's dispatch protocol surfaces a
+        # one-line message in this case.
+        sys.exit(1)
+
+    approved = [s for s in deck_state.slides if s.status == "approved"]
+    main_approved = [s for s in approved if not s.backup]
+    if not main_approved:
+        # No script to generate. Exit 1 so the consultant's Bash chain
+        # halts before the Task dispatch (no point in dispatching
+        # against an empty deck). This mirrors the precondition error
+        # in main_script_writer line 1619-1626.
+        print(
+            "build_script_prompt: no approved main (non-backup) slides — "
+            "cannot generate script.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    slides_data: list[dict] = []
+    for s in approved:
+        slides_data.append({
+            "slug": s.slug,
+            "title": s.title,
+            "content_summary": s.content_summary or "",
+            "visual_approach": s.visual_approach or "",
+            "design_choices": s.design_choices or "",
+            "user_assets": list(s.user_assets or []),
+            "backup": bool(s.backup),
+        })
+
+    existing_speaker_script = read_speaker_script(project_root)
+
+    # Dialog truncation pass (mirrors main_script_writer step 6).
+    fixed_inputs = build_script_writer_inputs(
+        deck_brief_text=deck_brief_text,
+        audience_yaml_text=audience_yaml_text,
+        timeline=timeline,
+        dialog=[],
+        slides_data=slides_data,
+        existing_speaker_script=existing_speaker_script,
+    )
+    truncated_dialog = truncate_dialog_to_token_cap(
+        dialog, fixed_inputs, cap_tokens=_SCRIPT_WRITER_TOKEN_CAP
+    )
+    user_message = build_script_writer_inputs(
+        deck_brief_text=deck_brief_text,
+        audience_yaml_text=audience_yaml_text,
+        timeline=timeline,
+        dialog=truncated_dialog,
+        slides_data=slides_data,
+        existing_speaker_script=existing_speaker_script,
+    )
+
+    sys.stdout.write(user_message)
+    sys.exit(0)
+
+
+def main_write_script(
+    project_root: Path,
+    *,
+    trigger: str = "/debrief:script",
+    draft_path: Optional[Path] = None,
+) -> None:
+    """Entry point for ``python -m debrief.launcher write_script
+    --project-root <path> --trigger <t> [--draft-path <path>]``
+    (BC-3.20c / BUG-AUDIT-102).
+
+    Reads the script-writer agent's markdown output from ``draft_path``
+    (default ``.debrief/draft/refresh_script.md``), runs the same six
+    guardrails as ``main_script_writer`` (three blockers + two
+    warnings), performs backup-before-overwrite per BC-11.20, atomically
+    writes ``speaker_script.md``, emits the ``script_done`` timeline
+    event, removes the draft.
+
+    Always exits 0 — REQ-SCRIPT-WRITER-2 unchanged. Failures log to
+    ``.debrief/script_errors.jsonl`` per the existing schema.
+    """
+    project_root = project_root.resolve()
+    if draft_path is None:
+        draft_path = project_root / _SCRIPT_DRAFT_REL
+
+    # 1. Read the agent's markdown.
+    if not draft_path.is_file():
+        log_script_error(
+            project_root,
+            trigger=trigger,
+            error_class="draft_missing",
+            error_message=f"draft script not found at {draft_path}",
+        )
+        sys.exit(0)
+    try:
+        response_text = draft_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        log_script_error(
+            project_root,
+            trigger=trigger,
+            error_class="draft_read_error",
+            error_message=str(exc),
+        )
+        sys.exit(0)
+    if not response_text.strip():
+        log_script_error(
+            project_root,
+            trigger=trigger,
+            error_class="draft_empty",
+            error_message=f"draft script at {draft_path} is empty",
+        )
+        sys.exit(0)
+
+    # 2. Re-load project state needed for validators.
+    brief_path = project_root / _DECK_BRIEF_REL
+    deck_brief_text = ""
+    if brief_path.is_file():
+        try:
+            deck_brief_text = brief_path.read_text(encoding="utf-8")
+        except OSError:
+            deck_brief_text = ""
+    audience_yaml_text = read_audience_yaml(project_root)
+    audience_entries = _parse_audience_yaml(audience_yaml_text)
+    timeline = read_event_timeline(project_root)
+    dialog = read_dialog_archive(project_root)
+
+    try:
+        from debrief_state import read_deck_state  # type: ignore[import]
+        deck_state = read_deck_state(project_root)
+    except Exception as exc:  # noqa: BLE001
+        log_script_error(
+            project_root,
+            trigger=trigger,
+            error_class="deck_state_read_error",
+            error_message=str(exc),
+        )
+        sys.exit(0)
+
+    approved = [s for s in deck_state.slides if s.status == "approved"]
+    slides_data: list[dict] = []
+    for s in approved:
+        slides_data.append({
+            "slug": s.slug,
+            "title": s.title,
+            "content_summary": s.content_summary or "",
+            "visual_approach": s.visual_approach or "",
+            "design_choices": s.design_choices or "",
+            "user_assets": list(s.user_assets or []),
+            "backup": bool(s.backup),
+        })
+    main_slide_count = sum(1 for s in slides_data if not s["backup"])
+    existing_speaker_script = read_speaker_script(project_root)
+
+    # 3. Validate guardrails (3, 1, 5 blockers; 4, 6 warnings).
+    err = validate_script_structure(response_text, slides_data)
+    if err is not None:
+        log_script_error(
+            project_root,
+            trigger=trigger,
+            error_class="script_structure_invalid",
+            error_message=err,
+        )
+        sys.exit(0)
+
+    err = validate_script_traceability(
+        response_text, audience_entries, timeline,
+        slides_data, deck_brief_text, dialog,
+    )
+    if err is not None:
+        log_script_error(
+            project_root,
+            trigger=trigger,
+            error_class="script_traceability_invalid",
+            error_message=err,
+        )
+        sys.exit(0)
+
+    err = validate_script_roster_mentions(
+        response_text, audience_entries, slides_data
+    )
+    if err is not None:
+        log_script_error(
+            project_root,
+            trigger=trigger,
+            error_class="script_roster_mention_invalid",
+            error_message=err,
+        )
+        sys.exit(0)
+
+    # Length-budget warnings (non-blocking).
+    duration_match = re.search(
+        r"\*\*Target duration:\*\*\s*(\d+(?:\.\d+)?)\s*minutes",
+        response_text,
+    )
+    total_duration = float(duration_match.group(1)) if duration_match else None
+    for w in validate_script_length_budget(
+        response_text, total_duration, main_slide_count
+    ):
+        log_script_error(
+            project_root,
+            trigger=trigger,
+            error_class="warning_length_overrun",
+            error_message=w,
+        )
+
+    # Voice-drift warnings (co-writer mode only; non-blocking).
+    if existing_speaker_script:
+        prior_signatures: dict[str, str] = {}
+        for s in slides_data:
+            prior_signatures[s["slug"]] = "|".join([
+                s["content_summary"], s["visual_approach"], s["design_choices"],
+            ])
+        for w in validate_script_voice_drift(
+            response_text, existing_speaker_script,
+            slides_data, prior_signatures,
+        ):
+            log_script_error(
+                project_root,
+                trigger=trigger,
+                error_class="warning_voice_drift",
+                error_message=w,
+            )
+
+    # 4. Backup existing script.
+    backup_speaker_script(project_root)
+
+    # 5. Atomic write of the new script.
+    script_path = project_root / _SPEAKER_SCRIPT_REL
+    try:
+        _atomic_write_text(script_path, response_text)
+    except OSError as exc:
+        log_script_error(
+            project_root,
+            trigger=trigger,
+            error_class="write_failure",
+            error_message=str(exc),
+        )
+        sys.exit(0)
+
+    # 6. Emit script_done timeline event.
+    try:
+        folder = (
+            deck_state.presentations[-1].folder
+            if deck_state.presentations
+            else ""
+        )
+        append_timeline_event(
+            project_root,
+            event="script_done",
+            payload={
+                "presentation_folder": folder,
+                "slide_count": main_slide_count,
+                "backup_slide_count": sum(
+                    1 for s in slides_data if s["backup"]
+                ),
+                "script_path": _SPEAKER_SCRIPT_REL,
+                "agent_version": _SCRIPT_WRITER_AGENT_VERSION,
+                # No `model` field — Task dispatch handles model selection;
+                # write_script doesn't know which model produced the markdown.
+            },
+        )
+    except Exception:  # noqa: BLE001 — best-effort timeline emission
+        pass
+
+    # 7. Cleanup: remove the draft.
+    try:
+        draft_path.unlink()
+    except OSError:
+        pass
+
+    print(str(script_path), file=sys.stderr)
+    sys.exit(0)
+
+
+# ---------------------------------------------------------------------------
 # Memory architecture — rewrite agent + rewrite_brief CLI
 # (BUG-AUDIT-80 Cycle 2 Phase 2 / BC-3.18 / BC-5.19 /
 # REQ-MEMORY-REWRITE-1..4).
@@ -4168,6 +4489,77 @@ def main_new() -> None:
             trigger=_args.trigger,
             plugin_root=plugin_root,
         )
+    elif subcommand == "build_script_prompt":
+        # BC-3.20b / BUG-AUDIT-102. Read-only — assembles the structured
+        # script-writer prompt and emits to stdout for the consultant
+        # to feed into Task(subagent_type="script-writer", ...).
+        import argparse as _ap
+
+        _parser = _ap.ArgumentParser(
+            prog="debrief.launcher build_script_prompt",
+            description=(
+                "Emit the structured script-writer prompt (brief + "
+                "audience + timeline + truncated dialog + slides + "
+                "existing script as co-writer baseline) to stdout. "
+                "The consultant captures this output via Bash and "
+                "passes it as the `prompt` argument to Task."
+            ),
+        )
+        _parser.add_argument(
+            "--project-root", type=Path, default=Path.cwd(),
+        )
+        _args = _parser.parse_args(sys.argv[2:])
+        main_build_script_prompt(_args.project_root)
+    elif subcommand == "write_script":
+        # BC-3.20c / BUG-AUDIT-102. Reads the script-writer agent's
+        # markdown output from .debrief/draft/refresh_script.md
+        # (default) or the explicit --draft-path, runs the six
+        # guardrails, backup-before-overwrite, atomically writes
+        # speaker_script.md, emits script_done. Always exits 0.
+        import argparse as _ap
+
+        _parser = _ap.ArgumentParser(
+            prog="debrief.launcher write_script",
+            description=(
+                "Validate (six guardrails) + backup-before-overwrite "
+                "+ atomically write the script-writer agent's markdown "
+                "output as speaker_script.md. Emits script_done event. "
+                "Removes the draft on success."
+            ),
+        )
+        _parser.add_argument(
+            "--project-root", type=Path, default=Path.cwd(),
+        )
+        _parser.add_argument(
+            "--trigger",
+            choices=[
+                "/debrief:script",
+                "deck-complete-finalization",
+            ],
+            default="/debrief:script",
+            help=(
+                "Which trigger orchestrated the dispatch. Recorded "
+                "in any script_errors.jsonl entry. The "
+                "/debrief:handout-cascade trigger does NOT use this "
+                "command — it remains on the legacy main_script_writer "
+                "direct-SDK path until cycle 103 cleanup."
+            ),
+        )
+        _parser.add_argument(
+            "--draft-path",
+            type=Path,
+            default=None,
+            help=(
+                "Path to the agent's markdown output. Default: "
+                ".debrief/draft/refresh_script.md."
+            ),
+        )
+        _args = _parser.parse_args(sys.argv[2:])
+        main_write_script(
+            _args.project_root,
+            trigger=_args.trigger,
+            draft_path=_args.draft_path,
+        )
     elif subcommand == "rewrite_brief":
         # BC-3.18 / BUG-AUDIT-80 (Cycle 2 Phase 2) /
         # REQ-MEMORY-REWRITE-1..4. Reads agents/rewriter.md, calls
@@ -4411,7 +4803,8 @@ def main_new() -> None:
             "Usage: python -m debrief.launcher [new|preflight|"
             "ensure_project|ensure_settings|doctor|commands|recall|"
             "rewrite_brief|build_rewrite_prompt|write_brief|"
-            "emit_event|script_writer|archive_paper] [project_root]",
+            "emit_event|script_writer|build_script_prompt|"
+            "write_script|archive_paper] [project_root]",
             file=sys.stderr,
         )
         sys.exit(1)

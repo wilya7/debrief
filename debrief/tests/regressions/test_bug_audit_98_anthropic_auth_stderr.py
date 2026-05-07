@@ -417,21 +417,45 @@ class TestBugAudit98Rewriter:
 
 
 class TestBugAudit98ScriptWriterAgentCard:
-    """`script-writer.md` documents the launcher-CLI invocation constraint."""
+    """`script-writer.md` documents the canonical invocation path.
+
+    BUG-AUDIT-98 (this cycle) added a constraint that direct Task-tool
+    dispatch was unsupported — the launcher CLI was the only canonical
+    path. BUG-AUDIT-102 RETIRED that constraint: Task dispatch is now
+    the canonical path for the in-session triggers via the new
+    build_script_prompt + write_script CLIs. This test was adapted
+    in-place to assert the BUG-AUDIT-102 contract instead. The
+    BUG-AUDIT-98 prior-art (auth-error stderr behavior) is unchanged
+    and still tested by the other classes in this file.
+    """
 
     def test_agent_card_documents_canonical_invocation(self) -> None:
         text = _script_writer_agent_card_path().read_text()
-        # Must reference the canonical CLI invocation.
-        assert "python -m debrief.launcher script_writer" in text, (
-            "BC-3.20a: script-writer.md must name the canonical CLI invocation."
+        # Post-BUG-AUDIT-102: the canonical path is Task-dispatched via
+        # the consultant's build_script_prompt + write_script chain.
+        # The agent card MUST document this. The legacy
+        # `python -m debrief.launcher script_writer` invocation is
+        # mentioned only for the residual /debrief:handout-cascade
+        # trigger; build_script_prompt + write_script + Task are the
+        # canonical references.
+        assert "build_script_prompt" in text, (
+            "BC-3.20b (BUG-AUDIT-102): script-writer.md must name "
+            "the build_script_prompt CLI as part of the canonical "
+            "Task-dispatch chain."
         )
-        # Must explicitly call out that direct Task-tool dispatch is unsupported.
-        # The constraint sentence mentions "Task" and "unsupported"/"not supported"
-        # somewhere in the same paragraph.
+        assert "write_script" in text, (
+            "BC-3.20c (BUG-AUDIT-102): script-writer.md must name "
+            "the write_script CLI."
+        )
         lower = text.lower()
-        assert "task" in lower and ("unsupported" in lower or "not supported" in lower), (
-            "BC-3.20a: script-writer.md must document that direct Task-tool "
-            "dispatch is unsupported."
+        assert "task" in lower, (
+            "BC-5.21 amended (BUG-AUDIT-102): script-writer.md must "
+            "document Task-dispatch as the canonical invocation."
         )
-        # Must reference the BC for traceability.
-        assert "BC-3.20a" in text or "BUG-AUDIT-98" in text
+        # Must reference at least one BC/BUG-AUDIT for traceability.
+        # BUG-AUDIT-98 was the original anchor; BUG-AUDIT-102 is the
+        # current contract. Either is acceptable.
+        assert any(
+            anchor in text
+            for anchor in ("BC-3.20a", "BC-3.20b", "BC-3.20c", "BUG-AUDIT-98", "BUG-AUDIT-102", "BC-5.21")
+        )

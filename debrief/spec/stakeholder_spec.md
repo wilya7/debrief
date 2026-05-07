@@ -8281,4 +8281,46 @@ A second prior-art point worth recording: **`Task`-dispatched OAuth inheritance 
 
 ---
 
+### BUG-AUDIT-102: Script-writer converted from direct-SDK hybrid pattern to Task-dispatch — `/debrief:script` works for OAuth-only users
+
+**Status:** Cycle 13 (2026-05-07). Same user-reported requirement as BUG-AUDIT-101: OAuth-authenticated Claude Code users (typical paid-subscription) cannot use `/debrief:script` because the launcher subprocess calls `anthropic.Anthropic()` directly. BUG-AUDIT-101 fixed the rewriter; this cycle applies the same architectural pattern to the script-writer.
+
+**Problem.** BC-5.21's "hybrid invocation pattern" mirrored the rewriter's pre-fix design: launcher reads agent card, calls SDK with API key, validates output, atomic write. Same root cause as BUG-AUDIT-101: the design unified all three script-writer triggers (`/debrief:script` direct, `deck-complete-finalization` cascade, `/debrief:handout-cascade`) onto a subprocess code path that requires `ANTHROPIC_API_KEY`. The two in-session triggers (`/debrief:script` + `deck-complete-finalization`) can be Task-dispatched by the consultant — those are the high-frequency cases. The third trigger (`/debrief:handout-cascade`) is an edge case (handout invoked when `speaker_script.md` is absent and the auto-cascade tries to synthesize on the user's behalf) and lives inside the handout subprocess, where Task-dispatch isn't directly available.
+
+The script-writer's validator surface is significantly larger than the rewriter's: six guardrails per REQ-SCRIPT-WRITER-2 (source traceability, per-slide structure, length budget, roster-aware mentions, co-writer voice drift, no-new-positions). Three are blockers (structure, traceability, roster-mentions); two are warnings (length-budget, voice-drift). Splitting the SDK call out (so it can be replaced by a `Task` dispatch) requires moving all six validators + the backup-before-overwrite step + the `script_done` timeline event emission to a new post-Task `write_script` CLI. The existing `build_script_writer_inputs` helper (with its 200K-token-cap dialog truncation) becomes the basis of a new `build_script_prompt` CLI.
+
+**Root cause.** Same three-axis design lock-in as BUG-AUDIT-101, restated for the script-writer: (1) all-triggers-on-subprocess unification (BC-3.20 / BC-5.21), (2) the assumption that the cascade triggers MUST work without an interactive consultant — true for `/debrief:handout-cascade` (subprocess context) but FALSE for `deck-complete-finalization` (which IS the consultant orchestrating its 4-step finalization), and (3) validator + atomic-write co-location with the SDK call.
+
+**Detection method.** Direct user report 2026-05-07 (cycle 102 follows immediately from cycle 101's confirmation: same user, same OAuth setup, same architectural fix applied to a different agent). Pre-fix regression test (`tests/regressions/test_bug_audit_102_script_writer_oauth.py`) asserts: (a) `build_script_prompt` CLI emits the structured prompt assembled from project files (deck brief + audience + timeline + truncated dialog + slides + existing script); (b) `write_script` CLI runs all six validators in the canonical order, performs backup-before-overwrite per BC-11.20, atomically writes `speaker_script.md`, emits `script_done`; (c) the consultant card has `## Script Generation Dispatch` with the four-step Task-dispatch protocol; (d) `agents/script-writer.md` retires the BC-3.20a "direct Task-tool dispatch unsupported" prose (added in BUG-AUDIT-98) and replaces it with "canonical via consultant's `build_script_prompt` + `Task` + `write_script` chain"; (e) `commands/script.md` describes the new flow; (f) cascade trigger `/debrief:handout-cascade` continues to use the legacy direct-SDK path (cycle 103 cleanup decides whether to retire it). Pre-fix categories (a)–(e) all fail.
+
+**Fix summary.** Three coordinated changes (mirroring BUG-AUDIT-101's three pillars):
+
+1. **In-session triggers route through `Task`-dispatch.** `/debrief:script` and `deck-complete-finalization` cascade no longer call `main_script_writer` directly. The consultant runs the same four-step orchestration:
+   - Bash: `python -m debrief.launcher build_script_prompt --project-root .` — emits the structured user-message body to stdout. Includes the same 200K-token-cap dialog truncation as today's `build_script_writer_inputs`.
+   - `Task(subagent_type="script-writer", prompt=<captured stdout>)` — uses Claude Code's session credential. Returns the agent's markdown output.
+   - Bash heredoc: write the agent's markdown to `.debrief/draft/refresh_script.md`.
+   - Bash: `python -m debrief.launcher write_script --project-root . --trigger <trigger>` — reads draft, runs all six guardrails, backup-before-overwrite per BC-11.20, atomically writes `speaker_script.md`, emits `script_done` timeline event, removes draft. Always exits 0 (REQ-SCRIPT-WRITER-2 unchanged).
+
+2. **Cascade trigger retains legacy path (transition).** `/debrief:handout-cascade` (the auto-cascade from `/debrief:handout` when `speaker_script.md` is missing) continues to invoke `main_script_writer` directly with its current direct-SDK path. This is a pragmatic transition: the handout's auto-cascade fires inside the handout subprocess (no consultant orchestration available), and rewriting the handout's auto-cascade to use Task-dispatch requires either (a) eliminating the auto-cascade and relying on the user/consultant to run `/debrief:script` first, or (b) introducing a sentinel-style deferral analogous to PreCompact. Cycle 103 decides which to do; cycle 102 leaves the cascade on the legacy path. For OAuth-only users who hit the cascade, the existing BUG-AUDIT-98 stderr emission tells them to set `ANTHROPIC_API_KEY` or run `/debrief:script` manually.
+
+3. **Consultant orchestration moves to Task-dispatch for the two in-session triggers.** The consultant agent card gains a `## Script Generation Dispatch` section parallel to BC-5.16a's `## Brief Refresh Dispatch`, prescribing the four-step protocol for both `/debrief:script` and the deck-complete-finalization cascade. The consultant's existing 4-step finalization (`/debrief:refresh-brief` → `/debrief:script` → `/debrief:export` → `/debrief:handout`) updates step 2 to use the new dispatch — refresh-brief (cycle 101) and script (cycle 102) both go via Task; export and handout already do.
+
+**Trigger surface (post-fix):**
+
+| Trigger | Path | Auth requirement |
+|---|---|---|
+| `/debrief:script` (direct) | consultant → `build_script_prompt` → `Task(script-writer)` → `write_script` | Claude Code session credential (OAuth or API key) |
+| `deck-complete-finalization` (cascade in 4-step finalization) | same | same |
+| `/debrief:handout-cascade` (auto-fallback in handout subprocess) | legacy `main_script_writer` direct-SDK | `ANTHROPIC_API_KEY` (until cycle 103) |
+
+For an OAuth-authenticated user calling `/debrief:script` directly OR going through the consultant's deck-complete-finalization flow, no API key is needed. The auto-cascade case remains a known gap, surfaced via the existing BUG-AUDIT-98 stderr line.
+
+BC-3.20 (script_writer CLI) amended — the synthesis path for `/debrief:script` and `deck-complete-finalization` triggers is RETIRED in favor of the new chain; the cascade trigger keeps the legacy path. BC-3.20a (script-writer agent-card invocation-mode constraint, added in BUG-AUDIT-98) is RETIRED — direct Task-tool dispatch is now the canonical path; the agent card's structured-input contract still holds but it's now satisfied by `build_script_prompt`. BC-5.21 (script-writer agent) amended for Task-dispatchability. New BC-3.20b (`build_script_prompt` CLI). New BC-3.20c (`write_script` CLI). New BC-5.16b (consultant `## Script Generation Dispatch`).
+
+**Normative requirements:** none new (REQ-SCRIPT-WRITER-1..4 unchanged in semantics).
+
+**Prior-Art for Rebuild:** *"the architectural fix doesn't have to be uniform across triggers — match the auth model to each trigger's context."* Cycle 101 + 102 together show that "convert this whole agent to Task-dispatch" can be done partially: in-session triggers move; subprocess-bound triggers (PreCompact, handout auto-cascade) stay on their existing path with a retiring-or-deferring strategy. The trigger inventory is the architectural unit, not the agent. Generalizing: when restructuring an agent's invocation, take inventory of every trigger first; classify each as session-bound or subprocess-bound; pick the cheapest credential path for each class. Don't try to force one pattern across all triggers if the contexts genuinely differ. The remaining cleanup work (cycle 103) decides what to do with the residual subprocess-bound triggers — keep them as documented edge cases, defer them via sentinels, or retire them entirely.
+
+---
+
 *End of Debrief Stakeholder Specification v1.1*

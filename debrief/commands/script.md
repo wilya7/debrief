@@ -6,17 +6,17 @@ Generate the canonical speaker script from the deck's full memory (brief + audie
 
 Use `/debrief:script` after at least one slide is approved. The script is the canonical spoken-word narration for the deck — there is **one** script per project, written to `<project_root>/speaker_script.md`. Re-running the command regenerates the script; the prior version is automatically backed up to `.debrief/script_backups/speaker_script.<UTC ISO 8601>.md`.
 
-The command dispatches the script-writer agent (`agents/script-writer.md`, BC-5.21) via the wrapping CLI:
+## Behavior (BUG-AUDIT-102)
 
-```bash
-python -m debrief.launcher script_writer --project-root . --trigger /debrief:script
-```
+The consultant orchestrates a four-step Task-dispatch (per `agents/consultant.md` `## Script Generation Dispatch`):
 
-## Behavior
+1. **Build prompt:** `python -m debrief.launcher build_script_prompt --project-root .` — emits the structured prompt (deck brief + audience + timeline + truncated dialog + slides + existing script as co-writer baseline) to stdout.
+2. **Dispatch:** `Task(subagent_type="script-writer", prompt=<captured stdout>)` — uses Claude Code's session credential. No separate `ANTHROPIC_API_KEY` required.
+3. **Stage:** consultant writes the agent's markdown to `.debrief/draft/refresh_script.md` via Bash heredoc.
+4. **Validate + atomic write:** `python -m debrief.launcher write_script --project-root . --trigger /debrief:script` — runs the six guardrails, performs backup-before-overwrite, atomically writes `speaker_script.md`, emits `script_done`.
 
 - Reads the full memory surface: `deck_brief.md`, `output/audience.yaml` (when present), `output/timeline.jsonl`, `.debrief/dialog.jsonl`, `deck_state.json`'s slide records, and the existing `speaker_script.md` (when present, used as a co-writer baseline per BC-5.21).
-- Calls the script-writer agent (`claude-sonnet-4-6`, single-turn) via the hybrid invocation pattern from BC-5.19.
-- Validates the agent's output against six guardrails per **REQ-SCRIPT-WRITER-2** / **BC-3.20**:
+- Validates the agent's output against six guardrails per **REQ-SCRIPT-WRITER-2** / **BC-3.20c**:
   1. **Source traceability** — names match the roster, numerics trace to brief/dialog/slides, paper citations match `paper_attached` events.
   2. **No new positions** — prompt-only rule (no code-side check in v1).
   3. **Per-slide structure** — section count + required subsections enforced.
@@ -36,10 +36,7 @@ python -m debrief.launcher script_writer --project-root . --trigger /debrief:scr
 
 ## Parameters
 
-- `--project-root <path>` (optional): defaults to the current working directory.
-- `--trigger <name>` (optional): one of `/debrief:script` (default, manual invocation), `deck-complete-finalization` (auto-invoked at deck-complete per the consultant's Export Transition section), or `/debrief:handout-cascade` (auto-invoked when `/debrief:handout` finds the script absent).
-
-No interactive parameters — duration and audience details come from the brief and roster.
+No user-facing parameters — duration and audience details come from the brief and roster. The consultant's dispatch invokes `build_script_prompt` and `write_script` with `--project-root .` and the appropriate `--trigger` value (one of `/debrief:script` for manual invocation, `deck-complete-finalization` for the deck-complete cascade). The legacy `/debrief:handout-cascade` trigger fires inside the handout subprocess when `speaker_script.md` is missing — that path remains on the legacy `python -m debrief.launcher script_writer` direct-SDK code path until cycle 103 cleanup decides whether to retire or refactor it.
 
 ## Output location
 
@@ -53,8 +50,11 @@ Backups of prior versions accumulate at `<project_root>/.debrief/script_backups/
 
 - Spec REQ-SCRIPT-WRITER-1..4 — script-writer contract.
 - Spec REQ-MEMORY-DIALOG-1, REQ-MEMORY-TIMELINE-1, REQ-CONSULT-DECK-BRIEF-1 — memory surfaces the script-writer consumes.
-- Blueprint BC-3.20 — script_writer subcommand contract.
-- Blueprint BC-5.21 — script-writer agent-card contract.
+- Blueprint BC-3.20 — script_writer subcommand contract (legacy direct-SDK path, retained for the handout-cascade trigger after BUG-AUDIT-102).
+- Blueprint BC-3.20b / BC-3.20c — `build_script_prompt` + `write_script` CLIs (BUG-AUDIT-102).
+- Blueprint BC-5.16b — consultant `## Script Generation Dispatch` (BUG-AUDIT-102).
+- Blueprint BC-5.21 — script-writer agent-card contract (Task-dispatchable after BUG-AUDIT-102).
 - Blueprint BC-11.20 — backup-before-overwrite policy.
 - `agents/script-writer.md` — script-writer agent system prompt.
-- `spec/script_writer_rfc.md` — architectural rationale (BUG-AUDIT-84).
+- `agents/consultant.md` `## Script Generation Dispatch` section — the four-step orchestration protocol.
+- `spec/script_writer_rfc.md` — architectural rationale (BUG-AUDIT-84; updated by BUG-AUDIT-102).

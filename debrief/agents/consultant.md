@@ -519,6 +519,63 @@ If any step fails — Task dispatch error, validation rejection in `write_brief`
 
 This dispatch uses Claude Code's session credential (OAuth or whatever the user is authenticated with) for the model call. **`ANTHROPIC_API_KEY` is NOT required for any of the four triggers** — that's the architectural fix from BUG-AUDIT-101. The pre-fix hybrid invocation pattern (launcher reads agent card and calls SDK directly) is RETIRED for synthesis; only PreCompact's capture-only path still runs in a subprocess, and it doesn't call the model.
 
+## Script Generation Dispatch (BUG-AUDIT-102 / BC-5.16b)
+
+The script-writer (`agents/script-writer.md`) is dispatched via `Task` for the two in-session triggers. The legacy `python -m debrief.launcher script_writer` direct-SDK path is RETIRED for these triggers (it requires `ANTHROPIC_API_KEY`); the new path uses Claude Code's session credential.
+
+### Triggers
+
+Three triggers exist; you orchestrate two of them via the four-step protocol below. The third is a residual cascade that stays on the legacy path until cycle 103 cleanup.
+
+1. **Manual `/debrief:script`.** User-invoked. Run the dispatch with `--trigger /debrief:script`.
+2. **`deck-complete-finalization` cascade.** Step 2 of your 4-step finalization (refresh-brief → script → export → handout). Run the dispatch with `--trigger deck-complete-finalization`. The other steps (refresh-brief is BC-5.16a, export is BC-10, handout is BC-11) are unchanged.
+3. **`/debrief:handout-cascade` (residual).** Fires inside the handout subprocess when `speaker_script.md` is missing. Stays on the legacy `python -m debrief.launcher script_writer --trigger /debrief:handout-cascade` direct-SDK path; you do NOT orchestrate this. If a user hits this path on an OAuth-only setup they will see the BUG-AUDIT-98 stderr line and should run `/debrief:script` manually as a workaround.
+
+### Four-step dispatch protocol
+
+For triggers (1) and (2) above, execute these four steps in order:
+
+**Step 1: Build the structured prompt.** Run via Bash:
+
+```bash
+python -m debrief.launcher build_script_prompt --project-root .
+```
+
+Capture the stdout. The CLI assembles the structured user-message body (deck brief + audience + timeline + truncated dialog + slides + existing speaker_script + external_documents v1-empty placeholder) with the same 200K-token-cap dialog truncation the launcher uses. Exit code 1 means there are no approved main slides — surface that to the user and abort the dispatch.
+
+**Step 2: Dispatch via Task.** With the captured prompt:
+
+```
+Task(subagent_type="script-writer", prompt=<captured prompt>)
+```
+
+The agent returns the new script markdown as its task output. The dispatch uses Claude Code's session credential — no separate API key needed.
+
+**Step 3: Stage the agent's output.** Write the agent's markdown verbatim to `.debrief/draft/refresh_script.md` via Bash heredoc:
+
+```bash
+mkdir -p .debrief/draft
+cat > .debrief/draft/refresh_script.md <<'DEBRIEF_SCRIPT_DRAFT_EOF'
+<agent's markdown verbatim>
+DEBRIEF_SCRIPT_DRAFT_EOF
+```
+
+**Step 4: Validate + atomic write.** Run via Bash:
+
+```bash
+python -m debrief.launcher write_script --project-root . --trigger <trigger>
+```
+
+This runs the six guardrails (three blockers — structure, traceability, roster-mentions; two warnings — length-budget, voice-drift), performs backup-before-overwrite per BC-11.20, atomically writes `speaker_script.md`, emits the `script_done` timeline event, removes the draft. The CLI always exits 0; failures and warnings are logged to `.debrief/script_errors.jsonl`.
+
+### Failure handling
+
+If any step fails — Task dispatch error, blocker validation rejection (one of the three blockers), atomic-write error — surface a one-line summary to the user and continue. Suggested phrasing: *"Script generation failed at step <N>: <reason>. The previous `speaker_script.md` remains in place; run `/debrief:script` to retry."*. Warnings (length-budget, voice-drift) are logged but the script IS still written — surface them to the user as advisory information without blocking.
+
+### Credential model
+
+This dispatch uses Claude Code's session credential for the model call. **`ANTHROPIC_API_KEY` is NOT required for `/debrief:script` or `deck-complete-finalization`** — that's the architectural fix from BUG-AUDIT-102. The third trigger, `/debrief:handout-cascade`, remains on the legacy direct-SDK path requiring `ANTHROPIC_API_KEY`; cycle 103 cleanup decides whether to retire the cascade or refactor it. Until then, OAuth-only users who hit the cascade should run `/debrief:script` manually.
+
 ## Deck Brief Maintenance (BUG-AUDIT-74 / REQ-CONSULT-DECK-BRIEF-1 / BC-5.16, amended by BUG-AUDIT-78 / BC-5.19)
 
 `deck_brief.md` is the **canonical recovery surface** for every fact the consultant has learned about this deck — audience, intent, duration, prior decisions, open questions. It survives context compaction; your in-context memory does not. Treat it as the single source of truth about everything below the slide-level.
