@@ -10,6 +10,7 @@ skills.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import re
 import shutil
@@ -1111,10 +1112,16 @@ def _load_speaker_script(project_root: Path) -> Optional[dict[str, str]]:
     # Regexes for header and slug marker.
     # Header captures: slide number (unused), optional " (backup)"
     # qualifier, and title.
+    # BC-11.15a amendment / BUG-AUDIT-100: separator may be ':',
+    # em-dash (U+2014), en-dash (U+2013), or plain hyphen.
+    # Slug marker may use bold (`**Slug:**`), italic (`*Slug:`), or
+    # plain (`Slug:`) styling, and may have trailing content (e.g.
+    # `· Budget: 0:20`) after the backtick-wrapped slug — no `$`
+    # anchor on the slug regex.
     _header_re = re.compile(
-        r"^##\s+Slide\s+\d+\s*(?:\(backup\))?\s*:\s*(.+?)\s*$"
+        r"^##\s+Slide\s+\d+\s*(?:\(backup\))?\s*[:—–\-]\s*(.+?)\s*$"
     )
-    _slug_re = re.compile(r"^\*\*Slug:\*\*\s*`([^`]+)`\s*$")
+    _slug_re = re.compile(r"^\s*\*?\*?\s*Slug:\s*\*?\*?\s*`([^`]+)`")
 
     for idx in range(len(header_indices) - 1):
         start = header_indices[idx]
@@ -1152,6 +1159,124 @@ def _load_speaker_script(project_root: Path) -> Optional[dict[str, str]]:
             mapping[title] = body
 
     return mapping if mapping else None
+
+
+_HANDOUT_WARNINGS_REL = ".debrief/handout_warnings.jsonl"
+
+
+def _first_unmatched_handout_header(script_path: Path) -> Optional[str]:
+    """Return the first ``## Slide`` line whose header regex did not match.
+
+    Returns ``None`` if the file is missing, empty, or every ``## Slide``
+    line matches the (BC-11.15a amended) header regex. Used by
+    ``_emit_handout_degradation_warning`` to give the user a concrete
+    pointer when the parser matched zero sections — typically the first
+    offending header reveals the grammar variant the user is using.
+    """
+    if not script_path.is_file():
+        return None
+    try:
+        text = script_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    header_re = re.compile(
+        r"^##\s+Slide\s+\d+\s*(?:\(backup\))?\s*[:—–\-]\s*(.+?)\s*$"
+    )
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if not stripped.startswith("## Slide "):
+            continue
+        if header_re.match(stripped) is None:
+            return stripped.rstrip()
+    return None
+
+
+def _emit_handout_degradation_warning(
+    project_root: Path,
+    *,
+    mode: str,
+    total_main_slides: int,
+    placeholder_count: int,
+    script_notes: Optional[dict[str, str]],
+) -> None:
+    """Emit stderr warning + JSONL entry on degraded handout output (BC-11.15c).
+
+    Trigger conditions per BC-11.15c / BUG-AUDIT-100:
+      * ``script_notes is None`` — parser returned no matches at all.
+      * ``placeholder_count / total_main_slides >= 0.5`` — more than
+        half of the rendered main slides used the placeholder.
+
+    Either condition emits a single-line warning to stderr AND appends
+    a JSON entry to ``.debrief/handout_warnings.jsonl``. Exit code is
+    not affected — handout's exit-0-always discipline (BC-11.16) is
+    preserved by the caller.
+    """
+    if total_main_slides <= 0:
+        return
+    placeholder_ratio = placeholder_count / total_main_slides
+    triggered = (script_notes is None) or (placeholder_ratio >= 0.5)
+    if not triggered:
+        return
+
+    script_path = project_root / "speaker_script.md"
+    script_present = script_path.is_file()
+    script_parsed_sections = len(script_notes) if script_notes else 0
+    first_unmatched = _first_unmatched_handout_header(script_path)
+
+    # Diagnose the failure mode the user most likely hit. The four
+    # cases the parser distinguishes are: (a) script absent, (b) script
+    # empty, (c) script present but parser matched zero sections,
+    # (d) sections matched but slug/title don't align with deck_state.
+    if not script_present:
+        reason = "speaker_script.md is missing"
+    else:
+        try:
+            script_text = script_path.read_text(encoding="utf-8")
+        except OSError:
+            script_text = ""
+        if not script_text.strip():
+            reason = "speaker_script.md is empty"
+        elif script_notes is None:
+            reason = (
+                "speaker_script.md exists but the parser matched zero "
+                "sections"
+            )
+        else:
+            reason = (
+                "slug/title mismatch between script sections and "
+                "SlideRecord entries"
+            )
+
+    grammar_hint = (
+        "Expected grammar: '## Slide N: <title>' (':', em-dash, en-dash, "
+        "or hyphen separator) with 'Slug: `<slug>`' marker (optionally "
+        "bold or italic)."
+    )
+    print(
+        f"WARNING: {placeholder_count}/{total_main_slides} handout slides "
+        f"used the '{_HANDOUT_NOTES_PLACEHOLDER}' placeholder. {reason}. "
+        f"{grammar_hint}",
+        file=sys.stderr,
+    )
+
+    # Append JSONL entry.
+    log_path = project_root / _HANDOUT_WARNINGS_REL
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    from datetime import datetime, timezone
+    entry = {
+        "timestamp": datetime.now(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        ),
+        "mode": mode,
+        "total_main_slides": total_main_slides,
+        "placeholder_count": placeholder_count,
+        "script_path": "speaker_script.md",
+        "script_present": script_present,
+        "script_parsed_sections": script_parsed_sections,
+        "first_unmatched_header": first_unmatched,
+    }
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 def _resolve_handout_notes(
@@ -1427,6 +1552,26 @@ def main_handout(
     out_path = out_dir / handout_filename
 
     html_content = generate_layout_html(mode, approved, project_root)
+
+    # BC-11.15c / BUG-AUDIT-100: count placeholder fallbacks and emit a
+    # degradation warning when the parser missed too many sections. This
+    # has to re-parse the script (cheap; the file is small) and re-run
+    # the resolver against the same slides generate_layout_html used,
+    # because generate_layout_html does not return its placeholder count.
+    _script_notes_for_warning = _load_speaker_script(project_root)
+    _placeholder_count = sum(
+        1
+        for slide in approved
+        if _resolve_handout_notes(slide, _script_notes_for_warning)
+        == _HANDOUT_NOTES_PLACEHOLDER
+    )
+    _emit_handout_degradation_warning(
+        project_root,
+        mode=mode,
+        total_main_slides=len(approved),
+        placeholder_count=_placeholder_count,
+        script_notes=_script_notes_for_warning,
+    )
 
     tmp_html = out_dir / f"handout_{next_version:03d}_tmp.html"
     tmp_html.write_text(html_content, encoding="utf-8")

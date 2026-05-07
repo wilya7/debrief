@@ -50,15 +50,46 @@ if [[ "${1:-}" == "--rebuild-env" ]]; then
       exit 1
     fi
     rm -f "${HOME}/.cache/debrief"/pkg_version_*.marker 2>/dev/null || true
-    if ! conda env remove -n debrief -y 2>/dev/null; then
+    # BC-1.20 / BUG-AUDIT-96: do NOT redirect conda's stderr — its failure
+    # messages must reach the user. Drive the success/failure decision off
+    # of post-check state (env list) rather than the remove command's exit
+    # code, because conda's exit-code semantics differ across versions
+    # (e.g., EnvironmentLocationNotFound exits 0 on conda 25.7).
+    conda env remove -n debrief -y || true
+    if conda env list | awk '{print $1}' | grep -qx debrief; then
       echo "ERROR: Failed to remove the debrief conda env." >&2
-      echo "Run \`conda env remove -n debrief --force\` manually, then retry \`debrief --rebuild-env\`." >&2
+      echo "Run \`rm -rf \"\$(conda info --base)/envs/debrief\"\` manually, then retry \`debrief --rebuild-env\`." >&2
       exit 1
     fi
     DEBRIEF_REBUILD_DONE=1 exec "$0"
   fi
   shift || true
 fi
+
+# ---------------------------------------------------------------------------
+# Step 0.5: preflight subcommand validation (BC-1.19, BUG-AUDIT-95).
+# Runs BEFORE conda detection / activation / smoke test so that user-input
+# mistakes (forgotten subcommand, typo'd subcommand) produce the spec'd
+# error rather than being misrouted into a 5–15 minute env rebuild when
+# the env happens to be in any non-pristine state.
+# ---------------------------------------------------------------------------
+# BEGIN preflight subcommand validation
+case "${1:-}" in
+  new)
+    : # valid; falls through to env activation
+    ;;
+  "")
+    if [[ ! -f "$(pwd)/deck_state.json" ]]; then
+      echo "ERROR: No project found in the current directory. Run 'debrief new' to create one." >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "Usage: debrief [new|--rebuild-env]" >&2
+    exit 1
+    ;;
+esac
+# END preflight subcommand validation
 
 # ---------------------------------------------------------------------------
 # Step 1: conda detection.
@@ -87,9 +118,12 @@ if ! conda env list | awk '{print $1}' | grep -qx debrief; then
     # etc. — triggers the misleading "Partial debrief env exists" message
     # because `conda env remove` returns non-zero when the env is absent.
     if conda env list | awk '{print $1}' | grep -qx debrief; then
-      if ! conda env remove -n debrief -y 2>/dev/null; then
+      # BC-1.20 / BUG-AUDIT-96: surface conda's stderr; verify removal via
+      # post-check on env list rather than trusting the remove's exit code.
+      conda env remove -n debrief -y || true
+      if conda env list | awk '{print $1}' | grep -qx debrief; then
         echo "Partial debrief env exists and could not be removed automatically." >&2
-        echo "Run \`conda env remove -n debrief --force\` manually, then retry \`debrief new\`." >&2
+        echo "Run \`rm -rf \"\$(conda info --base)/envs/debrief\"\` manually, then retry \`debrief new\`." >&2
         exit 1
       fi
     fi

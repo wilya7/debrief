@@ -413,6 +413,50 @@ In all cases, surface methodological concerns the audience might raise, alternat
 
 After the discussion, transition `sub_phase` to `discovery/figure_selection` and present the figures via the G1.3 gate (REQ-CONSULT-18). The gate accepts `ALL` or a space-separated list of figure numbers — a user reply of `2` is a fully valid response that selects only Figure 2.
 
+## Doctor Discipline (BUG-AUDIT-99 / BC-5.25)
+
+State drift accumulates silently when state-mutation calls are skipped. Slide registration (BC-5.17), phase advancement, paper archival (BC-5.11), brief synthesis (BC-5.16) are all consultant-driven. Downstream commands (`/debrief:view`, `/debrief:export`, `/debrief:script`, the rewriter) branch on `phase`, `sub_phase`, `slides[]`, and `papers_provided` — when those values diverge from filesystem and event-stream reality, downstream commands produce wrong answers.
+
+Per-bug fixes have wired up *detection* via the `debrief doctor` audit modes. Routine *invocation* of those audits is what closes the loop. Run the doctor at fixed transition points; when it reports drift, surface the signal to the user, apply the recovery command from the audit's `notes`, and re-run before proceeding.
+
+### Canonical invocation
+
+```bash
+python -m debrief.launcher doctor --reconstruct --brief-audit --asset-audit --phase-audit --project-root .
+```
+
+The four mode flags cover the four detection surfaces:
+
+- `--reconstruct` — orphan slide files / orphan slide records (BUG-AUDIT-75).
+- `--brief-audit` — `deck_brief.md` structure, roster, watermark alignment, rewrite staleness (BUG-AUDIT-83).
+- `--asset-audit` — paper-handling drift: paper-figures in the wrong location, missing `paper_attached` events, `papers_provided` mismatch (BUG-AUDIT-94).
+- `--phase-audit` — `phase` / `sub_phase` drift: approved slides without phase advancement, style-locked without sub_phase advancement, production stuck at `group_planning` (BUG-AUDIT-99).
+
+A subset of flags is acceptable when only a specific check applies (e.g., before `/debrief:export` you may run only `--phase-audit` if briefs and assets are known clean). Default to running all four when in doubt — the cost is one Bash call.
+
+### Prescribed run-points
+
+You MUST run `doctor` at each of the following moments:
+
+1. **Session start**, after Claude Code resumes the project (compaction recovery point). Run before any user-facing reply that asserts state.
+2. **After every successful `slide-maker` dispatch returns**, in the same turn as the BC-5.17 `update_slide` call. The doctor confirms the registration landed and no other drift has crept in.
+3. **Before any read-state command** that branches on `phase` / `sub_phase` / `slides[]`: `/debrief:view`, `/debrief:export`, `/debrief:script`. Running doctor first prevents the misleading "no slides yet" / "no presentations exist" / "no approved slides" failure modes that a stale state file produces.
+4. **Before phase transitions** (discovery → production, production → finalization). The transition itself happens via `python -m debrief.debrief_state update --set sub_phase=...`; running doctor first surfaces any drift that should be fixed before advancing.
+
+### Recovery loop
+
+When `doctor` reports drift (exit code 1):
+
+1. Read the JSON output's `notes` field. Each note names a copy-pasteable recovery CLI command tailored to the specific drift signal.
+2. **Surface the drift to the user before applying the fix** — a one-line summary: *"State drift detected: <one-sentence description>. Applying recovery: <CLI command>."* Observability of the self-heal is part of the contract; do NOT silently apply recovery.
+3. Execute the recommended recovery command via the Bash tool.
+4. Re-run `doctor` to confirm the drift is resolved (exit code 0).
+5. Proceed with the original action only after the doctor reports clean.
+
+### `--reconstruct` exception
+
+The `--reconstruct` flag is the one exception to the surface-then-apply pattern: it is itself the remediation for orphan-files drift, not a separate command. You MAY use it directly when slide-file/state drift is the detected mode and the recovery is "reconstruct minimal `SlideRecord` entries." Other modes' recoveries (CLI invocations from the audit's `notes`) MUST go through the surface-then-apply pattern in the recovery loop above.
+
 ## Deck Brief Maintenance (BUG-AUDIT-74 / REQ-CONSULT-DECK-BRIEF-1 / BC-5.16, amended by BUG-AUDIT-78 / BC-5.19)
 
 `deck_brief.md` is the **canonical recovery surface** for every fact the consultant has learned about this deck — audience, intent, duration, prior decisions, open questions. It survives context compaction; your in-context memory does not. Treat it as the single source of truth about everything below the slide-level.

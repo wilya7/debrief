@@ -969,6 +969,128 @@ def cli_update_state(project_root: Path, assignments: list[str]) -> None:
     )
 
 
+SLIDE_STATUS_VALUES: frozenset[str] = frozenset(
+    {"draft", "approved", "needs_revision", "discarded"}
+)
+"""Valid SlideRecord.status values per the dataclass docstring."""
+
+
+def _coerce_bool(value: str) -> bool:
+    """Mirror cli_update_state's bool coercion for CLI flags."""
+    return value.lower() in ("true", "1", "yes")
+
+
+def cli_update_slide(
+    project_root: Path,
+    slug: str,
+    *,
+    title: Optional[str] = None,
+    status: Optional[str] = None,
+    backup: Optional[bool] = None,
+    content_summary: Optional[str] = None,
+    visual_approach: Optional[str] = None,
+    design_choices: Optional[str] = None,
+    forks_not_taken: Optional[str] = None,
+    user_recommendations: Optional[str] = None,
+    qa_passed: Optional[bool] = None,
+    accepted_violations: Optional[list[dict[str, str]]] = None,
+    group_id: Optional[str] = None,
+    user_assets: Optional[list[str]] = None,
+    has_math: Optional[bool] = None,
+) -> None:
+    """Upsert a SlideRecord in deck_state.json (BC-2.20 / BUG-AUDIT-97).
+
+    Per BC-5.17 / REQ-CONSULT-SLIDE-WT-1 the consultant invokes this CLI
+    after every GREEN QA decision to keep ``deck_state.slides[]`` in sync
+    with ``slides/*.html`` in the SAME turn — no batching. If a record
+    with the given slug already exists, only the explicitly-passed fields
+    are touched (partial update). Otherwise a new SlideRecord is created
+    from the passed fields plus dataclass defaults; ``--title`` is then
+    required.
+    """
+    from datetime import datetime, timezone
+
+    if status is not None and status not in SLIDE_STATUS_VALUES:
+        print(
+            f"ERROR: invalid status '{status}' — expected one of "
+            f"{sorted(SLIDE_STATUS_VALUES)}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    state = read_deck_state(project_root)
+
+    existing_idx: Optional[int] = None
+    for i, s in enumerate(state.slides):
+        if s.slug == slug:
+            existing_idx = i
+            break
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    if existing_idx is not None:
+        record = state.slides[existing_idx]
+        if title is not None:
+            record.title = title
+        if status is not None:
+            record.status = status
+        if backup is not None:
+            record.backup = backup
+        if content_summary is not None:
+            record.content_summary = content_summary
+        if visual_approach is not None:
+            record.visual_approach = visual_approach
+        if design_choices is not None:
+            record.design_choices = design_choices
+        if forks_not_taken is not None:
+            record.forks_not_taken = forks_not_taken
+        if user_recommendations is not None:
+            record.user_recommendations = user_recommendations
+        if qa_passed is not None:
+            record.qa_passed = qa_passed
+        if accepted_violations is not None:
+            record.accepted_violations = accepted_violations
+        if group_id is not None:
+            record.group_id = group_id
+        if user_assets is not None:
+            record.user_assets = user_assets
+        if has_math is not None:
+            record.has_math = has_math
+        record.last_modified = now_iso
+    else:
+        if title is None:
+            print(
+                f"ERROR: --title is required when creating a new slide record "
+                f"(slug={slug!r} not found in deck_state.slides)",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        state.slides.append(
+            SlideRecord(
+                slug=slug,
+                title=title,
+                status=status if status is not None else "draft",
+                backup=backup if backup is not None else False,
+                content_summary=content_summary,
+                visual_approach=visual_approach,
+                design_choices=design_choices,
+                forks_not_taken=forks_not_taken,
+                user_recommendations=user_recommendations,
+                qa_passed=qa_passed if qa_passed is not None else False,
+                accepted_violations=(
+                    accepted_violations if accepted_violations is not None else []
+                ),
+                last_modified=now_iso,
+                group_id=group_id,
+                user_assets=user_assets if user_assets is not None else [],
+                has_math=has_math if has_math is not None else False,
+            )
+        )
+
+    write_deck_state(project_root, state)
+    print(f"Updated deck_state.json: slide {slug!r}", file=sys.stderr)
+
+
 # ---------------------------------------------------------------------------
 # CLI dispatcher (__main__)
 # ---------------------------------------------------------------------------
@@ -995,6 +1117,40 @@ if __name__ == "__main__":
     _al.add_argument("--detail", default="", help="Event detail")
     _al.add_argument("--project-root", type=Path, default=Path.cwd())
 
+    # update_slide subcommand (BC-2.20 / BUG-AUDIT-97)
+    _us = _sub.add_parser(
+        "update_slide",
+        help="Upsert a SlideRecord in deck_state.json (consultant write-through per BC-5.17)",
+    )
+    _us.add_argument("--slug", required=True, help="Slide slug (sanitized identifier)")
+    _us.add_argument("--title", default=None, help="Slide title (required for new records)")
+    _us.add_argument(
+        "--status",
+        default=None,
+        choices=sorted(SLIDE_STATUS_VALUES),
+        help="Slide status enum value",
+    )
+    _us.add_argument("--backup", default=None, help="Backup-mode flag (true|false)")
+    _us.add_argument("--content-summary", default=None, help="Content summary")
+    _us.add_argument("--visual-approach", default=None, help="Visual approach")
+    _us.add_argument("--design-choices", default=None, help="Design choices")
+    _us.add_argument("--forks-not-taken", default=None, help="Forks not taken")
+    _us.add_argument("--user-recommendations", default=None, help="User recommendations")
+    _us.add_argument("--qa-passed", default=None, help="QA pass flag (true|false)")
+    _us.add_argument(
+        "--accepted-violations",
+        default=None,
+        help='JSON list of {"invariant": str, "reason": str} dicts',
+    )
+    _us.add_argument("--group-id", default=None, help="Group identifier")
+    _us.add_argument(
+        "--user-assets",
+        default=None,
+        help="JSON list of relative asset paths",
+    )
+    _us.add_argument("--has-math", default=None, help="Math content flag (true|false)")
+    _us.add_argument("--project-root", type=Path, default=Path.cwd())
+
     _args = _parser.parse_args()
 
     if _args.command == "update":
@@ -1002,6 +1158,62 @@ if __name__ == "__main__":
     elif _args.command == "append_ledger":
         append_ledger_entry(
             _args.project_root.resolve(), _args.event, _args.detail,
+        )
+    elif _args.command == "update_slide":
+        # Parse JSON-shaped fields here; reject malformed JSON with stderr + exit 1.
+        _accepted_violations = None
+        if _args.accepted_violations is not None:
+            try:
+                _accepted_violations = json.loads(_args.accepted_violations)
+            except json.JSONDecodeError as _exc:
+                print(
+                    f"ERROR: --accepted-violations is not valid JSON: {_exc}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            if not isinstance(_accepted_violations, list):
+                print(
+                    "ERROR: --accepted-violations must be a JSON array",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        _user_assets = None
+        if _args.user_assets is not None:
+            try:
+                _user_assets = json.loads(_args.user_assets)
+            except json.JSONDecodeError as _exc:
+                print(
+                    f"ERROR: --user-assets is not valid JSON: {_exc}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            if not isinstance(_user_assets, list):
+                print(
+                    "ERROR: --user-assets must be a JSON array",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+        cli_update_slide(
+            _args.project_root.resolve(),
+            _args.slug,
+            title=_args.title,
+            status=_args.status,
+            backup=_coerce_bool(_args.backup) if _args.backup is not None else None,
+            content_summary=_args.content_summary,
+            visual_approach=_args.visual_approach,
+            design_choices=_args.design_choices,
+            forks_not_taken=_args.forks_not_taken,
+            user_recommendations=_args.user_recommendations,
+            qa_passed=(
+                _coerce_bool(_args.qa_passed) if _args.qa_passed is not None else None
+            ),
+            accepted_violations=_accepted_violations,
+            group_id=_args.group_id,
+            user_assets=_user_assets,
+            has_math=(
+                _coerce_bool(_args.has_math) if _args.has_math is not None else None
+            ),
         )
     else:
         _parser.print_help()

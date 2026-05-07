@@ -1355,6 +1355,52 @@ def _emit_anthropic_missing_stderr(command: str) -> None:
     )
 
 
+def _is_anthropic_auth_error(exc: BaseException) -> bool:
+    """True when ``exc`` is an Anthropic auth/credential failure (BUG-AUDIT-98).
+
+    Detects two cases without requiring a hard import of ``anthropic``
+    (which may itself be missing — that's the BUG-AUDIT-93 path):
+
+    1. ``TypeError`` from ``anthropic.Anthropic()`` constructor when no
+       credential is found in the environment. The SDK's message starts
+       with ``"Could not resolve authentication method"``. Fires when
+       ``ANTHROPIC_API_KEY`` is unset and no other credential is provided.
+    2. Class name ``"AuthenticationError"`` — ``anthropic.AuthenticationError``,
+       raised by the SDK when the API rejects a present-but-invalid
+       credential (HTTP 401). Class-name comparison avoids importing the
+       SDK at classifier time.
+
+    All other exception classes return False; they fall through to the
+    silent-exit-0 branch per the BC-3.18 / BC-3.20 contract.
+    """
+    if isinstance(exc, TypeError) and "could not resolve authentication" in str(exc).lower():
+        return True
+    if type(exc).__name__ == "AuthenticationError":
+        return True
+    return False
+
+
+def _emit_anthropic_auth_missing_stderr(command: str, *, log_path: str) -> None:
+    """Print actionable stderr line for missing/invalid API credentials (BUG-AUDIT-98).
+
+    Called when the lazy-import path raises a TypeError or AuthenticationError
+    classified by ``_is_anthropic_auth_error``. Pre-fix the launcher caught
+    only ``ModuleNotFoundError`` and silently exit-0'd on any other Anthropic
+    failure mode, hiding auth errors from the user entirely.
+
+    The ``log_path`` parameter accommodates the script-writer's
+    ``.debrief/script_errors.jsonl`` and the rewriter's
+    ``.debrief/rewrite_errors.jsonl`` so the user can inspect the captured
+    failure detail with one ``cat``.
+    """
+    print(
+        f"{command}: anthropic API authentication failed; "
+        f"set ANTHROPIC_API_KEY in the environment and retry. "
+        f"Details logged to {log_path}.",
+        file=sys.stderr,
+    )
+
+
 def call_script_writer_agent(
     model: str,
     system_prompt: str,
@@ -1632,8 +1678,15 @@ def main_script_writer(
         # Cascades (deck-complete-finalization, /debrief:handout-cascade) keep
         # exit 0 per REQ-SCRIPT-WRITER-2 — the next step in the cascade still
         # runs, and the JSONL log captures the failure for later inspection.
+        # BUG-AUDIT-98 extends the same shape to Anthropic auth failures
+        # (missing or invalid ANTHROPIC_API_KEY).
         if _is_anthropic_module_error(exc):
             _emit_anthropic_missing_stderr("/debrief:script")
+            sys.exit(2 if trigger == "/debrief:script" else 0)
+        if _is_anthropic_auth_error(exc):
+            _emit_anthropic_auth_missing_stderr(
+                "/debrief:script", log_path=_SCRIPT_ERRORS_REL,
+            )
             sys.exit(2 if trigger == "/debrief:script" else 0)
         sys.exit(0)
 
@@ -2210,8 +2263,13 @@ def main_rewrite_brief(
         # the rewriter has not produced deck_brief.md / audience.yaml. Exit
         # remains 0 unconditionally per REQ-MEMORY-REWRITE-4 — PreCompact must
         # never block compaction even when the rewriter cannot run.
+        # BUG-AUDIT-98 extends the same shape to Anthropic auth failures.
         if _is_anthropic_module_error(exc):
             _emit_anthropic_missing_stderr("rewrite_brief")
+        elif _is_anthropic_auth_error(exc):
+            _emit_anthropic_auth_missing_stderr(
+                "rewrite_brief", log_path=_REWRITE_ERRORS_REL,
+            )
         sys.exit(0)
 
     # 6. Validate brief structure.
@@ -3323,15 +3381,129 @@ def _audit_assets(project_root: Path) -> dict:
     }
 
 
+def _audit_phase(project_root: Path) -> dict:
+    """Audit ``debrief_state.phase`` / ``sub_phase`` against ``deck_state``.
+
+    Per BC-3.16 amendment + BUG-AUDIT-99. Detects three drift signals:
+
+    1. **Primary:** approved slides exist AND ``phase == "discovery"``.
+       The consultant has authored slides without advancing the phase;
+       downstream commands that key off ``phase`` produce wrong answers.
+    2. ``style_locked`` is True AND ``phase == "discovery"`` AND
+       ``sub_phase`` is not ``"discovery/style_analysis"`` — the style
+       was approved/locked but the phase did not advance.
+    3. ``phase == "production"`` AND ``sub_phase == "production/group_planning"``
+       AND approved slides exist — the sub_phase did not advance past
+       planning even though slide work has progressed.
+
+    Returns a dict with keys: ``phase``, ``sub_phase``,
+    ``approved_slide_count``, ``style_locked``, ``drift`` (bool),
+    ``notes`` (list[str]; each note includes a copy-pasteable recovery
+    CLI command). The audit is read-only — it surfaces the drift but
+    does NOT auto-remediate.
+    """
+    from debrief_state import read_debrief_state, read_deck_state  # type: ignore[import]
+
+    notes: list[str] = []
+
+    # Fall back gracefully if state files are absent or unreadable; the
+    # primary doctor codepath already surfaces those errors via its own
+    # reporting, so this audit just emits a one-line note and returns.
+    try:
+        debrief_state_obj = read_debrief_state(project_root)
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "phase": None,
+            "sub_phase": None,
+            "approved_slide_count": 0,
+            "style_locked": None,
+            "drift": False,
+            "notes": [f"could not read debrief_state.json: {exc}"],
+        }
+    try:
+        deck_state_obj = read_deck_state(project_root)
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "phase": debrief_state_obj.phase,
+            "sub_phase": debrief_state_obj.sub_phase,
+            "approved_slide_count": 0,
+            "style_locked": None,
+            "drift": False,
+            "notes": [f"could not read deck_state.json: {exc}"],
+        }
+
+    approved_slide_count = sum(
+        1 for s in deck_state_obj.slides if s.status == "approved"
+    )
+    style_locked = deck_state_obj.style_locked
+    phase = debrief_state_obj.phase
+    sub_phase = debrief_state_obj.sub_phase
+
+    drift = False
+
+    # Drift signal 1 (primary): approved slides exist but phase=="discovery".
+    if approved_slide_count > 0 and phase == "discovery":
+        drift = True
+        notes.append(
+            f"{approved_slide_count} approved slide(s) exist but phase is "
+            f"'discovery'. The consultant must advance the phase. Recovery: "
+            f"`python -m debrief.debrief_state update "
+            f"--set sub_phase=production/slide_review --project-root {project_root}` "
+            f"(phase auto-derives from sub_phase prefix per BC-2.15a)."
+        )
+
+    # Drift signal 2: style_locked but phase still 'discovery' and sub_phase
+    # not advanced past discovery/style_analysis.
+    if (
+        style_locked
+        and phase == "discovery"
+        and sub_phase != "discovery/style_analysis"
+    ):
+        drift = True
+        notes.append(
+            f"style_locked is True but phase=='discovery' and sub_phase=='{sub_phase}'. "
+            f"Style approval should have advanced sub_phase. Recovery: "
+            f"`python -m debrief.debrief_state update "
+            f"--set sub_phase=style/style_lock --project-root {project_root}`."
+        )
+
+    # Drift signal 3: production phase but sub_phase stuck at group_planning
+    # even though slides have been approved.
+    if (
+        phase == "production"
+        and sub_phase == "production/group_planning"
+        and approved_slide_count > 0
+    ):
+        drift = True
+        notes.append(
+            f"phase=='production' but sub_phase=='production/group_planning' "
+            f"with {approved_slide_count} approved slide(s). The sub_phase "
+            f"did not advance past planning. Recovery: "
+            f"`python -m debrief.debrief_state update "
+            f"--set sub_phase=production/slide_review --project-root {project_root}`."
+        )
+
+    return {
+        "phase": phase,
+        "sub_phase": sub_phase,
+        "approved_slide_count": approved_slide_count,
+        "style_locked": style_locked,
+        "drift": drift,
+        "notes": notes,
+    }
+
+
 def main_doctor(
     project_root: Path,
     *,
     reconstruct: bool = False,
     brief_audit: bool = False,
     asset_audit: bool = False,
+    phase_audit: bool = False,
 ) -> None:
     """Entry point for ``python -m debrief.launcher doctor
-    --project-root <path> [--reconstruct] [--brief-audit] [--asset-audit]``.
+    --project-root <path> [--reconstruct] [--brief-audit] [--asset-audit]
+    [--phase-audit]``.
 
     Prints a JSON report to stdout and a human-readable summary to
     stderr.
@@ -3342,7 +3514,8 @@ def main_doctor(
     * 1 — drift detected in report-only mode (scripts can key off this).
     * 2 — remediation attempted under ``--reconstruct`` but failed.
 
-    See BC-3.15, BC-3.16, and BUG-AUDIT-75 / BUG-AUDIT-83 / BUG-AUDIT-94.
+    See BC-3.15, BC-3.16, and BUG-AUDIT-75 / BUG-AUDIT-83 / BUG-AUDIT-94 /
+    BUG-AUDIT-99.
     """
     project_root = project_root.resolve()
     report = detect_slide_state_drift(project_root)
@@ -3408,6 +3581,14 @@ def main_doctor(
         summary["asset_audit"] = asset_report
         asset_drift = bool(asset_report.get("drift", False))
 
+    # BUG-AUDIT-99: --phase-audit extends the doctor with phase/sub_phase
+    # drift detection — approved slides without phase advancement, etc.
+    phase_drift = False
+    if phase_audit:
+        phase_report = _audit_phase(project_root)
+        summary["phase_audit"] = phase_report
+        phase_drift = bool(phase_report.get("drift", False))
+
     print(json.dumps(summary, indent=2))
 
     if report.drift_detected:
@@ -3434,15 +3615,20 @@ def main_doctor(
         if asset_audit:
             for note in summary["asset_audit"]["notes"]:  # type: ignore[index]
                 print(f"  asset_audit: {note}", file=sys.stderr)
+        if phase_audit:
+            for note in summary["phase_audit"]["notes"]:  # type: ignore[index]
+                print(f"  phase_audit: {note}", file=sys.stderr)
         sys.exit(1)
 
-    if brief_drift or asset_drift:
-        if brief_drift and asset_drift:
-            headline = "slides in sync; brief-audit DRIFT and asset-audit DRIFT"
-        elif brief_drift:
-            headline = "slides in sync; brief-audit DRIFT"
-        else:
-            headline = "slides in sync; asset-audit DRIFT"
+    if brief_drift or asset_drift or phase_drift:
+        drift_labels = []
+        if brief_drift:
+            drift_labels.append("brief-audit DRIFT")
+        if asset_drift:
+            drift_labels.append("asset-audit DRIFT")
+        if phase_drift:
+            drift_labels.append("phase-audit DRIFT")
+        headline = "slides in sync; " + " and ".join(drift_labels)
         print(f"debrief doctor: {headline} — see notes:", file=sys.stderr)
         if brief_drift:
             for note in summary["brief_audit"]["notes"]:  # type: ignore[index]
@@ -3450,6 +3636,9 @@ def main_doctor(
         if asset_drift:
             for note in summary["asset_audit"]["notes"]:  # type: ignore[index]
                 print(f"  asset_audit: {note}", file=sys.stderr)
+        if phase_drift:
+            for note in summary["phase_audit"]["notes"]:  # type: ignore[index]
+                print(f"  phase_audit: {note}", file=sys.stderr)
         sys.exit(1)
 
     msg = f"debrief doctor: OK — {report.matched_count} slide(s) in sync."
@@ -3457,6 +3646,8 @@ def main_doctor(
         msg += " Brief audit: clean."
     if asset_audit:
         msg += " Asset audit: clean."
+    if phase_audit:
+        msg += " Phase audit: clean."
     print(msg, file=sys.stderr)
     sys.exit(0)
 
@@ -3856,12 +4047,26 @@ def main_new() -> None:
                 "code 1."
             ),
         )
+        _parser.add_argument(
+            "--phase-audit",
+            action="store_true",
+            help=(
+                "BUG-AUDIT-99: also audit debrief_state.phase / sub_phase "
+                "against deck_state.slides — approved slides without phase "
+                "advancement, style locked without sub_phase advancement, "
+                "production phase stuck at group_planning despite approved "
+                "slides. Adds a `phase_audit` field to the JSON report. "
+                "Phase drift is reported via exit code 1; each note in the "
+                "report includes a copy-pasteable recovery CLI command."
+            ),
+        )
         _args = _parser.parse_args(sys.argv[2:])
         main_doctor(
             _args.project_root,
             reconstruct=_args.reconstruct,
             brief_audit=_args.brief_audit,
             asset_audit=_args.asset_audit,
+            phase_audit=_args.phase_audit,
         )
     elif subcommand == "archive_paper":
         # BC-3.21 / BUG-AUDIT-94: explicit retroactive paper-archival path
