@@ -494,6 +494,13 @@ class TestMainRewriteBriefOrchestrator:
         assert "WILL_NOT_LEAK." not in captured["user_message"]
 
     def test_api_failure_logs_error_exits_0(self, tmp_path: Path) -> None:
+        # BUG-AUDIT-101: PreCompact is now capture-only and does not
+        # reach the SDK. The legacy synthesis path (with API call + log
+        # on failure) is preserved in main_rewrite_brief only for
+        # non-PreCompact triggers — backward-compat surface during the
+        # transition. We exercise that path here via the
+        # /debrief:refresh-brief trigger so the historical behavior
+        # remains pinned.
         _seed_minimal_dialog(tmp_path)
         with patch.object(
             launcher,
@@ -503,7 +510,7 @@ class TestMainRewriteBriefOrchestrator:
             with pytest.raises(SystemExit) as ei:
                 main_rewrite_brief(
                     tmp_path,
-                    trigger="PreCompact",
+                    trigger="/debrief:refresh-brief",
                     plugin_root=_plugin_root_for_tests(),
                 )
         assert ei.value.code == 0
@@ -515,7 +522,7 @@ class TestMainRewriteBriefOrchestrator:
         assert len(entries) == 1
         assert entries[0]["error_class"] == "RuntimeError"
         assert "simulated API outage" in entries[0]["error_message"]
-        assert entries[0]["trigger"] == "PreCompact"
+        assert entries[0]["trigger"] == "/debrief:refresh-brief"
 
     def test_validation_failure_preserves_prior_brief(
         self, tmp_path: Path

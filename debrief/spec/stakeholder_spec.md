@@ -8228,4 +8228,57 @@ BC-11.15a (handout notes source precedence) amended; BC-11.15c added (handout de
 
 ---
 
+### BUG-AUDIT-101: Rewriter converted from direct-SDK hybrid pattern to Task-dispatch — OAuth users no longer need `ANTHROPIC_API_KEY` for any rewriter trigger
+
+**Status:** Cycle 13 (2026-05-07). User-reported. Carlo authenticates Claude Code via OAuth (the standard paid-subscription path) and observes the inconsistency: most of debrief's agents — `consultant`, `slide-maker`, `stylist`, `visual-qa` — are dispatched via Claude Code's `Task` tool and operate seamlessly under his OAuth session. The `rewriter` and `script-writer`, however, use a different pattern (BC-5.19 / BC-5.21 "hybrid invocation"): the launcher CLI reads the agent card and calls `anthropic.Anthropic()` directly, which requires `ANTHROPIC_API_KEY` (or `auth_token`, per the SDK's error). For an OAuth-only user, every rewriter trigger fails — silently before BUG-AUDIT-98, with a clear stderr message after — and the user cannot proceed without configuring a separate API credential they don't otherwise need. The user's framing: *"I do not want to use API if I already pay the subscription."*
+
+**Problem.** The hybrid invocation pattern was designed at a moment when the rewriter's PreCompact trigger appeared to require subprocess execution (PreCompact runs as a hook outside any active Claude Code session). Once subprocess execution was the rewriter's path for ANY trigger, all three triggers (PreCompact hook, `/debrief:refresh-brief`, `/debrief:quit` flush) were unified on it for code-path simplicity, validator co-location, and atomic-write consistency. The cost of that design unification: every trigger requires the user to have a credential the launcher subprocess can read, which Claude Code does not propagate by default. OAuth users get a credential model that's incompatible with the rewriter, even though their session is fully authenticated for everything else.
+
+The empirical observation (this very session is evidence): `Task`-dispatched subagents in an OAuth-authenticated Claude Code session DO complete model calls without `ANTHROPIC_API_KEY`. The credential propagation is not officially contractual (the Claude Code subagent docs describe "independent permissions" without specifying credential inheritance) but is observed-stable across releases. By contrast, a Python subprocess invoking the SDK directly has no such inheritance — it sees only what the user explicitly exports to the environment.
+
+PreCompact is the architectural constraint that justified subprocess invocation in the first place: a hook runs as a subprocess by definition, and at that moment the Claude Code session is being torn down. There is no `Task` to dispatch into. But the conclusion that PreCompact must therefore CALL THE MODEL at hook time was a design choice, not a requirement — synthesis can be deferred.
+
+**Root cause.** Three-axis design lock-in:
+
+1. **All-triggers-on-subprocess unification.** BC-5.19 mandated one code path for the rewriter across PreCompact, manual, and quit-flush triggers. The choice was sensible at the time (validator + atomic-write co-location, single-error-log schema) but bound in-session triggers to the same auth model as the hook subprocess. In-session triggers do NOT need to be subprocess-invoked — they have a live consultant who can dispatch via `Task`.
+
+2. **PreCompact-must-synthesize-now assumption.** PreCompact's role is *capture* (preserving the current dialog state before compaction erases in-context memory) and the design layered *synthesis* (rewriting the brief from the captured state) onto the same hook for performance reasons (synthesize while context is fresh). But synthesis can run later — the dialog archive is durable; the only thing that needs to happen at PreCompact is the capture. Deferring synthesis to next session start trades a small brief-staleness window for a much simpler auth model.
+
+3. **Validator + atomic-write co-located with the SDK call.** The launcher's `main_rewrite_brief` runs `validate_brief_structure`, roster YAML extraction, and atomic dual-write of `deck_brief.md` + `output/audience.yaml` in the same function as `call_rewrite_agent`. Splitting the SDK call out (so it can be replaced by a `Task` dispatch) means splitting the function. The split is mechanical but requires a clean intermediate format (the agent's markdown output, plus the structured prompt that fed it).
+
+**Detection method.** Direct user report 2026-05-07 (this cycle) plus the BUG-AUDIT-98 field bug report which already documented the auth failure mode that motivated this fix. Pre-fix regression test (`tests/regressions/test_bug_audit_101_rewriter_oauth.py`) asserts: (a) PreCompact-trigger code path makes no SDK call (mock `call_rewrite_agent` to fail; assert it was never reached); (b) PreCompact still captures transcript turns; (c) PreCompact writes a `.debrief/.brief_stale` sentinel with a defined schema; (d) `build_rewrite_prompt` CLI emits a structured prompt assembled from project files; (e) `write_brief` CLI validates + atomically writes the agent's markdown output without making any SDK call; (f) the consultant agent card and CLAUDE.md template prescribe Task-dispatch + sentinel-detection; (g) `agents/rewriter.md` no longer claims hybrid invocation. Pre-fix all seven categories fail.
+
+**Fix summary.** Three coordinated structural changes:
+
+1. **In-session triggers route through `Task`-dispatch.** `/debrief:refresh-brief` and `/debrief:quit` flush no longer call `main_rewrite_brief` directly. The consultant runs the new orchestration:
+   - Bash: `python -m debrief.launcher build_rewrite_prompt --project-root .` — emits the structured user-message body (deck_brief + dialog + timeline + audience excerpt + bootstrap-brief on first run) to stdout.
+   - `Task(subagent_type="rewriter", prompt=<captured stdout>)` — uses Claude Code's session credentials (OAuth or whatever the user is authenticated with). Returns the agent's markdown output.
+   - Bash: write the agent's markdown to `.debrief/draft/refresh_brief.md` via heredoc (the consultant uses Bash, not the Write tool, to keep the existing project-scoped write-auth hook semantics simple).
+   - Bash: `python -m debrief.launcher write_brief --project-root . --trigger /debrief:refresh-brief` — reads `.debrief/draft/refresh_brief.md`, runs validators (`validate_brief_structure`, roster YAML extraction), atomically writes `deck_brief.md` + `output/audience.yaml`, updates `.debrief/rewrite_metadata.json`, removes the draft file. Identical exit-code policy to today's `main_rewrite_brief` (always exit 0 — REQ-MEMORY-REWRITE-4 unchanged).
+
+2. **PreCompact becomes capture-only.** The PreCompact hook (`hooks.json`) still invokes `python -m debrief.launcher rewrite_brief --trigger PreCompact`, but that code path now: (a) reads the transcript-path envelope from stdin, (b) calls `append_dialog_turns_from_transcript` (existing behavior — no change), (c) writes a sentinel file at `.debrief/.brief_stale` with JSON schema `{"timestamp": "<ISO8601 UTC>", "last_archived_turn": <int>, "compaction_event_id": "<opaque string from envelope or null>"}`, (d) exits 0. **No SDK call. No `ANTHROPIC_API_KEY` lookup. No auth.** The rewriter's synthesis is deferred to next session start.
+
+3. **Session-start sentinel detection.** The consultant's session-start protocol (currently anchored in `agents/consultant.md` and the project `CLAUDE.md` "On Session Start" section) MUST gain a step: after reading `debrief_state.json` and `deck_state.json`, check for `.debrief/.brief_stale`. If present, run the same Task-dispatch + write_brief orchestration as `/debrief:refresh-brief` (with `--trigger session_start_recovery`), then unlink the sentinel. If the dispatch fails (network error, agent error, validator rejection), log to `.debrief/rewrite_errors.jsonl` and LEAVE the sentinel in place so the next session retries. The dialog archive is the canonical record between PreCompact and session-start; the brief is temporarily stale but recoverable.
+
+**Trigger surface (post-fix):**
+
+| Trigger | Path | Auth requirement |
+|---|---|---|
+| `PreCompact` | launcher subprocess | none (capture + sentinel only) |
+| `/debrief:refresh-brief` | consultant → `build_rewrite_prompt` → `Task(rewriter)` → `write_brief` | Claude Code session credential (OAuth or API key) |
+| `/debrief:quit` flush | same as `/debrief:refresh-brief` | same |
+| Session-start (sentinel-detected) | same | same |
+
+For an OAuth-authenticated Claude Code user with NO `ANTHROPIC_API_KEY` set, all four triggers work end-to-end after this fix.
+
+BC-5.19 (rewriter agent) amended — "hybrid invocation" requirement retired in favor of Task-dispatch for in-session triggers. New BC-3.18a (`build_rewrite_prompt` CLI). New BC-3.18b (`write_brief` CLI). New BC-3.18c (PreCompact capture-only contract). New BC-5.16a (consultant session-start sentinel-detection step). The `main_rewrite_brief` direct-SDK path is RETAINED only for the PreCompact capture-only flow; its synthesis half is removed.
+
+**Normative requirements:** none new (REQ-MEMORY-REWRITE-1..4 unchanged in semantics; the implementation path changes, the contract on the deliverables doesn't).
+
+**Prior-Art for Rebuild:** *"the credential model is the architectural constraint, not the deliverable shape."* The hybrid invocation pattern was a clever solution to a problem that turned out to be smaller than it looked: PreCompact was assumed to need synthesis-now, when it actually only needs capture-now. Once that assumption breaks, all three rewriter triggers can move to a credential model the user already has. Generalizing: when a plugin pattern requires the user to acquire a credential outside their normal authentication flow, that's a smell worth investigating — the credential requirement is often an artifact of design unification (one code path for all triggers), and the unified path is often broader than necessary. The rebuild pattern: enumerate the triggers, identify which are subprocess-bound (e.g., hooks) and which are session-bound (e.g., slash commands), match each to the cheapest credential path it can use. PreCompact is a special trigger because Claude Code's session is being torn down — it's the only one that genuinely cannot dispatch into the session. Everything else can.
+
+A second prior-art point worth recording: **`Task`-dispatched OAuth inheritance is empirically stable but not contractually documented.** Per Claude Code's subagent documentation (https://code.claude.com/docs/en/sub-agents.md), subagents have "independent permissions" — the docs do not state that the parent session's credential automatically applies. This fix relies on observed behavior. If Anthropic ever changes Claude Code's auth model so subagents must carry their own credentials, this plugin will need an alternate path (e.g., `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR` per the authentication docs). For now, the observed-stable behavior is the cheapest UX win available; the alternate path remains documented in this prior-art file as a fallback.
+
+---
+
 *End of Debrief Stakeholder Specification v1.1*

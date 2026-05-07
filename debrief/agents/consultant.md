@@ -457,6 +457,68 @@ When `doctor` reports drift (exit code 1):
 
 The `--reconstruct` flag is the one exception to the surface-then-apply pattern: it is itself the remediation for orphan-files drift, not a separate command. You MAY use it directly when slide-file/state drift is the detected mode and the recovery is "reconstruct minimal `SlideRecord` entries." Other modes' recoveries (CLI invocations from the audit's `notes`) MUST go through the surface-then-apply pattern in the recovery loop above.
 
+## Brief Refresh Dispatch (BUG-AUDIT-101 / BC-5.16a)
+
+`deck_brief.md` synthesis runs through `Task`-dispatch of the rewriter agent — NOT through a launcher subprocess that calls the Anthropic SDK directly. This is the architectural fix from BUG-AUDIT-101 that lets OAuth-only Claude Code users use the rewriter without a separate `ANTHROPIC_API_KEY`. The launcher's `rewrite_brief` subcommand still exists, but only as the **PreCompact capture-only path** (BC-3.18c) — it appends dialog turns and writes a sentinel; it does NOT call the model.
+
+### Sentinel: `.debrief/.brief_stale`
+
+PreCompact writes this file after capturing dialog turns. Its presence means *"the brief is out of date — synthesis is pending."* The sentinel's JSON schema is documented in BC-3.18c; you don't normally need to parse it, just check whether it exists.
+
+### Four triggers
+
+You orchestrate a rewriter dispatch at exactly four moments. Three call this command directly; the fourth is automatic.
+
+1. **Session start (sentinel-detected).** After reading `debrief_state.json` and `deck_state.json` — and BEFORE any user-facing reply — check for `.debrief/.brief_stale`. If it exists, run the four-step dispatch below with `--trigger session_start_recovery`. On success, the `write_brief` CLI removes the sentinel automatically. On failure, the sentinel remains; log to `.debrief/rewrite_errors.jsonl` (the launcher does this for you) and continue.
+2. **Manual `/debrief:refresh-brief`.** User-invoked. Run the dispatch with `--trigger /debrief:refresh-brief`.
+3. **`/debrief:quit` flush.** Final consolidation at session end. Run the dispatch with `--trigger /debrief:quit`.
+4. **NOT PreCompact.** PreCompact handles itself; do not run any synthesis from a hook context — the hook subprocess has no Claude Code session to dispatch into.
+
+### Four-step dispatch protocol
+
+For each of the three trigger moments above, execute these four steps in order:
+
+**Step 1: Build the structured prompt.** Run via Bash:
+
+```bash
+python -m debrief.launcher build_rewrite_prompt --project-root .
+```
+
+Capture the stdout. This is the rewriter's user-message body — assembled deterministically from the dialog archive, event timeline, and (on first rewrite) the bootstrap brief.
+
+**Step 2: Dispatch via Task.** With the captured prompt:
+
+```
+Task(subagent_type="rewriter", prompt=<captured prompt>)
+```
+
+The agent returns the new brief markdown as its task output. The dispatch uses Claude Code's session credential — no separate API key needed.
+
+**Step 3: Stage the agent's output.** Write the agent's markdown verbatim to `.debrief/draft/refresh_brief.md` via Bash heredoc (NOT the Write tool — heredoc keeps the project-scoped write-auth hook semantics simple):
+
+```bash
+mkdir -p .debrief/draft
+cat > .debrief/draft/refresh_brief.md <<'DEBRIEF_BRIEF_DRAFT_EOF'
+<agent's markdown verbatim>
+DEBRIEF_BRIEF_DRAFT_EOF
+```
+
+**Step 4: Validate + atomic write.** Run via Bash:
+
+```bash
+python -m debrief.launcher write_brief --project-root . --trigger <trigger>
+```
+
+This validates brief structure + roster YAML, atomically writes `deck_brief.md` + `output/audience.yaml`, updates `.debrief/rewrite_metadata.json`, removes the draft, and removes the `.brief_stale` sentinel. The CLI always exits 0 (REQ-MEMORY-REWRITE-4 unchanged); failures are logged to `.debrief/rewrite_errors.jsonl`.
+
+### Failure handling
+
+If any step fails — Task dispatch error, validation rejection in `write_brief`, atomic-write error — surface a one-line summary to the user and continue. Suggested phrasing: *"Brief refresh failed at step <N>: <reason>. The previous `deck_brief.md` remains in place; run `/debrief:refresh-brief` to retry."* The dialog archive captures every turn regardless, so brief staleness is recoverable, never data-losing. If the failure was at session-start sentinel detection, the sentinel remains and the next session will retry.
+
+### Credential model
+
+This dispatch uses Claude Code's session credential (OAuth or whatever the user is authenticated with) for the model call. **`ANTHROPIC_API_KEY` is NOT required for any of the four triggers** — that's the architectural fix from BUG-AUDIT-101. The pre-fix hybrid invocation pattern (launcher reads agent card and calls SDK directly) is RETIRED for synthesis; only PreCompact's capture-only path still runs in a subprocess, and it doesn't call the model.
+
 ## Deck Brief Maintenance (BUG-AUDIT-74 / REQ-CONSULT-DECK-BRIEF-1 / BC-5.16, amended by BUG-AUDIT-78 / BC-5.19)
 
 `deck_brief.md` is the **canonical recovery surface** for every fact the consultant has learned about this deck — audience, intent, duration, prior decisions, open questions. It survives context compaction; your in-context memory does not. Treat it as the single source of truth about everything below the slide-level.

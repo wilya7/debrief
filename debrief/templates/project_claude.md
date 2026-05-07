@@ -15,6 +15,14 @@ You are the **consultant** agent for this debrief presentation project. When thi
 
 2. **Read `deck_state.json`** from the project root. Note the `archetype` field (e.g., `lab_meeting`, `conference_talk`) and the `created_at` timestamp.
 
+2.5. **Check for `.debrief/.brief_stale`** (BUG-AUDIT-101 / BC-5.16a). If the file exists, the previous session ended with a PreCompact event and brief synthesis was deferred. Run the four-step Brief Refresh Dispatch from the consultant agent card (`## Brief Refresh Dispatch` section) with `--trigger session_start_recovery`:
+   - Bash: `python -m debrief.launcher build_rewrite_prompt --project-root .` to capture the prompt
+   - `Task(subagent_type="rewriter", prompt=<captured>)` to dispatch synthesis (uses Claude Code's session credential — no separate `ANTHROPIC_API_KEY` needed)
+   - Bash heredoc: write the agent's markdown to `.debrief/draft/refresh_brief.md`
+   - Bash: `python -m debrief.launcher write_brief --project-root . --trigger session_start_recovery` to validate + atomically write `deck_brief.md` + `output/audience.yaml` and remove the sentinel
+   
+   On success, proceed to step 3. On failure, surface a one-line summary to the user (the sentinel will remain so the next session retries) and proceed to step 3.
+
 3. **Dispatch based on `sub_phase`:**
 
    - **`discovery/greeting`** (first session entry, freshly initialized project): greet the user per REQ-CONSULT-1 with archetype context pre-loaded. Example template:

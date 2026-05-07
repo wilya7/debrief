@@ -2158,6 +2158,7 @@ def main_rewrite_brief(
     # path with a real piped JSON envelope counts.
     if trigger == "PreCompact":
         stdin_text: Optional[str] = None
+        compaction_event_id: Optional[str] = None
         try:
             if not sys.stdin.isatty():
                 stdin_text = sys.stdin.read()
@@ -2175,6 +2176,11 @@ def main_rewrite_brief(
                     append_dialog_turns_from_transcript(
                         project_root, Path(transcript_path_str)
                     )
+                # Capture compaction_event_id from the envelope when
+                # Claude Code provides one (otherwise stays None).
+                cid = envelope.get("compaction_event_id")
+                if isinstance(cid, str) and cid:
+                    compaction_event_id = cid
             except (json.JSONDecodeError, OSError, ValueError) as exc:
                 log_rewrite_error(
                     project_root,
@@ -2182,8 +2188,37 @@ def main_rewrite_brief(
                     error_class="transcript_capture_error",
                     error_message=str(exc),
                 )
-                # Continue anyway — the rewrite still runs against the
-                # existing dialog archive (just without the new turns).
+                # Continue anyway — the sentinel still gets written
+                # so the consultant knows synthesis is pending.
+
+        # BUG-AUDIT-101 / BC-3.18c: PreCompact is capture-only. Write the
+        # sentinel and exit. The consultant detects the sentinel on next
+        # session start and runs the rewriter via Task (BC-5.16a). NO
+        # SDK call here — OAuth-only Claude Code users have no
+        # ANTHROPIC_API_KEY and the model call would fail; deferring
+        # synthesis to a Task-dispatched path eliminates the auth
+        # requirement at compaction time.
+        try:
+            meta_for_sentinel = _read_rewrite_metadata(project_root)
+            _write_brief_stale_sentinel(
+                project_root,
+                last_archived_turn=int(
+                    meta_for_sentinel.get("last_archived_turn", 0) or 0
+                ),
+                compaction_event_id=compaction_event_id,
+                trigger="PreCompact",
+            )
+        except OSError as exc:
+            log_rewrite_error(
+                project_root,
+                trigger=trigger,
+                error_class="sentinel_write_error",
+                error_message=str(exc),
+            )
+            # Sentinel write failure is logged but doesn't block — the
+            # dialog archive still captured the turns, and the user can
+            # manually run /debrief:refresh-brief on next session.
+        sys.exit(0)
 
     # 1. Resolve agent card path.
     if plugin_root is None:
@@ -2332,6 +2367,175 @@ def main_rewrite_brief(
 
 
 # ---------------------------------------------------------------------------
+# BUG-AUDIT-101: rewriter Task-dispatch CLIs.
+#
+# `main_build_rewrite_prompt` and `main_write_brief` split the legacy
+# `main_rewrite_brief` synthesis path into two pieces, so the consultant
+# can dispatch the model call via Claude Code's `Task` tool (using the
+# session's OAuth credential) instead of via the launcher's direct SDK
+# call. PreCompact remains in `main_rewrite_brief` as the capture-only
+# path (BC-3.18c). See BUG-AUDIT-101 spec entry for the full rationale.
+# ---------------------------------------------------------------------------
+
+
+def main_build_rewrite_prompt(project_root: Path) -> None:
+    """Entry point for ``python -m debrief.launcher build_rewrite_prompt
+    --project-root <path>`` (BC-3.18a / BUG-AUDIT-101).
+
+    Reads project state (rewrite metadata + dialog archive + event
+    timeline + bootstrap brief on first rewrite) and emits the
+    structured user-message body to stdout. The consultant captures
+    this output via Bash and feeds it as the ``prompt`` argument to
+    ``Task(subagent_type="rewriter", ...)``.
+
+    No model call. No file writes. Read-only.
+    """
+    project_root = project_root.resolve()
+    meta = _read_rewrite_metadata(project_root)
+    is_bootstrap = not meta.get("bootstrap_complete", False)
+    prior_brief: Optional[str] = None
+    brief_path = project_root / _DECK_BRIEF_REL
+    if is_bootstrap and brief_path.is_file():
+        try:
+            prior_brief = brief_path.read_text(encoding="utf-8")
+        except OSError:
+            prior_brief = None
+    dialog = read_dialog_archive(project_root)
+    timeline = read_event_timeline(project_root)
+    user_message = build_rewrite_inputs(dialog, timeline, prior_brief)
+    sys.stdout.write(user_message)
+    sys.exit(0)
+
+
+def main_write_brief(
+    project_root: Path,
+    *,
+    trigger: str = "/debrief:refresh-brief",
+    draft_path: Optional[Path] = None,
+) -> None:
+    """Entry point for ``python -m debrief.launcher write_brief
+    --project-root <path> --trigger <t> [--draft-path <path>]``
+    (BC-3.18b / BUG-AUDIT-101).
+
+    Reads the rewriter agent's markdown output from ``draft_path``
+    (default ``.debrief/draft/refresh_brief.md``), runs the same
+    validators as ``main_rewrite_brief`` (brief structure + roster
+    YAML), and atomically dual-writes ``deck_brief.md`` +
+    ``output/audience.yaml``. Updates ``.debrief/rewrite_metadata.json``
+    on success. Removes the draft file on success. Removes
+    ``.debrief/.brief_stale`` on success (the sentinel set by
+    PreCompact per BC-3.18c is cleared by successful synthesis).
+
+    Always exits 0 — REQ-MEMORY-REWRITE-4 unchanged. Failures log to
+    ``.debrief/rewrite_errors.jsonl`` per the existing schema.
+    """
+    project_root = project_root.resolve()
+    if draft_path is None:
+        draft_path = project_root / _BRIEF_DRAFT_REL
+
+    # 1. Read the agent's markdown.
+    if not draft_path.is_file():
+        log_rewrite_error(
+            project_root,
+            trigger=trigger,
+            error_class="draft_missing",
+            error_message=f"draft brief not found at {draft_path}",
+        )
+        sys.exit(0)
+    try:
+        response_text = draft_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        log_rewrite_error(
+            project_root,
+            trigger=trigger,
+            error_class="draft_read_error",
+            error_message=str(exc),
+        )
+        sys.exit(0)
+    if not response_text.strip():
+        log_rewrite_error(
+            project_root,
+            trigger=trigger,
+            error_class="draft_empty",
+            error_message=f"draft brief at {draft_path} is empty",
+        )
+        sys.exit(0)
+
+    # 2. Validate brief structure.
+    try:
+        validate_brief_structure(response_text)
+    except ValueError as exc:
+        log_rewrite_error(
+            project_root,
+            trigger=trigger,
+            error_class="brief_structure_invalid",
+            error_message=str(exc),
+        )
+        sys.exit(0)
+
+    # 3. Extract + validate roster YAML (may be absent during discovery).
+    roster_yaml = extract_roster_yaml(response_text)
+    if roster_yaml is not None:
+        try:
+            validate_roster_yaml(roster_yaml)
+        except ValueError as exc:
+            log_rewrite_error(
+                project_root,
+                trigger=trigger,
+                error_class="roster_yaml_invalid",
+                error_message=str(exc),
+            )
+            sys.exit(0)
+
+    # 4. Atomic dual write — same pattern as main_rewrite_brief.
+    brief_path = project_root / _DECK_BRIEF_REL
+    try:
+        _atomic_write_text(brief_path, response_text)
+        if roster_yaml is not None:
+            audience_path = project_root / _AUDIENCE_YAML_REL
+            _atomic_write_text(
+                audience_path,
+                f"audience:\n{roster_yaml.rstrip()}\n"
+                if not roster_yaml.lstrip().startswith("audience:")
+                else roster_yaml.rstrip() + "\n",
+            )
+    except OSError as exc:
+        log_rewrite_error(
+            project_root,
+            trigger=trigger,
+            error_class="write_failure",
+            error_message=str(exc),
+        )
+        sys.exit(0)
+
+    # 5. Update watermark.
+    meta = _read_rewrite_metadata(project_root)
+    meta["last_rewrite_timestamp"] = datetime.now(timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    meta["agent_version"] = _REWRITER_AGENT_VERSION
+    # No `model` field update here — write_brief doesn't know which
+    # model produced the markdown (Task dispatch handles model
+    # selection). Preserve any prior value.
+    meta["bootstrap_complete"] = True
+    _write_rewrite_metadata(project_root, meta)
+
+    # 6. Cleanup: remove the draft and the sentinel.
+    try:
+        draft_path.unlink()
+    except OSError:
+        pass  # Cleanup failure is non-fatal; the next run overwrites.
+    sentinel_path = project_root / _BRIEF_STALE_SENTINEL_REL
+    if sentinel_path.is_file():
+        try:
+            sentinel_path.unlink()
+        except OSError:
+            pass
+
+    sys.exit(0)
+
+
+# ---------------------------------------------------------------------------
 # Memory architecture — dialog archive + recall (BUG-AUDIT-79 Cycle 2 Phase 1
 # / BC-2.17 / BC-3.19 / REQ-MEMORY-DIALOG-1 / REQ-MEMORY-RECALL-1).
 #
@@ -2344,6 +2548,37 @@ def main_rewrite_brief(
 _DIALOG_ARCHIVE_REL = ".debrief/dialog.jsonl"
 _REWRITE_METADATA_REL = ".debrief/rewrite_metadata.json"
 _TIMELINE_REL = "output/timeline.jsonl"
+_BRIEF_STALE_SENTINEL_REL = ".debrief/.brief_stale"
+_BRIEF_DRAFT_REL = ".debrief/draft/refresh_brief.md"
+
+
+def _write_brief_stale_sentinel(
+    project_root: Path,
+    *,
+    last_archived_turn: int,
+    compaction_event_id: Optional[str] = None,
+    trigger: str = "PreCompact",
+) -> None:
+    """Write the deferred-synthesis sentinel per BC-3.18c (BUG-AUDIT-101).
+
+    The sentinel file at ``.debrief/.brief_stale`` is the contract between
+    PreCompact (which captures dialog turns but does NOT call the model)
+    and the consultant's session-start dispatch (which detects the
+    sentinel and runs the rewriter via Task per BC-5.16a). Atomic write
+    via ``.tmp`` + ``os.rename`` so a partial write never leaves a
+    corrupt sentinel that the consultant would then fail to parse.
+    """
+    sentinel_path = project_root / _BRIEF_STALE_SENTINEL_REL
+    sentinel_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "last_archived_turn": last_archived_turn,
+        "compaction_event_id": compaction_event_id,
+        "trigger": trigger,
+    }
+    tmp = sentinel_path.with_suffix(sentinel_path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, sentinel_path)
 
 
 def _read_rewrite_metadata(project_root: Path) -> dict:
@@ -3957,12 +4192,17 @@ def main_new() -> None:
                 "PreCompact",
                 "/debrief:quit",
                 "/debrief:refresh-brief",
+                "session_start_recovery",
             ],
             default="/debrief:refresh-brief",
             help=(
                 "Which trigger fired the rewrite. Recorded in any "
                 "rewrite_errors.jsonl entry. Default assumes manual "
-                "invocation by the user."
+                "invocation by the user. Per BUG-AUDIT-101, only "
+                "PreCompact uses this command in the new architecture; "
+                "the other triggers are routed through "
+                "build_rewrite_prompt + Task + write_brief by the "
+                "consultant."
             ),
         )
         _args = _parser.parse_args(sys.argv[2:])
@@ -3970,6 +4210,76 @@ def main_new() -> None:
             _args.project_root,
             trigger=_args.trigger,
             plugin_root=plugin_root,
+        )
+    elif subcommand == "build_rewrite_prompt":
+        # BC-3.18a / BUG-AUDIT-101. Read-only — assembles the structured
+        # prompt and emits to stdout for the consultant to feed into
+        # Task(subagent_type="rewriter", ...).
+        import argparse as _ap
+
+        _parser = _ap.ArgumentParser(
+            prog="debrief.launcher build_rewrite_prompt",
+            description=(
+                "Emit the structured rewriter prompt (deck_brief on "
+                "bootstrap + dialog archive + event timeline) to "
+                "stdout. The consultant captures this output via Bash "
+                "and passes it as the `prompt` argument to Task."
+            ),
+        )
+        _parser.add_argument(
+            "--project-root", type=Path, default=Path.cwd(),
+        )
+        _args = _parser.parse_args(sys.argv[2:])
+        main_build_rewrite_prompt(_args.project_root)
+    elif subcommand == "write_brief":
+        # BC-3.18b / BUG-AUDIT-101. Reads the rewriter agent's markdown
+        # output from .debrief/draft/refresh_brief.md (default) or the
+        # explicit --draft-path, validates, atomically writes
+        # deck_brief.md + output/audience.yaml, removes draft +
+        # sentinel. Always exits 0.
+        import argparse as _ap
+
+        _parser = _ap.ArgumentParser(
+            prog="debrief.launcher write_brief",
+            description=(
+                "Validate + atomically write the rewriter agent's "
+                "markdown output as deck_brief.md + "
+                "output/audience.yaml. Removes the draft and the "
+                ".brief_stale sentinel on success."
+            ),
+        )
+        _parser.add_argument(
+            "--project-root", type=Path, default=Path.cwd(),
+        )
+        _parser.add_argument(
+            "--trigger",
+            choices=[
+                "/debrief:refresh-brief",
+                "/debrief:quit",
+                "session_start_recovery",
+            ],
+            default="/debrief:refresh-brief",
+            help=(
+                "Which trigger orchestrated the dispatch. Recorded "
+                "in any rewrite_errors.jsonl entry. PreCompact does "
+                "NOT use this command (PreCompact is capture-only "
+                "per BC-3.18c)."
+            ),
+        )
+        _parser.add_argument(
+            "--draft-path",
+            type=Path,
+            default=None,
+            help=(
+                "Path to the agent's markdown output. Default: "
+                ".debrief/draft/refresh_brief.md."
+            ),
+        )
+        _args = _parser.parse_args(sys.argv[2:])
+        main_write_brief(
+            _args.project_root,
+            trigger=_args.trigger,
+            draft_path=_args.draft_path,
         )
     elif subcommand == "recall":
         # BC-3.19 / BUG-AUDIT-79 (Cycle 2 Phase 1) / REQ-MEMORY-RECALL-1.
@@ -4100,8 +4410,8 @@ def main_new() -> None:
         print(
             "Usage: python -m debrief.launcher [new|preflight|"
             "ensure_project|ensure_settings|doctor|commands|recall|"
-            "rewrite_brief|emit_event|script_writer|archive_paper] "
-            "[project_root]",
+            "rewrite_brief|build_rewrite_prompt|write_brief|"
+            "emit_event|script_writer|archive_paper] [project_root]",
             file=sys.stderr,
         )
         sys.exit(1)
